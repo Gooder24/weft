@@ -159,8 +159,10 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   again or Enter only stashes the box, 1–4 are Ctrl+L's times, and the chat goes away like Ctrl+L and comes back with
   that draft chosen (item `remind`, chat state `remind`). Ctrl+S in an empty box takes the only item or opens the list (Enter take, Ctrl+Enter send now, E edit, Alt+↑/↓ move, Delete, Ctrl+Z).
   Windows write only add/remove operations and apply them again until a sync shows them, so none undoes another; an
-  item edited in two windows at once shows both versions. The inbox row says „odložené N“. Check:
-  `overenie/stash/two.cjs` (two browser contexts against the fake homeserver `overenie/stash/fakehs.py`).
+  item edited in two windows at once shows both versions. „Poslať“ (Ctrl+Enter) hands the draft to the send-later
+  service as `stash-<id>`: it sends with one device and that id as the transaction id, so presses on several devices
+  send it once. The inbox row says „odložené N“. Checks: `overenie/stash/two.cjs` (two browser contexts against the
+  fake homeserver `overenie/stash/fakehs.py`), `overenie/stash/send_once.py` (a throwaway Tuwunel).
 - Old Discord messages (collect_history.py, GET only: the guild in `WEFT_DISCORD_GUILD` with DMs, another with `--guild ID --no-dms`) keep
   their attachments as rows without a file; the archive downloads one into `media/discord/` when Weft's file button
   or `weft file ID` asks, after Discord re-signs its expired link (`POST /attachments/refresh-urls`). A server's

@@ -720,16 +720,28 @@ async function takeStashFiles(r, it) {
     render();
   }
 }
-/** „Poslať“: the item goes out now, beside whatever is in the box; it leaves the stash first, so it is sent once. */
+/** „Poslať“: the item goes out now, beside whatever is in the box, once however many devices press it. A window's
+ *  own send cannot promise that (each device has its own transaction ids), so the item goes to the send-later
+ *  service: it sends with its one device and the item's id as the transaction id, and the homeserver lets one
+ *  transaction id through once. Two devices hand over the same id, so a lost or repeated write changes nothing. */
 async function sendStashed(r, it) {
   const to = S.rooms.get(it.room) && liveChat(S.rooms.get(it.room)) ? S.rooms.get(it.room) : r;
   if (it.files?.length) return takeStashed(r, it); // files come down first: they go out from the box
-  if (S.editing?.room === r.id || !it.body.trim() || !stashDo({ op: 'del', id: it.id })) return;
-  S.stashSel = null;
-  render();
+  if (S.editing?.room === r.id || !it.body.trim() || S.stashSending?.has(it.id)) return;
   const key = `stash:${it.id}`;
   if (it.picks?.length) picked.set(key, it.picks);
-  try { await sendChat(to, { text: it.body, key }); } finally { picked.delete(key); }
+  let content;
+  try { content = textMessage(to, it.body.trim(), 0, key); } finally { picked.delete(key); }
+  const id = `stash-${it.id}`;
+  (S.stashSending ||= new Set()).add(it.id);
+  render();
+  noteHeldReply(to);
+  await saveLater((list) => (list.some((x) => x.id === id) ? list : [...list, { id, room: to.id, at: Date.now(), seq: 0, content }]));
+  S.stashSending.delete(it.id);
+  if (!laterItems().some((x) => x.id === id)) return render(); // not handed over (saveLater said so): the draft stays
+  stashDo({ op: 'del', id: it.id });
+  if (S.stashSel === it.id) S.stashSel = null;
+  render();
 }
 /** Saves an edited item as a new one in its place; a window that changed the same item meanwhile keeps its version too. */
 function saveStashEdit(it, body) {
