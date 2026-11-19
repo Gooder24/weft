@@ -7981,7 +7981,8 @@ function searchResults(o) {
   }
   const tokens = query ? query.split(/\s+/) : [];
   // Chats whose name matches, then chats with someone whose name matches, then messages. Among the chats a person
-  // (a one-to-one chat) comes first, then groups, then EduPage messages by their sender; within each the closer
+  // (a one-to-one chat) comes first, then EduPage messages by their sender (a teacher is a person too), then groups
+  // (Karchi, 20. 11.: the teacher above a group named after her); within each the closer
   // name match (the name starts with it, a word does, it is inside) and then the newest. Names that match only with
   // a typo come after all of them ("anna" finds Anna first, Jana and Zuzana last), in the same order of kinds.
   const chats = [];
@@ -8018,7 +8019,7 @@ function searchResults(o) {
       if (matchName(name, tokens)) {
         hit = true;
         const score = nameScore(name, query);
-        const kind = e.kind === 'thread' ? 2 : partner ? 0 : 1;
+        const kind = e.kind === 'thread' ? 1 : partner ? 0 : 2;
         // `person`: the name that matched when it is not the chat's title, shown under it.
         chats.push({ e, rank: score < 0 ? 9 + kind : kind * 3 + score, person: name !== e.title && e.kind === 'room' ? name : '' });
       }
@@ -8068,7 +8069,10 @@ function onePerPerson(rows, app, merged) {
     if (!e) return [x];
     if (seen.has(g.id)) return [];
     seen.add(g.id);
-    return [{ ...x, e, person: x.person && norm(x.person) !== norm(e.title) ? x.person : '' }];
+    // The name that matched, when the merged row's own title does not say it („zorka“ finds Zora through her
+    // Messenger chat „Zorka …“).
+    const matched = x.rank === undefined ? '' : x.person || x.e.title; // only a search hit has a rank
+    return [{ ...x, e, person: matched && norm(bareName(matched)) !== norm(bareName(e.title)) ? matched : '' }];
   });
 }
 
