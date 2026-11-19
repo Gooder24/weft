@@ -215,7 +215,7 @@ predvolenom odmietaní povolení.
 | WhatsApp most (mautrix-whatsapp v26.10) | Prichádzajúci hovor hneď zapíše do chatu: „Incoming call. Use the WhatsApp app to answer.“ s `com.beeper.action_message: {type: "call", call_type}`. Koniec, prijatie ani odmietnutie nepremostí. Staršie ako 15 min zahodí. | zdroják `pkg/connector/handlewhatsapp.go` (`handleWACallStart`, `convertCallStart`); `call_start_notices: true` v `whatsapp/config.yaml`; v binárke je `convertCallStart` |
 | Messenger a Instagram most (mautrix-meta, naše buildy v26.10+dev.6643ca46 a pre Instagram v26.10+dev.14c13fe3, oba zo zdrojáku z 9. 11.) | Hovory neoznačuje vôbec; čo s nimi robí, neviem (živú ukážku nemám). Upstream main to pridal až 13. až 17. 11. 2026: v šifrovaných chatoch `FBCallEvent` premostí „Missed audio call“ a „Audio call (3:12)“ a začiatok hovoru zahodí; v nešifrovaných chatoch a na Instagrame príde záznam hovoru (`xma_rtc_*`) ako tá istá action_message. | zdroják `pkg/connector/handlewhatsapp.go` (`handleWAFBCall`), `pkg/msgconv/from-meta.go` (`CallLogToMatrix`), whatsmeow `notification.go`; v binárkach `mautrix-meta` ani `mautrix-instagram` nie je reťazec `FBCall` ani `xma_rtc_` |
 | Discord most (mautrix-discord 0.7.7) | Správa typu CALL príde ako `m.emote` „started a call“; jej úpravu (koniec hovoru) zahodí. | zdroják `portal_convert.go`, `portal.go` |
-| Teams most (vlastný, Graph, poll 20 s) | Hovory nevidí: `apply` v `server/microsoft/bridge.py` berie len `messageType == "message"`. Graph v chate dáva aj systémové správy „hovor začal“ a „hovor skončil“ ([Microsoft Learn](https://learn.microsoft.com/en-us/graph/system-messages)); zvonenie prihlásenému používateľovi nedáva. Teams účet zatiaľ nie je pripojený (0 miestností). | kód, dokumentácia, živý stav |
+| Teams most (vlastný, Graph, poll 20 s) | Do 19. 11. hovory nevidel (`apply` v `server/microsoft/bridge.py` bral len `messageType == "message"`); od 20. 11. posiela ukončený hovor ako riadok hovoru (sekcia „Mosty“). Graph v chate dáva aj systémové správy „hovor začal“ a „hovor skončil“ ([Microsoft Learn](https://learn.microsoft.com/en-us/graph/system-messages)); zvonenie prihlásenému používateľovi nedáva. Teams účet zatiaľ nie je pripojený (0 miestností). | kód, dokumentácia, živý stav |
 | Živé miestnosti (403) | Nenašiel som žiadnu udalosť `m.call.*` ani MatrixRTC a žiadnu poznámku mosta o hovore. Hľadanie ide cez text správ, takže to nedokazuje, že nikto nevolal; len nemám živú ukážku. | `/sync` a `/search` cez token `weft`, len čítanie |
 | Archív | Stovky hovorov na Messengeri a Instagrame („[Hovor 3:12] Audio call ended“, „… started a video chat“), posledné z októbra 2026. Hovory sú pre Karchiho bežná vec, hlavne na Messengeri. | `weft search` |
 | Homeserver (Tuwunel 1.9.4) | Hlási `org.matrix.msc4143`, ale `rtc_transports: []`, TURN nie je (404), LiveKit nie je. | `/_matrix/client/versions`, `/voip/turnServer`, `…/org.matrix.msc4143/rtc/transports` |
@@ -551,13 +551,40 @@ Karchi 19. 11.: „Smie zvoniť, ale vytvor na to nastavenie, či aj hovory zast
 1. **Messenger na x270 v okne Weftu, áno alebo nie?** `facebook.com` si tam blokuje sám. Okno by bolo
    zamknuté na jeden chat a hovor a šlo by cez asus; ten chat by v ňom videl hneď, aj keď ho Weft drží do
    okna čítania. Inú cestu, ako z x270 volať cez Messenger a Instagram, som nenašiel.
+   **19. 11.: áno** („Okno hovoru v desktope, a potom pre ostatné platformy to skús“); okno je v `main`
+   (PR #23). **20. 11. pri prechádzaní inboxu prišlo opačné:** „okno Messengera na x270 nerob (blok FB)“.
+   Okno už postavené je, preto som k nemu 20. 11. nič nepridal ani neubral. Či má pre Messenger ostať,
+   vypnúť sa, alebo zmiznúť, je otázka na Karchiho.
 2. **Druhé prihlásenie do Messengera v tom okne** (most ostáva prihlásený zvlášť). Ide o jeho účet.
+   **20. 11.: podľa plánu**, teda len v okne, oddelene od mosta, a prihlasuje sa Karchi sám; agent nikdy.
+   Platí, len kým okno ostáva.
 3. **Smie hovor zvoniť, aj keď sú správy podržané** (okná čítania)? Rozhodnuté 19. 11.: smie, s nastavením (krok 3).
 4. **Zásah do mostov.** Aktualizácia mautrix-meta minule spustila 133 nových DM; áno má platiť aj na to.
    Čítanie telefónu pre WhatsApp znamená, že Weft dostane súkromné čísla jeho kontaktov z databázy mosta.
+   **20. 11.: áno, v odporúčanom poradí** (sekcia „Mosty“ nižšie).
 5. **Dohodnuté hovory.** Po kroku 2 jeden na Messengeri; pred krokom 3 jeden prichádzajúci na WhatsAppe,
    aby bolo vidieť, kedy udalosť mosta príde. Volá Karchi sám a niekto, s kým sa dohodol; agent nevolá
    nikdy. Jediný spôsob, ako overiť to, čo je nižšie.
+   **20. 11.: skúšobný hovor s človekom až s Karchim.** Postup je v sekcii „Stav“ („Čo ostáva na Karchim“).
+
+## Mosty (od 20. 11. 2026)
+
+- **Teams: postavené.** Vlastný most (`server/microsoft/bridge.py`, `call_log`) číta systémovú správu Graphu
+  o ukončenom hovore alebo mítingu (`callEndedEventMessageDetail`) a pošle ju do miestnosti ako riadok hovoru
+  v tvare, aký appka už pozná: text „Call (3:12)“ so značkou `com.beeper.action_message`, od toho, kto hovor
+  začal. Graph hovorí, kto ho začal a ako dlho trval; či šlo o video a či ho niekto zdvihol, nehovorí, takže
+  zmeškaný hovor sa od ukončeného nedá odlíšiť a hovor bez dĺžky je len „Hovor“. Začiatok hovoru, zdieľanie
+  obrazovky a ostatné systémové správy do miestnosti nejdú. Kontrola proti falošnému Microsoftu:
+  `overenie/microsoft/check.py` (štyri nové prípady). Tvar správy je z dokumentácie Graphu; živú ukážku
+  nemám, lebo Teams účet nie je pripojený.
+- **mautrix-meta (Messenger a Instagram).** Záznamy hovorov sú v upstreame: Instagram a nešifrovaný Messenger
+  od v26.11 (16. 11.), šifrovaný Messenger až v `main` po vydaní (17. 11.). Naše mosty bežia na vlastných
+  zostaveniach so záplatami (archív, opätovné prihlásenie, galéria), Instagram ešte na základe v26.10.
+  Aktualizácia teda znamená preniesť záplaty na upstream `main`, zostaviť oba mosty a vymeniť ich so zálohou
+  binárok a databáz.
+- **Začiatok hovoru na Messengeri** (zvonenie) ostáva hypotéza: záplatu má zmysel písať až po skúšobnom
+  hovore, ktorý ukáže, aké udalosti chodia.
+- **Telefón pre WhatsApp** (tlačidlo by otvorilo chat namiesto zoznamu chatov): zatiaľ nepostavené.
 
 ## Čo sa bez hovoru overiť nedalo
 

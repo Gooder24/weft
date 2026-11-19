@@ -1400,6 +1400,8 @@ class Teams:
     def apply(self, account: str, room: str, msg: dict, settle_before: int) -> str | None:
         """One message as Graph has it now: new, edited, deleted, or its reactions changed. Returns an event that
         may count as read (older than settle_before)."""
+        if msg.get("messageType") == "systemEventMessage" and msg.get("id"):
+            return self.call_log(account, room, msg, settle_before)
         if msg.get("messageType") != "message" or not msg.get("id"):
             return None
         ident = str(msg["id"])
@@ -1438,6 +1440,32 @@ class Teams:
                 self.db.commit()
         self.react(account, room, ident, event, msg)
         return None
+
+    def call_log(self, account: str, room: str, msg: dict, settle_before: int) -> str | None:
+        """Teams' note that a call or meeting ended, as the call row Weft knows from the mautrix bridges: the text
+        „Call (3:12)“ marked com.beeper.action_message, from whoever started it. Graph tells who started it and how
+        long it took, not whether it had video or whether anybody answered; a call without a length is just „Call“.
+        Teams' other system notes (somebody added, a call started, a recording) stay out of the room."""
+        detail = msg.get("eventDetail") if isinstance(msg.get("eventDetail"), dict) else {}
+        if not str(detail.get("@odata.type") or "").endswith("callEndedEventMessageDetail") or detail.get("callEventType") not in ("call", "meeting"):
+            return None
+        ident = str(msg["id"])
+        if self.msg_known(room, ident):
+            return None
+        sender = self.ghost(account, ((detail.get("initiator") or {}).get("user")) or {"displayName": "Teams"})
+        self.join(room, sender)
+        ts = iso_ms(msg.get("createdDateTime")) or now_ms()
+        took = re.fullmatch(r"P(?:(\d+)D)?T?(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)(?:\.\d+)?S)?", str(detail.get("callDuration") or ""))
+        days, hours, minutes, seconds = (int(x or 0) for x in took.groups()) if took else (0, 0, 0, 0)
+        hours += days * 24
+        length = f" ({hours}:{minutes:02}:{seconds:02})" if hours else f" ({minutes}:{seconds:02})" if minutes or seconds else ""
+        content = {"msgtype": "m.text", "body": "Call" + length, "com.beeper.action_message": {"type": "call", "call_type": ""}, MARK: ident}
+        event = matrix("PUT", f"/rooms/{q(room)}/send/m.room.message/teams-{short(room + ident, 24)}-0", content, user=sender, query={"ts": ts})["event_id"]
+        with self.lock:
+            self.db.execute("INSERT OR REPLACE INTO messages VALUES (?, ?, ?, '', 0)", (room, ident, event))
+            self.db.execute("INSERT OR IGNORE INTO parts VALUES (?, ?, ?)", (event, room, ident))
+            self.db.commit()
+        return event if ts < settle_before else None
 
     def react(self, account: str, room: str, ident: str, event: str, msg: dict) -> None:
         now = {(str(((r.get("user") or {}).get("user") or {}).get("id") or (r.get("user") or {}).get("id") or "").lower(),

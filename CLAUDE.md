@@ -72,7 +72,7 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   archive (`archive:outlook:…`, „Odpovedať mailom“), Nový mail and `weft mail` send through Graph (20 MB of files).
   Teams one-to-one, group and meeting chats are real rooms through the appservice `appservices/teams.yaml`
   (ghosts `@teams_<Entra id>`, polled every 20 s): text, mentions, photos, files, replies, edits, deletions and
-  reactions both ways, and Karchi's reading as Teams „videné“ (whole chat, only once he reached its newest message); Ctrl+N finds people of the school or work directory. No team channels. Checks:
+  reactions both ways, and Karchi's reading as Teams „videné“ (whole chat, only once he reached its newest message); an ended call or meeting comes as a call row („Call (3:12)“ marked `com.beeper.action_message`, `call_log`); Ctrl+N finds people of the school or work directory. No team channels. Checks:
   `overenie/microsoft/` (`check.py` bridge against a fake Microsoft, `races.py`, `run.sh` UI, `cli_mail.sh`).
 - `server/gmail/cleanup.py` and `matrix-spike-gmail-cleanup.timer` move explicitly enabled accounts'
   Gmail Promotions and Social categories to Trash every five minutes on asus, including old mail.
