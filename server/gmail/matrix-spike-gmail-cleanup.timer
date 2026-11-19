@@ -1,0 +1,10 @@
+[Unit]
+Description=Weft: clean Gmail categories every five minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=5min
+Unit=matrix-spike-gmail-cleanup.service
+
+[Install]
+WantedBy=timers.target

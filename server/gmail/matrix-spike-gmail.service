@@ -1,0 +1,14 @@
+[Unit]
+Description=matrix-spike: Gmail accounts for Weft (provisioning on 127.0.0.1:29323)
+After=matrix-spike-homeserver.service
+
+[Service]
+EnvironmentFile=%h/.config/weft/weft.env
+Environment=STATE_DIR=%h/matrix-spike/gmail/state
+ExecStart=/usr/bin/python3 -I -u %h/matrix-spike/gmail/bridge.py
+Restart=always
+RestartSec=10
+MemoryMax=64M
+
+[Install]
+WantedBy=default.target

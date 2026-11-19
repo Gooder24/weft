@@ -1,0 +1,18 @@
+#!/bin/sh
+# Builds the legacy Discord bridge Weft runs: v0.7.7 with discord-polls.patch (live polls), discord-weft.patch (GET
+# /v1/account and /v1/contacts, from the bridge's memory) and discord-weft-profile.patch (GET /v1/weft/profile/{id}),
+# applied in that order. Run on asus. The binary lands in ~/build; swapping it for ~/matrix-spike/bin/mautrix-discord
+# is a separate, backed-up step (DISCORD-PLAN.md, deployment 3).
+set -eu
+SRC=${SRC:-$HOME/build/discord-weft}
+HERE=$(cd "$(dirname "$0")" && pwd)
+export PATH=$HOME/sdk/go1.27.3/bin:$PATH
+if [ ! -d "$SRC" ]; then git clone -q https://github.com/mautrix/discord "$SRC"; fi
+cd "$SRC"
+git checkout -q --detach v0.7.7
+git reset -q --hard && git clean -qfd
+for p in discord-polls discord-weft discord-weft-profile; do git apply "$HERE/$p.patch"; done
+# encryption.allow is false in the bridge's config; nocrypto needs no libolm on asus.
+go test -tags nocrypto .
+go build -tags nocrypto -ldflags "-X main.Tag=v0.7.7 -X main.Commit=$(git rev-parse HEAD)+weft" -o "$HOME/build/mautrix-discord-weft" .
+echo "$HOME/build/mautrix-discord-weft"

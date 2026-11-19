@@ -1,0 +1,16 @@
+[Unit]
+Description=Weft daily RSS and Instagram feed
+After=matrix-spike-homeserver.service
+
+[Service]
+WorkingDirectory=%h/matrix-spike/feed
+ExecStart=/usr/bin/python3 -I -u %h/matrix-spike/feed/feed.py
+Environment=TZ=Europe/Bratislava
+Environment=FEED_INSTAGRAM_PAUSED=0
+Restart=on-failure
+RestartSec=5
+MemoryMax=128M
+UMask=0077
+
+[Install]
+WantedBy=default.target

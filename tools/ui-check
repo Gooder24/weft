@@ -1,0 +1,43 @@
+#!/usr/bin/env python3
+"""Weft's look check (DESIGN.md): colours only as tokens, no shadows, no endless animation, every icon from
+app/icons.js at 24 or 48 px, and the language check (tools/i18n-check). Prints what breaks a rule and exits 1.
+A deliberate exception carries `/* brand */` (a network's own colour) or `ui-ignore: <why>` on its line."""
+import re, subprocess, sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+APP = ROOT / 'app'
+bad = []
+
+css = (APP / 'app.css').read_text()
+depth, in_tokens = 0, False
+for n, line in enumerate(css.splitlines(), 1):
+    ok = '/* brand */' in line or 'ui-ignore' in line
+    if re.match(r'\s*:root\s*\{', line): in_tokens = True
+    if not in_tokens and not ok:
+        if re.search(r'#[0-9a-fA-F]{3,8}\b|\brgba?\(|\bhsla?\(', line): bad.append(f'app.css:{n}: a colour that is not a token (add it to :root or use one)')
+        for m in re.finditer(r'box-shadow:\s*([^;]+)', line):
+            if not all(re.match(r'(inset|none|0 0 0 )', part.strip()) for part in m.group(1).split(',')): bad.append(f'app.css:{n}: a shadow (only rings: inset or 0 0 0 <width>)')
+        if re.search(r'text-shadow|drop-shadow', line): bad.append(f'app.css:{n}: a shadow')
+        if re.search(r'animation[^;]*infinite|animation-iteration-count:\s*infinite', line): bad.append(f'app.css:{n}: an endless animation')
+    if in_tokens:
+        depth += line.count('{') - line.count('}')
+        if depth <= 0 and '}' in line: in_tokens, depth = False, 0
+
+icons_src = (APP / 'icons.js').read_text()
+names = set(re.findall(r"^\s*'([a-z0-9-]+)': '", icons_src, re.M))
+for path in sorted(APP.glob('*.js')):
+    if path.name in ('icons.js', 'qrcode.js', 'i18n-en.js'): continue
+    for n, line in enumerate(path.read_text().splitlines(), 1):
+        if 'ui-ignore' in line: continue
+        if '<svg' in line or re.search(r"createElementNS\([^)]*svg", line): bad.append(f'{path.name}:{n}: an own <svg>; icons come from icons.js (icon(name))')
+        if re.search(r"\}, '[\u2300-\u2712\u2714-\u27BF\U0001F300-\U0001FAFF]\ufe0f?'\)", line): bad.append(f'{path.name}:{n}: an emoji or symbol as an icon; use icon(name)')
+        if not re.match(r'\s*(//|/\*|\*|import )', line) and re.search(r"(?:[\[(,{]\s*|\b(?:const|let|var)\s+)icon\s*(?:[\]),}]|=(?!=))", line): bad.append(f'{path.name}:{n}: a variable named icon hides icon() from icons.js')
+        for m in re.finditer(r"\bicon\('([^']+)'(?:,\s*(\d+))?\)", line):
+            if m.group(1) not in names: bad.append(f'{path.name}:{n}: no icon {m.group(1)!r} in icons.js')
+            if m.group(2) and m.group(2) not in ('24', '48'): bad.append(f'{path.name}:{n}: icon size {m.group(2)} (only 24 or 48)')
+
+print('\n'.join(bad))
+i18n = subprocess.run([str(ROOT / 'tools' / 'i18n-check')]).returncode
+print(f'{len(bad)} look problems', file=sys.stderr)
+sys.exit(1 if bad or i18n else 0)

@@ -1,0 +1,67 @@
+<!doctype html>
+<!-- A cut of a chat as Weft draws it, for relay.py's screenshot. relay.py fills in APP (the served app/ folder)
+     and the JSON below; the bubbles take Weft's own classes from its app.css, so the picture follows Weft's look. -->
+<html lang="sk">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="{{APP}}/app.css">
+<style>
+  /* app.css names the font from the site root; a file:// page reaches it here. The later rule wins. */
+  @font-face { font-family: 'Departure Mono'; src: url('{{APP}}/fonts/DepartureMono-Regular.woff2') format('woff2'); font-display: block; }
+  html, body { height: auto; }
+  body { width: 420px; overflow: hidden; }
+  .snap { display: flex; flex-direction: column; background: var(--card); padding-bottom: 6px; }
+  .snap .chead { align-items: center; }
+  .snap .ctitle b { display: inline; }
+  .snap .ctitle img { width: 13px; height: 13px; margin-left: 6px; vertical-align: -2px; border-radius: var(--radius-s); }
+  .snap .msgs { overflow: visible; flex: none; }
+  .snap .mimg { cursor: default; }
+  .snap .mlabel { color: inherit; opacity: .85; }
+  /* relay.py cuts the picture where this bar starts: the chat ended inside the window only when the bar is in it. */
+  #end { height: 4px; background: rgb(255, 0, 255); }
+</style>
+</head>
+<body>
+<div class="detail chat snap" id="snap"></div>
+<div id="end"></div>
+<script type="application/json" id="data">{{DATA}}</script>
+<script>
+  const d = JSON.parse(document.getElementById('data').textContent);
+  const el = (tag, cls, ...kids) => {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    for (const k of kids) if (k != null) n.append(k);
+    return n;
+  };
+  // Weft's avatar: the picture, else initials on a colour of their own (app.js hue/initialsOf).
+  const hue = (t) => [...String(t)].reduce((a, ch) => (a * 31 + ch.charCodeAt(0)) % 360, 7);
+  const initials = (t) => String(t).split(/\s+/).filter(Boolean).slice(0, 2).map((w) => [...w][0].toUpperCase()).join('') || '?';
+  const avatar = (src, name, cls) => {
+    if (src) { const i = el('img', cls); i.src = src; i.alt = ''; return i; }
+    const n = el('div', `${cls} initials`, initials(name));
+    n.style.background = `hsl(${hue(name)} 45% 64%)`;
+    return n;
+  };
+  const root = document.getElementById('snap');
+  const icon = d.net?.icon ? Object.assign(el('img'), { src: d.net.icon, alt: d.net.name }) : null;
+  root.append(el('div', 'chead', avatar(d.avatar, d.title, 'av'), el('span', 'ctitle', el('b', null, d.title), icon)));
+  const msgs = el('div', 'msgs');
+  for (const m of d.messages) {
+    if (m.day) msgs.append(el('div', 'cday', m.day));
+    let body;
+    if (m.kind === 'image') {
+      body = el('div', 'mimg');
+      Object.assign(body.style, { width: `${m.w}px`, height: `${m.h}px` });
+      body.append(Object.assign(el('img'), { src: m.src, alt: '' }));
+    } else {
+      body = el('div', m.kind === 'label' ? 'mtext mlabel' : 'mtext', m.text);
+    }
+    const bubble = el('div', 'bubble', body, m.caption ? el('div', 'mtext', m.caption) : null, el('span', 'mtime', m.time));
+    const row = el('div', 'mrow', m.mine ? null : m.grouped ? el('div', 'mav') : avatar(m.avatar, m.name, 'mav'), bubble);
+    msgs.append(el('div', `msg${m.mine ? ' mine' : ''}${m.grouped ? ' grouped' : ''}`,
+      !m.mine && d.group && !m.grouped ? el('div', 'mname', m.name) : null, row));
+  }
+  root.append(msgs);
+</script>
+</body>
+</html>

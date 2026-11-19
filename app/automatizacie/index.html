@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="sk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Stroje a procesy · Weft</title>
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/app.css">
+<link rel="stylesheet" href="/automatizacie/style.css">
+<script type="module" src="/automatizacie/app.js"></script>
+<style>:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }</style>
+</head>
+<body>
+<header><a href="/">Weft</a><h1>Stroje a procesy</h1><span id="updated" class="num" role="status"></span></header>
+<main>
+<p class="intro"><span id="summary">Načítavam…</span> <span class="shortcuts">Klik na riadok ukáže detail. Hľadanie <kbd>Ctrl+F</kbd></span></p>
+<nav id="machines" aria-label="Stroje"></nav>
+<p class="power-note">Celý stroj zahŕňa aj RAM, grafiku, disky a displej; meriame ho pri napájaní iba z batérií. CPU balík pokrýva súčasti procesorového čipu. Odber zo zásuvky sa tu nemeria.</p>
+<div id="processes"></div>
+</main>
+<form id="find" role="search" aria-label="Hľadať na stránke" hidden><label for="find-text">Hľadať</label><input id="find-text" type="search" autocomplete="off"><span>Enter: ďalší · Esc: zavrieť</span></form>
+</body>
+</html>

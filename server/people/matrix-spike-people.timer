@@ -1,0 +1,10 @@
+# Weekly, so people he starts writing with appear on the map. Run now: systemctl --user start matrix-spike-people
+[Unit]
+Description=Weekly Weft people map
+
+[Timer]
+OnCalendar=Sun 12:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

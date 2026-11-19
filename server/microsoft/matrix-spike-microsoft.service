@@ -1,0 +1,17 @@
+[Unit]
+Description=matrix-spike: Outlook mail and Teams chats for Weft (provisioning on 127.0.0.1:29330)
+After=matrix-spike-homeserver.service matrix-spike-archive.service
+
+[Service]
+EnvironmentFile=%h/.config/weft/weft.env
+Environment=REGISTRATION=%h/matrix-spike/appservices/teams.yaml
+Environment=DOUBLEPUPPET=%h/matrix-spike/appservices/doublepuppet.yaml
+Environment=STATE_DIR=%h/matrix-spike/microsoft/state
+ExecStart=/usr/bin/python3 -I -u %h/matrix-spike/microsoft/bridge.py
+Restart=always
+RestartSec=10
+UMask=0077
+MemoryMax=128M
+
+[Install]
+WantedBy=default.target

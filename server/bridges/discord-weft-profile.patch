@@ -1,0 +1,617 @@
+From 1c7d8c00035d11a33771700a5b6a6d8b0b6913e9 Mon Sep 17 00:00:00 2001
+From: Gooder24 <162874774+Gooder24@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 14:35:27 +0100
+Subject: [PATCH] provisioning: Weft's person panel asks for a Discord profile
+
+GET /_matrix/provision/v1/weft/profile/{discordUserID}: bio, pronouns, banner (data: URL) or accent colour, mutual
+servers, connected accounts, through the bridge's own session like Discord's profile popout (nobody is told), cached
+30 min (a failure 5 min), at least 2 s between requests, never retried; after a 429 no profile is asked for 30 min.
+A profile Discord does not show (not friends, no shared server) answers 403. Activity from the gateway's presences
+(PRESENCE_UPDATE and READY_SUPPLEMENTAL merged_presences, which discordgo drops for friends), kept in memory only.
+
+Build on asus (v0.7.7, encryption is off there): go build -tags nocrypto -o mautrix-discord .
+
+Applies after discord-polls.patch and discord-weft.patch (server/bridges/build-discord-weft); its type of
+connected accounts is weftLinkedAccount, since discord-weft.patch has a weftAccount.
+---
+ provisioning.go     |   1 +
+ user.go             |   6 +-
+ weftprofile.go      | 380 ++++++++++++++++++++++++++++++++++++++++++++
+ weftprofile_test.go | 168 ++++++++++++++++++++
+ 4 files changed, 554 insertions(+), 1 deletion(-)
+ create mode 100644 weftprofile.go
+ create mode 100644 weftprofile_test.go
+
+diff --git a/provisioning.go b/provisioning.go
+index b594c9e..b64bdc2 100644
+--- a/provisioning.go
++++ b/provisioning.go
+@@ -75,6 +75,7 @@ func newProvisioningAPI(br *DiscordBridge) *ProvisioningAPI {
+ 	// Weft (weft.go): read-only.
+ 	r.HandleFunc("/v1/account", p.weftAccount).Methods(http.MethodGet)
+ 	r.HandleFunc("/v1/contacts", p.weftContacts).Methods(http.MethodGet)
++	r.HandleFunc("/v1/weft/profile/{userID}", p.weftProfile).Methods(http.MethodGet)
+ 
+ 	if p.bridge.Config.Bridge.Provisioning.DebugEndpoints {
+ 		p.log.Debugln("Enabling debug API at /debug")
+diff --git a/user.go b/user.go
+index 31396a2..1a1ce6c 100644
+--- a/user.go
++++ b/user.go
+@@ -727,8 +727,12 @@ func (user *User) eventHandler(rawEvt any) {
+ 		user.interactionSuccessHandler(evt)
+ 	case *discordgo.ThreadListSync:
+ 		user.threadListSyncHandler(evt)
++	case *discordgo.PresenceUpdate:
++		weftPresenceLog.fromUpdate(evt)
+ 	case *discordgo.Event:
+-		// Ignore
++		if evt.Type == "READY_SUPPLEMENTAL" {
++			weftPresenceLog.fromReadySupplemental(evt.RawData)
++		}
+ 	default:
+ 		user.log.Debug().Type("event_type", evt).Msg("Unhandled event")
+ 	}
+diff --git a/weftprofile.go b/weftprofile.go
+new file mode 100644
+index 0000000..07a417e
+--- /dev/null
++++ b/weftprofile.go
+@@ -0,0 +1,380 @@
++package main
++
++// Weft's person panel asks for one Discord user's profile, the way Discord's own client fills a profile popout:
++//
++//	GET /_matrix/provision/v1/weft/profile/{discordUserID}
++//
++// It answers with the bio, pronouns, banner (as a data: URL, so Weft's page never loads Discord's CDN) or accent
++// colour, mutual servers, connected accounts and what the person is doing now (playing, listening…). The profile
++// goes through the bridge's own session, so Discord sees the same client as for everything else; nobody is told a
++// profile was looked at. One upstream request per person at most every 30 minutes (a failure is kept 5 minutes),
++// and at least two seconds between requests, whatever the caller does. Activity comes from the gateway's
++// presences (friends and shared servers), kept in memory only.
++
++import (
++	"encoding/base64"
++	"encoding/json"
++	"errors"
++	"fmt"
++	"io"
++	"net/http"
++	"regexp"
++	"sync"
++	"time"
++
++	"github.com/bwmarrin/discordgo"
++	"github.com/gorilla/mux"
++)
++
++type weftActivity struct {
++	Type    string `json:"type"` // playing, streaming, listening, watching, custom, competing
++	Name    string `json:"name,omitempty"`
++	Details string `json:"details,omitempty"`
++	State   string `json:"state,omitempty"`
++	Emoji   string `json:"emoji,omitempty"`
++	Since   int64  `json:"since,omitempty"` // ms
++}
++
++type weftPresence struct {
++	Status     string         `json:"status"` // online, idle, dnd, offline
++	Activities []weftActivity `json:"activities"`
++	At         int64          `json:"at"` // ms, when the bridge heard it
++}
++
++type weftServer struct {
++	ID   string `json:"id"`
++	Name string `json:"name"`
++}
++
++type weftLinkedAccount struct {
++	Type     string `json:"type"`
++	ID       string `json:"id"`
++	Name     string `json:"name"`
++	Verified bool   `json:"verified"`
++}
++
++type weftProfile struct {
++	ID          string        `json:"id"`
++	Username    string        `json:"username"`
++	DisplayName string        `json:"display_name,omitempty"`
++	Bio         string        `json:"bio,omitempty"`
++	Pronouns    string        `json:"pronouns,omitempty"`
++	AccentColor *int          `json:"accent_color,omitempty"`
++	ThemeColors []int         `json:"theme_colors,omitempty"`
++	Banner      string        `json:"banner,omitempty"` // data: URL
++	Servers     []weftServer  `json:"mutual_servers"`
++	Accounts    []weftLinkedAccount `json:"connected_accounts"`
++	Presence    *weftPresence `json:"presence,omitempty"`
++	FetchedAt   int64         `json:"fetched_at"`
++}
++
++// The part of Discord's /users/{id}/profile answer Weft shows.
++type discordProfileAnswer struct {
++	User struct {
++		ID          string `json:"id"`
++		Username    string `json:"username"`
++		GlobalName  string `json:"global_name"`
++		Bio         string `json:"bio"`
++		Banner      string `json:"banner"`
++		AccentColor *int   `json:"accent_color"`
++	} `json:"user"`
++	Profile struct {
++		Bio         string `json:"bio"`
++		Pronouns    string `json:"pronouns"`
++		Banner      string `json:"banner"`
++		AccentColor *int   `json:"accent_color"`
++		ThemeColors []int  `json:"theme_colors"`
++	} `json:"user_profile"`
++	Accounts []weftLinkedAccount `json:"connected_accounts"`
++	Mutual   []struct {
++		ID string `json:"id"`
++	} `json:"mutual_guilds"`
++}
++
++// parseDiscordProfile turns Discord's answer into Weft's; name gives a server's name by id ("" when unknown).
++func parseDiscordProfile(body []byte, name func(string) string) (*weftProfile, string, error) {
++	var a discordProfileAnswer
++	if err := json.Unmarshal(body, &a); err != nil {
++		return nil, "", err
++	}
++	if a.User.ID == "" {
++		return nil, "", errors.New("profile without a user")
++	}
++	p := &weftProfile{
++		ID:          a.User.ID,
++		Username:    a.User.Username,
++		DisplayName: a.User.GlobalName,
++		Bio:         firstOf(a.Profile.Bio, a.User.Bio),
++		Pronouns:    a.Profile.Pronouns,
++		AccentColor: a.Profile.AccentColor,
++		ThemeColors: a.Profile.ThemeColors,
++		Servers:     []weftServer{},
++		Accounts:    []weftLinkedAccount{},
++	}
++	if p.AccentColor == nil {
++		p.AccentColor = a.User.AccentColor
++	}
++	for _, g := range a.Mutual {
++		p.Servers = append(p.Servers, weftServer{ID: g.ID, Name: name(g.ID)})
++	}
++	for _, acc := range a.Accounts {
++		if acc.Type != "" && acc.Name != "" {
++			p.Accounts = append(p.Accounts, acc)
++		}
++	}
++	return p, firstOf(a.Profile.Banner, a.User.Banner), nil
++}
++
++func firstOf(values ...string) string {
++	for _, v := range values {
++		if v != "" {
++			return v
++		}
++	}
++	return ""
++}
++
++var activityTypes = map[discordgo.ActivityType]string{
++	discordgo.ActivityTypeGame:      "playing",
++	discordgo.ActivityTypeStreaming: "streaming",
++	discordgo.ActivityTypeListening: "listening",
++	discordgo.ActivityTypeWatching:  "watching",
++	discordgo.ActivityTypeCustom:    "custom",
++	discordgo.ActivityTypeCompeting: "competing",
++}
++
++func toWeftPresence(status discordgo.Status, activities []*discordgo.Activity, at time.Time) weftPresence {
++	out := weftPresence{Status: string(status), Activities: []weftActivity{}, At: at.UnixMilli()}
++	for _, a := range activities {
++		if a == nil {
++			continue
++		}
++		kind, ok := activityTypes[a.Type]
++		if !ok {
++			continue
++		}
++		w := weftActivity{Type: kind, Name: a.Name, Details: a.Details, State: a.State, Emoji: a.Emoji.Name, Since: a.Timestamps.StartTimestamp}
++		if kind == "custom" {
++			w.Name = "" // Discord names every custom status "Custom Status"
++			if w.State == "" && w.Emoji == "" {
++				continue
++			}
++		}
++		out.Activities = append(out.Activities, w)
++	}
++	return out
++}
++
++// weftPresences keeps the last presence the gateway told about each user (the bridge has one Discord login).
++type weftPresences struct {
++	sync.Mutex
++	byUser map[string]weftPresence
++	now    func() time.Time
++}
++
++var weftPresenceLog = &weftPresences{byUser: make(map[string]weftPresence), now: time.Now}
++
++func (wp *weftPresences) put(userID string, p weftPresence) {
++	if userID == "" {
++		return
++	}
++	wp.Lock()
++	wp.byUser[userID] = p
++	wp.Unlock()
++}
++
++func (wp *weftPresences) get(userID string) (weftPresence, bool) {
++	wp.Lock()
++	defer wp.Unlock()
++	p, ok := wp.byUser[userID]
++	return p, ok
++}
++
++func (wp *weftPresences) fromUpdate(evt *discordgo.PresenceUpdate) {
++	if evt.User == nil {
++		return
++	}
++	wp.put(evt.User.ID, toWeftPresence(evt.Status, evt.Activities, wp.now()))
++}
++
++// fromReadySupplemental reads merged_presences, which discordgo leaves out: friends first, then shared servers.
++// It is a fresh snapshot after every (re)connect, so it replaces what was kept: whoever is missing went offline.
++func (wp *weftPresences) fromReadySupplemental(raw json.RawMessage) {
++	type entry struct {
++		UserID     string                `json:"user_id"`
++		Status     discordgo.Status      `json:"status"`
++		Activities []*discordgo.Activity `json:"activities"`
++	}
++	var data struct {
++		Merged struct {
++			Friends []entry   `json:"friends"`
++			Guilds  [][]entry `json:"guilds"`
++		} `json:"merged_presences"`
++	}
++	if json.Unmarshal(raw, &data) != nil {
++		return
++	}
++	now := wp.now()
++	wp.Lock()
++	wp.byUser = make(map[string]weftPresence)
++	wp.Unlock()
++	for _, guild := range data.Merged.Guilds {
++		for _, e := range guild {
++			wp.put(e.UserID, toWeftPresence(e.Status, e.Activities, now))
++		}
++	}
++	for _, e := range data.Merged.Friends {
++		wp.put(e.UserID, toWeftPresence(e.Status, e.Activities, now))
++	}
++}
++
++const (
++	weftProfileTTL  = 30 * time.Minute
++	weftFailureTTL  = 5 * time.Minute
++	weftProfileGap  = 2 * time.Second
++	weftBannerLimit = 2 << 20
++)
++
++type weftCached struct {
++	profile *weftProfile
++	err     error
++	at      time.Time
++}
++
++type weftProfileCache struct {
++	lock       sync.Mutex // one upstream request at a time
++	last       time.Time
++	quietUntil time.Time
++	byID       map[string]weftCached
++	now        func() time.Time
++	sleep      func(time.Duration)
++}
++
++var weftProfiles = &weftProfileCache{byID: make(map[string]weftCached), now: time.Now, sleep: time.Sleep}
++
++// discordStatus is the HTTP status of a failed Discord request, or 0. A request made without retries on rate
++// limits fails with RateLimitError instead of a RESTError.
++func discordStatus(err error) int {
++	var rest *discordgo.RESTError
++	var limited *discordgo.RateLimitError
++	if errors.As(err, &limited) {
++		return http.StatusTooManyRequests
++	} else if errors.As(err, &rest) && rest.Response != nil {
++		return rest.Response.StatusCode
++	}
++	return 0
++}
++
++// get answers from the cache, else through fetch. After Discord's "slow down" (429) nobody is asked for 30 minutes.
++func (c *weftProfileCache) get(id string, fetch func() (*weftProfile, error)) (*weftProfile, error) {
++	c.lock.Lock()
++	defer c.lock.Unlock()
++	if c.now().Before(c.quietUntil) {
++		return nil, errWeftQuiet
++	}
++	if got, ok := c.byID[id]; ok {
++		age := c.now().Sub(got.at)
++		if got.err == nil && age < weftProfileTTL {
++			return got.profile, nil
++		} else if got.err != nil && age < weftFailureTTL {
++			return nil, got.err
++		}
++	}
++	if wait := weftProfileGap - c.now().Sub(c.last); wait > 0 {
++		c.sleep(wait)
++	}
++	p, err := fetch()
++	c.last = c.now()
++	if discordStatus(err) == http.StatusTooManyRequests || errors.Is(err, errWeftUnclear) {
++		c.quietUntil = c.now().Add(weftProfileTTL)
++	}
++	c.byID[id] = weftCached{profile: p, err: err, at: c.now()}
++	return p, err
++}
++
++var errWeftQuiet = errors.New("Discord asked to slow down; no profiles for a while")
++
++// errWeftUnclear marks a request that failed without a Discord status, such as a 429 whose body is a proxy's HTML
++// page (discordgo then reports only the JSON error): it quiets the profiles like a 429, to be safe.
++var errWeftUnclear = errors.New("Discord's answer was not understood")
++
++var discordSnowflake = regexp.MustCompile(`^[0-9]{5,25}$`)
++
++func (p *ProvisioningAPI) weftProfile(w http.ResponseWriter, r *http.Request) {
++	user := r.Context().Value("user").(*User)
++	id := mux.Vars(r)["userID"]
++	if !discordSnowflake.MatchString(id) {
++		jsonResponse(w, http.StatusBadRequest, Error{Error: "Not a Discord user id", ErrCode: "M_INVALID_PARAM"})
++		return
++	}
++	sess := user.Session
++	if sess == nil {
++		jsonResponse(w, http.StatusNotFound, Error{Error: "Discord is not connected", ErrCode: "M_NOT_FOUND"})
++		return
++	}
++	// Keyed by the logged-in account too: mutual servers and visibility differ between accounts.
++	profile, err := weftProfiles.get(user.DiscordID+"/"+id, func() (*weftProfile, error) {
++		body, err := sess.RequestWithBucketID(http.MethodGet,
++			discordgo.EndpointUser(id)+"/profile?with_mutual_guilds=true&with_mutual_friends=false&with_mutual_friends_count=false",
++			nil, discordgo.EndpointUsers+"profile", discordgo.WithRetryOnRatelimit(false), discordgo.WithRestRetries(0))
++		if err != nil && discordStatus(err) == 0 {
++			return nil, fmt.Errorf("%w: %w", errWeftUnclear, err)
++		} else if err != nil {
++			return nil, err
++		}
++		prof, banner, err := parseDiscordProfile(body, func(guildID string) string {
++			if g, err := sess.State.Guild(guildID); err == nil && g.Name != "" {
++				return g.Name
++			} else if g := p.bridge.GetGuildByID(guildID, false); g != nil {
++				return g.PlainName
++			}
++			return ""
++		})
++		if err == nil && banner != "" {
++			prof.Banner = fetchBanner(sess, id, banner)
++		}
++		return prof, err
++	})
++	if code := discordStatus(err); code == http.StatusForbidden || code == http.StatusNotFound {
++		// Discord shows a profile only to friends and people on a shared server.
++		jsonResponse(w, http.StatusForbidden, Error{Error: "Discord does not show this profile", ErrCode: "M_FORBIDDEN"})
++		return
++	} else if err != nil {
++		p.log.Warnfln("Weft profile of %s failed: %v", id, err)
++		jsonResponse(w, http.StatusBadGateway, Error{Error: "Discord did not give the profile", ErrCode: "M_UNKNOWN"})
++		return
++	}
++	out := *profile
++	out.FetchedAt = time.Now().UnixMilli()
++	if pr, ok := weftPresenceLog.get(id); ok {
++		out.Presence = &pr
++	} else {
++		// A shared server's presence that came before the bridge started listening.
++		for _, g := range profile.Servers {
++			if pres, err := sess.State.Presence(g.ID, id); err == nil {
++				pr := toWeftPresence(pres.Status, pres.Activities, time.Now())
++				out.Presence = &pr
++				break
++			}
++		}
++	}
++	jsonResponse(w, http.StatusOK, out)
++}
++
++// fetchBanner downloads the banner from Discord's CDN as a data: URL, or "" when it cannot.
++func fetchBanner(sess *discordgo.Session, userID, hash string) string {
++	url := fmt.Sprintf("%s%s/%s.webp?size=600", discordgo.EndpointCDNBanners, userID, hash)
++	resp, err := sess.Client.Get(url)
++	if err != nil {
++		return ""
++	}
++	defer resp.Body.Close()
++	if resp.StatusCode != http.StatusOK {
++		return ""
++	}
++	data, err := io.ReadAll(io.LimitReader(resp.Body, weftBannerLimit+1))
++	if err != nil || len(data) > weftBannerLimit {
++		return ""
++	}
++	return "data:image/webp;base64," + base64.StdEncoding.EncodeToString(data)
++}
+diff --git a/weftprofile_test.go b/weftprofile_test.go
+new file mode 100644
+index 0000000..092bae2
+--- /dev/null
++++ b/weftprofile_test.go
+@@ -0,0 +1,168 @@
++package main
++
++import (
++	"errors"
++	"fmt"
++	"net/http"
++	"testing"
++	"time"
++
++	"github.com/bwmarrin/discordgo"
++)
++
++const sampleProfile = `{
++ "user": {"id": "111111", "username": "jano", "global_name": "Jano", "bio": "old bio", "banner": "a_old", "accent_color": 255},
++ "user_profile": {"bio": "Lietam na RC", "pronouns": "on/jeho", "banner": "bannerhash", "accent_color": null, "theme_colors": [1, 2]},
++ "connected_accounts": [{"type": "spotify", "id": "sp1", "name": "Jano S", "verified": true}, {"type": "github", "id": "9", "name": ""}],
++ "mutual_guilds": [{"id": "500", "nick": null}, {"id": "600"}],
++ "premium_since": null
++}`
++
++func TestParseDiscordProfile(t *testing.T) {
++	names := map[string]string{"500": "Skauti"}
++	p, banner, err := parseDiscordProfile([]byte(sampleProfile), func(id string) string { return names[id] })
++	if err != nil {
++		t.Fatal(err)
++	}
++	if p.ID != "111111" || p.Username != "jano" || p.DisplayName != "Jano" || p.Bio != "Lietam na RC" || p.Pronouns != "on/jeho" {
++		t.Fatalf("profile fields: %+v", p)
++	}
++	if banner != "bannerhash" {
++		t.Fatalf("banner %q: the profile's own banner wins", banner)
++	}
++	if p.AccentColor == nil || *p.AccentColor != 255 {
++		t.Fatalf("accent colour falls back to the user's: %v", p.AccentColor)
++	}
++	if len(p.Servers) != 2 || p.Servers[0].Name != "Skauti" || p.Servers[1].Name != "" {
++		t.Fatalf("servers: %+v", p.Servers)
++	}
++	if len(p.Accounts) != 1 || p.Accounts[0].Type != "spotify" || !p.Accounts[0].Verified {
++		t.Fatalf("accounts without a name are left out: %+v", p.Accounts)
++	}
++	if _, _, err := parseDiscordProfile([]byte(`{"user":{}}`), nil); err == nil {
++		t.Fatal("a profile without a user was taken")
++	}
++}
++
++func TestPresenceKinds(t *testing.T) {
++	at := time.UnixMilli(1_800_000_000_000)
++	p := toWeftPresence(discordgo.StatusIdle, []*discordgo.Activity{
++		{Type: discordgo.ActivityTypeCustom, Name: "Custom Status", State: "skúšky", Emoji: discordgo.Emoji{Name: "📚"}},
++		{Type: discordgo.ActivityTypeCustom, Name: "Custom Status"},
++		{Type: discordgo.ActivityTypeListening, Name: "Spotify", Details: "Song", State: "Artist", Timestamps: discordgo.TimeStamps{StartTimestamp: 5}},
++		{Type: discordgo.ActivityTypeGame, Name: "Minecraft"},
++		nil,
++	}, at)
++	if p.Status != "idle" || p.At != at.UnixMilli() || len(p.Activities) != 3 {
++		t.Fatalf("presence: %+v", p)
++	}
++	if c := p.Activities[0]; c.Type != "custom" || c.Name != "" || c.State != "skúšky" || c.Emoji != "📚" {
++		t.Fatalf("custom status: %+v", c)
++	}
++	if l := p.Activities[1]; l.Type != "listening" || l.Details != "Song" || l.Since != 5 {
++		t.Fatalf("listening: %+v", l)
++	}
++	if g := p.Activities[2]; g.Type != "playing" || g.Name != "Minecraft" {
++		t.Fatalf("playing: %+v", g)
++	}
++}
++
++func TestPresencesFromGateway(t *testing.T) {
++	wp := &weftPresences{byUser: make(map[string]weftPresence), now: time.Now}
++	wp.fromReadySupplemental([]byte(`{"merged_presences": {
++		"friends": [{"user_id": "1", "status": "online", "activities": [{"type": 0, "name": "Minecraft"}]}],
++		"guilds": [[{"user_id": "1", "status": "dnd", "activities": []}, {"user_id": "2", "status": "idle", "activities": []}]]}}`))
++	if p, ok := wp.get("1"); !ok || p.Status != "online" || p.Activities[0].Name != "Minecraft" {
++		t.Fatalf("a friend's own presence wins over a server's copy: %+v", p)
++	}
++	if p, ok := wp.get("2"); !ok || p.Status != "idle" {
++		t.Fatalf("server member: %+v", p)
++	}
++	wp.fromUpdate(&discordgo.PresenceUpdate{Presence: discordgo.Presence{User: &discordgo.User{ID: "2"}, Status: discordgo.StatusOffline}})
++	if p, _ := wp.get("2"); p.Status != "offline" {
++		t.Fatalf("an update replaces the presence: %+v", p)
++	}
++	wp.fromUpdate(&discordgo.PresenceUpdate{}) // no user: ignored
++	// A reconnect's snapshot forgets whoever went offline meanwhile.
++	wp.fromReadySupplemental([]byte(`{"merged_presences": {"friends": [{"user_id": "3", "status": "online", "activities": []}], "guilds": []}}`))
++	if _, ok := wp.get("1"); ok {
++		t.Fatal("yesterday's game outlived a fresh snapshot")
++	}
++	if _, ok := wp.get("3"); !ok {
++		t.Fatal("the fresh snapshot was not kept")
++	}
++}
++
++func TestProfileCache(t *testing.T) {
++	now := time.Unix(1_800_000_000, 0)
++	var slept time.Duration
++	c := &weftProfileCache{byID: make(map[string]weftCached), now: func() time.Time { return now },
++		sleep: func(d time.Duration) { slept += d; now = now.Add(d) }}
++	calls := 0
++	ok := func() (*weftProfile, error) { calls++; return &weftProfile{ID: "1"}, nil }
++	for i := 0; i < 3; i++ {
++		if p, err := c.get("1", ok); err != nil || p.ID != "1" {
++			t.Fatal(p, err)
++		}
++	}
++	if calls != 1 {
++		t.Fatalf("asked Discord %d times within 30 minutes", calls)
++	}
++	// Another person right after waits out the gap.
++	if _, err := c.get("2", ok); err != nil || slept != weftProfileGap {
++		t.Fatalf("slept %v before the second person, want %v", slept, weftProfileGap)
++	}
++	// A failure is kept for a while instead of asking again at once.
++	failing := func() (*weftProfile, error) { calls++; return nil, errors.New("429") }
++	c.get("3", failing)
++	before := calls
++	if _, err := c.get("3", failing); err == nil || calls != before {
++		t.Fatal("a failed profile was asked again at once")
++	}
++	now = now.Add(weftFailureTTL + time.Second)
++	c.get("3", failing)
++	if calls != before+1 {
++		t.Fatal("a failed profile was never asked again")
++	}
++	now = now.Add(weftProfileTTL)
++	c.get("1", ok)
++	if calls != before+2 {
++		t.Fatal("a profile older than 30 minutes was not asked again")
++	}
++	// "Slow down" from Discord: nobody, not even a cached failure's neighbour, is asked for 30 minutes.
++	slow := func() (*weftProfile, error) {
++		calls++
++		return nil, &discordgo.RESTError{Response: &http.Response{StatusCode: http.StatusTooManyRequests}}
++	}
++	c.get("4", slow)
++	before = calls
++	if _, err := c.get("5", ok); !errors.Is(err, errWeftQuiet) || calls != before {
++		t.Fatal("another profile was asked right after a 429")
++	}
++	now = now.Add(weftProfileTTL + time.Second)
++	if _, err := c.get("5", ok); err != nil || calls != before+1 {
++		t.Fatal("profiles stayed quiet after 30 minutes")
++	}
++	// Without retries discordgo reports a 429 as RateLimitError: it quiets the profiles too.
++	now = now.Add(weftProfileGap)
++	limited := func() (*weftProfile, error) {
++		calls++
++		return nil, &discordgo.RateLimitError{RateLimit: &discordgo.RateLimit{TooManyRequests: &discordgo.TooManyRequests{}}}
++	}
++	c.get("6", limited)
++	before = calls
++	if _, err := c.get("7", ok); !errors.Is(err, errWeftQuiet) || calls != before {
++		t.Fatal("a RateLimitError did not quiet the profiles")
++	}
++	// A 429 with a proxy's HTML page reaches the bridge only as a JSON error: quiet too.
++	now = now.Add(weftProfileTTL + time.Second)
++	unclear := func() (*weftProfile, error) {
++		calls++
++		return nil, fmt.Errorf("%w: %w", errWeftUnclear, errors.New("invalid character '<'"))
++	}
++	c.get("8", unclear)
++	before = calls
++	if _, err := c.get("9", ok); !errors.Is(err, errWeftQuiet) || calls != before {
++		t.Fatal("an answer that was not understood did not quiet the profiles")
++	}
++}
+-- 
+2.47.3
+

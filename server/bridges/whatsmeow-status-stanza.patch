@@ -1,0 +1,84 @@
+From b5518c54e5ebceb3c71d2cd2d6ff6b6919f1d338 Mon Sep 17 00:00:00 2001
+From: Gooder24 <162874774+Gooder24@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 00:17:41 +0100
+Subject: [PATCH] client: decrypt <status> stanzas (WhatsApp statuses)
+
+WhatsApp now sends contacts' statuses as <status> stanzas, which this whatsmeow acked and dropped, so the bridge's
+status broadcast room stayed empty. Backport of upstream 06b1c29 (2026-11-16, "client: remove special handling of
+status stanzas"): they go through handleEncryptedMessage like messages. Decrypting sends the usual delivery receipt,
+never a read receipt; "seen" only comes from a Matrix read receipt in the status room, which Weft never sends.
+
+Applies to go.mau.fi/whatsmeow v0.0.0-20261016130820-0b0a1cdac3e2 (the one mautrix-whatsapp v26.10 uses).
+---
+ client.go    |  2 +-
+ internals.go |  4 ----
+ message.go   | 18 +-----------------
+ 3 files changed, 2 insertions(+), 22 deletions(-)
+
+diff --git a/client.go b/client.go
+index dcbad5d..8b822ce 100644
+--- a/client.go
++++ b/client.go
+@@ -313,7 +313,7 @@ func NewClient(deviceStore *store.Device, log waLog.Logger) *Client {
+ 	cli.paired.Store(deviceStore.ID != nil)
+ 	cli.nodeHandlers = map[string]nodeHandler{
+ 		"message":      cli.handleEncryptedMessage,
+-		"status":       cli.handleUnencryptedMessage,
++		"status":       cli.handleEncryptedMessage,
+ 		"appdata":      cli.handleEncryptedMessage,
+ 		"receipt":      cli.handleReceipt,
+ 		"call":         cli.handleCallEvent,
+diff --git a/internals.go b/internals.go
+index d9ce814..da34129 100644
+--- a/internals.go
++++ b/internals.go
+@@ -319,10 +319,6 @@ func (int *DangerousInternalClient) HandleEncryptedMessage(ctx context.Context,
+ 	int.c.handleEncryptedMessage(ctx, node)
+ }
+ 
+-func (int *DangerousInternalClient) HandleUnencryptedMessage(ctx context.Context, node *waBinary.Node) {
+-	int.c.handleUnencryptedMessage(ctx, node)
+-}
+-
+ func (int *DangerousInternalClient) ParseMessageSource(node *waBinary.Node, requireParticipant bool) (source types.MessageSource, err error) {
+ 	return int.c.parseMessageSource(node, requireParticipant)
+ }
+diff --git a/message.go b/message.go
+index 98e97f6..1e3306c 100644
+--- a/message.go
++++ b/message.go
+@@ -60,6 +60,7 @@ func (cli *Client) handleEncryptedMessage(ctx context.Context, node *waBinary.No
+ 		go cli.updatePushName(ctx, info.Sender, info.SenderAlt, info, info.PushName)
+ 	}
+ 	if info.Sender.Server == types.NewsletterServer {
++		info.IsNewsletterStatus = node.Tag == "status"
+ 		var cancelled bool
+ 		defer cli.maybeDeferredAck(ctx, node)(&cancelled)
+ 		cancelled = cli.handlePlaintextMessage(ctx, info, node)
+@@ -68,23 +69,6 @@ func (cli *Client) handleEncryptedMessage(ctx context.Context, node *waBinary.No
+ 	}
+ }
+ 
+-func (cli *Client) handleUnencryptedMessage(ctx context.Context, node *waBinary.Node) {
+-	info, err := cli.parseMessageInfo(node)
+-	if err != nil {
+-		cli.Log.Warnf("Failed to parse message: %v", err)
+-		cli.sendAck(ctx, node, NackParsingError)
+-		return
+-	}
+-	if info.Sender.Server != types.NewsletterServer {
+-		cli.sendAck(ctx, node, 0)
+-		return
+-	}
+-	info.IsNewsletterStatus = true
+-	var cancelled bool
+-	defer cli.maybeDeferredAck(ctx, node)(&cancelled)
+-	cancelled = cli.handlePlaintextMessage(ctx, info, node)
+-}
+-
+ func (cli *Client) parseMessageSource(node *waBinary.Node, requireParticipant bool) (source types.MessageSource, err error) {
+ 	clientID := cli.getOwnID()
+ 	clientLID := cli.getOwnLID()
+-- 
+2.47.3
+

@@ -1,0 +1,14 @@
+[Unit]
+Description=matrix-spike: the small language model the calendar judge asks (llama.cpp, 127.0.0.1:29332)
+
+[Service]
+# llama.cpp's CPU build and Qwen3 4B Instruct 2507 (Q4_K_M) in ~/.local/share/weft-when: see server/when/setup.sh.
+ExecStart=%h/.local/share/weft-when/llama/llama-server -m %h/.local/share/weft-when/models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf \
+    --host 127.0.0.1 --port 29332 --ctx-size 2048 --parallel 1 --threads 6 --no-webui
+Nice=10
+Restart=always
+RestartSec=10
+MemoryMax=4G
+
+[Install]
+WantedBy=default.target

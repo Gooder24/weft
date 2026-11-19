@@ -1,0 +1,346 @@
+diff --git a/provisioning.go b/provisioning.go
+index c9ff3ab..b594c9e 100644
+--- a/provisioning.go
++++ b/provisioning.go
+@@ -72,6 +72,10 @@ func newProvisioningAPI(br *DiscordBridge) *ProvisioningAPI {
+ 	r.HandleFunc("/v1/guilds/{guildID}", p.guildsBridge).Methods(http.MethodPost)
+ 	r.HandleFunc("/v1/guilds/{guildID}", p.guildsUnbridge).Methods(http.MethodDelete)
+ 
++	// Weft (weft.go): read-only.
++	r.HandleFunc("/v1/account", p.weftAccount).Methods(http.MethodGet)
++	r.HandleFunc("/v1/contacts", p.weftContacts).Methods(http.MethodGet)
++
+ 	if p.bridge.Config.Bridge.Provisioning.DebugEndpoints {
+ 		p.log.Debugln("Enabling debug API at /debug")
+ 		r := p.bridge.AS.Router.PathPrefix("/debug").Subrouter()
+diff --git a/user.go b/user.go
+index 8c0d6ec..31396a2 100644
+--- a/user.go
++++ b/user.go
+@@ -628,7 +628,11 @@ func (user *User) Connect() error {
+ 	if !session.IsUser {
+ 		session.Identify.Intents = BotIntents
+ 	}
+-	session.EventHandler = user.eventHandlerSync
++	user.weftUse(session) // Weft (weft.go): only this session's events count from now
++	session.EventHandler = func(evt any) {
++		user.weftEvent(session, evt) // Weft (weft.go): in this session's order, before the bridge
++		user.eventHandlerSync(evt)
++	}
+ 
+ 	if session.IsUser {
+ 		err = session.LoadMainPage(context.TODO())
+diff --git a/weft.go b/weft.go
+new file mode 100644
+index 0000000..0eab740
+--- /dev/null
++++ b/weft.go
+@@ -0,0 +1,228 @@
++package main
++
++// Weft's read-only additions to the legacy Discord bridge (DISCORD-PLAN.md, phase 1). Everything here answers from
++// what the bridge already holds in memory or in its database: no request goes to Discord.
++//
++//	GET /v1/account   whether the friend list is known yet, the account's current required action, and what this
++//	                  bridge can do for Weft (writes and member search: never in this build)
++//	GET /v1/contacts  friends, friend requests, blocked people and the other person of each DM, with the friendship
++//	                  and the DM channel and room, if any; 503 until the gateway's READY brought the friend list
++
++import (
++	"net/http"
++	"sort"
++	"sync"
++
++	"github.com/bwmarrin/discordgo"
++	"maunium.net/go/mautrix/id"
++
++	"go.mau.fi/mautrix-discord/database"
++)
++
++// weftState is Weft's own view of one Discord session: what its READY said and the friendship events that came
++// after it on the same session, in the gateway's order (weftEvent runs synchronously in the session's event
++// loop). The bridge's own relationships map is updated from goroutines and from every session, so it is not used.
++type weftState struct {
++	sync.RWMutex
++	session        *discordgo.Session
++	account        string // the Discord account READY was for
++	requiredAction string
++	rel            map[string]discordgo.RelationshipType
++	users          map[string]*discordgo.User // people READY named (friends among them), for their names
++}
++
++var weftStates sync.Map // *User -> *weftState
++
++func (user *User) weft() *weftState {
++	s, _ := weftStates.LoadOrStore(user, &weftState{})
++	return s.(*weftState)
++}
++
++// weftUse: the bridge is about to open `session` (connect, before it can send anything); from now on only its
++// events count, whatever an older session still delivers.
++func (user *User) weftUse(session *discordgo.Session) {
++	s := user.weft()
++	s.Lock()
++	defer s.Unlock()
++	s.session, s.account, s.requiredAction, s.rel, s.users = session, "", "", nil, nil
++}
++
++// weftEvent: called for every event of `session` before the bridge handles it. Events of any session but the one
++// weftUse named are dropped; its READY starts the view over, later events change it.
++func (user *User) weftEvent(session *discordgo.Session, evt any) {
++	s := user.weft()
++	s.Lock()
++	defer s.Unlock()
++	if session != s.session {
++		return
++	}
++	if r, ok := evt.(*discordgo.Ready); ok {
++		s.account, s.requiredAction = "", string(r.RequiredAction)
++		if r.User != nil {
++			s.account = r.User.ID
++		}
++		s.rel = make(map[string]discordgo.RelationshipType, len(r.Relationships))
++		for _, x := range r.Relationships {
++			if x != nil {
++				s.rel[x.ID] = x.Type
++			}
++		}
++		s.users = make(map[string]*discordgo.User, len(r.Users))
++		for _, u := range r.Users {
++			if u != nil {
++				s.users[u.ID] = u
++			}
++		}
++		return
++	}
++	if s.rel == nil {
++		return
++	}
++	switch e := evt.(type) {
++	case *discordgo.RelationshipAdd:
++		if e.Relationship != nil {
++			s.rel[e.ID] = e.Type
++		}
++	case *discordgo.RelationshipUpdate:
++		if e.Relationship != nil {
++			s.rel[e.ID] = e.Type
++		}
++	case *discordgo.RelationshipRemove:
++		if e.Relationship != nil {
++			delete(s.rel, e.ID)
++		}
++	case *discordgo.UserRequiredActionUpdate:
++		s.requiredAction = string(e.RequiredAction)
++	}
++}
++
++// weftNow: the view, when it belongs to the bridge's current session (its READY names the account; DiscordID is
++// not read: readyHandler writes it under another lock); ok=false while a login, logout or reconnect is under way.
++func (user *User) weftNow() (account, action string, rel map[string]string, users map[string]*discordgo.User, ok bool) {
++	user.Lock()
++	current := user.Session
++	user.Unlock()
++	s := user.weft()
++	s.RLock()
++	defer s.RUnlock()
++	if s.session == nil || s.session != current || s.account == "" {
++		return "", s.requiredAction, nil, nil, false
++	}
++	rel = make(map[string]string, len(s.rel))
++	for uid, t := range s.rel {
++		if kind, known := weftRelationships[t]; known {
++			rel[uid] = kind
++		}
++	}
++	users = make(map[string]*discordgo.User, len(s.users))
++	for uid, u := range s.users {
++		users[uid] = u
++	}
++	return s.account, s.requiredAction, rel, users, true
++}
++
++type weftAccount struct {
++	Connected          bool   `json:"connected"`
++	RelationshipsReady bool   `json:"relationships_ready"`
++	RequiredAction     string `json:"required_action"`
++	Writes             bool   `json:"writes"`
++	MemberSearch       bool   `json:"member_search"`
++}
++
++func (p *ProvisioningAPI) weftAccount(w http.ResponseWriter, r *http.Request) {
++	user := r.Context().Value("user").(*User)
++	_, action, _, _, ok := user.weftNow()
++	jsonResponse(w, http.StatusOK, weftAccount{Connected: user.Connected(), RelationshipsReady: ok, RequiredAction: action})
++}
++
++type weftContact struct {
++	ID           string    `json:"id"`
++	Name         string    `json:"name"`
++	Username     string    `json:"username,omitempty"`
++	AvatarURL    string    `json:"avatar_url,omitempty"`
++	Bot          bool      `json:"bot,omitempty"`
++	Relationship string    `json:"relationship"` // friend | outgoing | incoming | blocked | none
++	DMChannel    string    `json:"dm_channel,omitempty"`
++	DMRoomMXID   id.RoomID `json:"dm_room_mxid,omitempty"`
++}
++
++var weftRelationships = map[discordgo.RelationshipType]string{
++	discordgo.RelationshipFriend:                "friend",
++	discordgo.RelationshipBlocked:               "blocked",
++	discordgo.RelationshipIncomingFriendRequest: "incoming",
++	discordgo.RelationshipOutgoingFriendRequest: "outgoing",
++}
++
++func (p *ProvisioningAPI) weftContacts(w http.ResponseWriter, r *http.Request) {
++	user := r.Context().Value("user").(*User)
++	account, _, rel, users, ok := user.weftNow()
++	if !ok {
++		// Never read as "not a friend": the list is simply not known yet.
++		jsonResponse(w, http.StatusServiceUnavailable, Error{Error: "Discord has not sent the friend list yet", ErrCode: "FI.MAU.DISCORD.NOT_READY"})
++		return
++	}
++	list := weftContactList(rel, p.bridge.DB.Portal.FindPrivateChatsOf(account), p.bridge.DB.Puppet.Get, users)
++	jsonResponse(w, http.StatusOK, map[string]any{"contacts": list})
++}
++
++// weftContactList: everyone with a friendship state or a one-to-one DM, each once, by name.
++func weftContactList(rel map[string]string, portals []*database.Portal, puppet func(string) *database.Puppet, users map[string]*discordgo.User) []*weftContact {
++	out := map[string]*weftContact{}
++	add := func(uid string) *weftContact {
++		if c, ok := out[uid]; ok {
++			return c
++		}
++		c := &weftContact{ID: uid, Relationship: "none"}
++		if kind, ok := rel[uid]; ok {
++			c.Relationship = kind
++		}
++		out[uid] = c
++		return c
++	}
++	for uid := range rel {
++		add(uid)
++	}
++	// One-to-one DMs only (a group has no single other person).
++	for _, portal := range portals {
++		if portal.Type != discordgo.ChannelTypeDM || portal.OtherUserID == "" {
++			continue
++		}
++		c := add(portal.OtherUserID)
++		c.DMChannel = portal.Key.ChannelID
++		c.DMRoomMXID = portal.MXID
++	}
++	list := make([]*weftContact, 0, len(out))
++	for uid, c := range out {
++		weftName(c, puppet(uid), users[uid])
++		list = append(list, c)
++	}
++	sort.Slice(list, func(i, j int) bool {
++		return list[i].Name < list[j].Name || (list[i].Name == list[j].Name && list[i].ID < list[j].ID)
++	})
++	return list
++}
++
++// weftName: the bridge's ghost when it has one (read only: GetPuppetByID would create it), else READY's user.
++func weftName(c *weftContact, puppet *database.Puppet, u *discordgo.User) {
++	if puppet != nil {
++		c.Name, c.Username, c.Bot = puppet.Name, puppet.Username, puppet.IsBot
++		if !puppet.AvatarURL.IsEmpty() {
++			c.AvatarURL = puppet.AvatarURL.String()
++		}
++		if c.Name == "" {
++			c.Name = puppet.GlobalName
++		}
++	}
++	if u != nil {
++		if c.Username == "" {
++			c.Username = u.Username
++		}
++		if c.Name == "" {
++			c.Name = u.GlobalName
++		}
++		c.Bot = c.Bot || u.Bot
++	}
++	if c.Name == "" {
++		c.Name = c.Username
++	}
++}
+diff --git a/weft_test.go b/weft_test.go
+new file mode 100644
+index 0000000..151d71d
+--- /dev/null
++++ b/weft_test.go
+@@ -0,0 +1,74 @@
++package main
++
++import (
++	"testing"
++
++	"github.com/bwmarrin/discordgo"
++
++	"go.mau.fi/mautrix-discord/database"
++)
++
++func TestWeftContactList(t *testing.T) {
++	rel := map[string]string{"f1": "friend", "o1": "outgoing", "b1": "blocked"}
++	portals := []*database.Portal{
++		{Key: database.PortalKey{ChannelID: "c1", Receiver: "me"}, Type: discordgo.ChannelTypeDM, OtherUserID: "f1", MXID: "!room1"},
++		{Key: database.PortalKey{ChannelID: "c2", Receiver: "me"}, Type: discordgo.ChannelTypeDM, OtherUserID: "s1"},
++		{Key: database.PortalKey{ChannelID: "g1", Receiver: "me"}, Type: discordgo.ChannelTypeGroupDM},
++	}
++	puppets := map[string]*database.Puppet{"f1": {ID: "f1", Name: "Friend", Username: "friend"}, "s1": {ID: "s1", GlobalName: "Stranger", Username: "stranger", IsBot: false}}
++	users := map[string]*discordgo.User{"o1": {ID: "o1", Username: "out", GlobalName: "Outgoing"}}
++	list := weftContactList(rel, portals, func(id string) *database.Puppet { return puppets[id] }, users)
++	got := map[string]*weftContact{}
++	for _, c := range list {
++		if got[c.ID] != nil {
++			t.Fatalf("%s twice", c.ID)
++		}
++		got[c.ID] = c
++	}
++	if len(got) != 4 {
++		t.Fatalf("want f1, o1, b1, s1; got %v", got)
++	}
++	if c := got["f1"]; c.Relationship != "friend" || c.DMChannel != "c1" || c.DMRoomMXID != "!room1" || c.Name != "Friend" {
++		t.Errorf("friend with a bridged DM: %+v", c)
++	}
++	if c := got["s1"]; c.Relationship != "none" || c.DMChannel != "c2" || c.DMRoomMXID != "" || c.Name != "Stranger" {
++		t.Errorf("non-friend with an unbridged DM: %+v", c)
++	}
++	if c := got["o1"]; c.Relationship != "outgoing" || c.Name != "Outgoing" || c.DMChannel != "" {
++		t.Errorf("outgoing request without DM, named from READY: %+v", c)
++	}
++	if c := got["b1"]; c.Relationship != "blocked" || c.Name != "" {
++		t.Errorf("blocked, unknown name: %+v", c)
++	}
++}
++
++func TestWeftEventKeepsOneSession(t *testing.T) {
++	user := &User{User: &database.User{}}
++	old, cur := &discordgo.Session{}, &discordgo.Session{}
++	ready := func(account string, rel ...*discordgo.Relationship) *discordgo.Ready {
++		return &discordgo.Ready{User: &discordgo.User{ID: account}, Relationships: rel}
++	}
++	user.weftUse(old)
++	user.weftEvent(old, ready("a1", &discordgo.Relationship{ID: "x", Type: discordgo.RelationshipFriend}))
++	user.weftUse(cur)
++	user.weftEvent(cur, ready("a2", &discordgo.Relationship{ID: "y", Type: discordgo.RelationshipFriend}))
++	// A late READY or event of the old session after the new one changes nothing.
++	user.weftEvent(old, &discordgo.Ready{User: &discordgo.User{ID: "a1"}, RequiredAction: "old"})
++	user.weftEvent(old, &discordgo.RelationshipAdd{Relationship: &discordgo.Relationship{ID: "x", Type: discordgo.RelationshipFriend}})
++	user.weftEvent(old, &discordgo.RelationshipRemove{Relationship: &discordgo.Relationship{ID: "y"}})
++	user.weftEvent(cur, &discordgo.RelationshipAdd{Relationship: &discordgo.Relationship{ID: "z", Type: discordgo.RelationshipOutgoingFriendRequest}})
++	user.weftEvent(cur, &discordgo.UserRequiredActionUpdate{RequiredAction: "x"})
++	s := user.weft()
++	if s.account != "a2" || len(s.rel) != 2 || s.rel["y"] != discordgo.RelationshipFriend || s.rel["z"] != discordgo.RelationshipOutgoingFriendRequest {
++		t.Fatalf("view mixes sessions: account %s rel %v", s.account, s.rel)
++	}
++	// Not the bridge's current session or account: not known.
++	user.Session, user.DiscordID = old, "a2"
++	if _, _, _, _, ok := user.weftNow(); ok {
++		t.Error("an old session must not answer")
++	}
++	user.Session, user.DiscordID = cur, "a2"
++	if account, action, rel, _, ok := user.weftNow(); !ok || account != "a2" || action != "x" || rel["y"] != "friend" || rel["z"] != "outgoing" {
++		t.Errorf("current view: %v %v %v %v", ok, account, action, rel)
++	}
++}

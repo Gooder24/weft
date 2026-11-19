@@ -1,0 +1,15 @@
+[Unit]
+Description=matrix-spike: Weft's reply relay (a picture of an awaited answer, as a draft for a friend)
+After=matrix-spike-homeserver.service
+Requires=matrix-spike-homeserver.service
+
+[Service]
+WorkingDirectory=%h/matrix-spike/relay
+ExecStart=/usr/bin/python3 -u %h/matrix-spike/relay/relay.py
+Restart=always
+RestartSec=5
+# Chromium runs only while a picture is drawn; the service itself is a small Python loop.
+MemoryMax=900M
+
+[Install]
+WantedBy=default.target

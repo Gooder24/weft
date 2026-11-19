@@ -1,0 +1,14 @@
+[Unit]
+Description=matrix-spike: Weft's judge for calendar suggestions (/_when/)
+After=matrix-spike-homeserver.service matrix-spike-when-llm.service
+
+[Service]
+WorkingDirectory=%h/matrix-spike/when
+EnvironmentFile=%h/.config/weft/weft.env
+ExecStart=/usr/bin/python3 -I -u %h/matrix-spike/when/judge.py
+Restart=always
+RestartSec=5
+MemoryMax=64M
+
+[Install]
+WantedBy=default.target

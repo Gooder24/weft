@@ -1,0 +1,17 @@
+[Unit]
+Description=Weft: move Gmail Promotions and Social to Trash
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=STATE_DIR=%h/matrix-spike/gmail/state
+ExecStart=/usr/bin/python3 -I -u %h/matrix-spike/gmail/cleanup.py --apply
+UMask=0077
+MemoryMax=64M
+TimeoutStartSec=15min
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/matrix-spike/gmail/state

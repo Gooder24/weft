@@ -1,0 +1,13 @@
+[Unit]
+Description=Weft read-only Gmail history import
+After=matrix-spike-archive.service
+
+[Service]
+ExecStart=/usr/bin/python3 -I -u %h/matrix-spike/gmail/import_mail.py
+Restart=on-failure
+RestartSec=60
+MemoryMax=384M
+Nice=10
+
+[Install]
+WantedBy=default.target
