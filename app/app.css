@@ -487,7 +487,8 @@ kbd { margin-left: auto; font-family: inherit; font-size: var(--fs); color: var(
 .mthumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .mthumb.on { outline: 2px solid var(--accent); outline-offset: -2px; }
 .mthumb.on img { opacity: .85; }
-.mthumb .play { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--media-text); }
+.mthumb .play { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
+.mthumb .play svg { padding: 2px; border-radius: var(--radius-s); background: var(--page); color: var(--text); }
 .mfile { border: 0; background: none; color: inherit; font: inherit; text-decoration: underline; cursor: pointer; padding: 0; text-align: left; }
 .mfile svg { margin-right: 4px; vertical-align: -7px; }
 /* Poll: each answer is a row whose tinted bar is its share of the voters; Karchi's own answers are bold. */
