@@ -1579,6 +1579,15 @@ function firstNew(r, count, receipt) {
   return { room: r.id, event: ev?.event_id, receipt, count, short: !read && mine < 0 && count > others.length && !r.matrixDone };
 }
 
+/** The bridge filling in media Weft asked for (a reel's video, a shared post's photos): the same sender replaces
+ *  a picture that waited for it with a picture or video. No news, so it never waits for a reading window. */
+function mediaFillIn(r, ev) {
+  const orig = r.events.get(ev.content['m.relates_to'].event_id);
+  const next = ev.content['m.new_content'];
+  return !!(orig?.content?.['com.beeper.unresolved_media'] && orig.sender === ev.sender && ev.content['com.beeper.dont_render_edited']
+    && ['m.image', 'm.video'].includes(next?.msgtype) && next.body === orig.content.body);
+}
+
 /** Messages of a room with edits, reactions and deletions applied; cached per room version. */
 function roomModel(r) {
   const cut = roomCut(r);
@@ -1600,8 +1609,7 @@ function roomModel(r) {
     const isMessage = ev.type === 'm.room.message' || POLL_START.includes(ev.type);
     // Others' reactions, votes and edits wait for the batch too; their messages are counted and left out below.
     if (!isMessage && ev.type !== 'm.sticker' && ev.type !== 'm.room.member' && ev.type !== 'm.room.redaction' && isHeld(ev, cut)) continue;
-    // A bridge filling in media Weft asked for (a reel's video, a post's photos) is no news: it never waits.
-    if (isMessage && ev.content?.['m.relates_to']?.rel_type === 'm.replace' && !ev.content['com.beeper.dont_render_edited'] && isHeld(ev, cut)) continue;
+    if (isMessage && ev.content?.['m.relates_to']?.rel_type === 'm.replace' && !mediaFillIn(r, ev) && isHeld(ev, cut)) continue;
     if (redacted.has(ev.event_id) && !isMessage) continue;
     const rel = ev.content?.['m.relates_to'];
     if (ev.type === 'm.reaction') {
@@ -5282,7 +5290,7 @@ function bubbleBody(r, m, ev) {
     const url = media(c.url);
     const thumb = media(c.info?.thumbnail_url, 480);
     return [h('button', { class: 'mimg gifv', style: size(c.info), onclick: view },
-      url ? gifVideo(ev.event_id, url) : thumb ? h('img', { src: thumb, alt: '' }) : null), caption, shared];
+      url ? gifVideo(ev.event_id, url) : thumb ? h('img', { src: thumb, alt: '' }) : null), carouselStrip(r, ev, c), caption, shared];
   }
   if (c.msgtype === 'm.video') {
     const thumb = media(c.info?.thumbnail_url, 480);
@@ -5290,7 +5298,7 @@ function bubbleBody(r, m, ev) {
     const still = !c.info?.thumbnail_url && (c.info?.size || 0) <= 25e6 ? media(c.url) : '';
     return [h('button', { class: 'mimg video', style: size(c.info), onclick: view },
       thumb ? h('img', { src: thumb, alt: '' }) : still ? videoStill(ev.event_id, still) : null,
-      h('span', { class: 'play' }, icon('play', 48))), caption, shared];
+      h('span', { class: 'play' }, icon('play', 48))), carouselStrip(r, ev, c), caption, shared];
   }
   const poll = pollIn(ev, c);
   if (poll) return pollView(r, m, ev, poll);
@@ -5927,7 +5935,8 @@ function carouselStrip(r, ev, c) {
   return h('div', { class: 'mcarousel' }, items.map((it, n) => h('button', {
     class: `mthumb${it.content.url === c.url ? ' on' : ''}`, 'data-key': it.event_id, title: T`${n + 1} z ${items.length}`,
     onclick: (e) => { e.stopPropagation(); openViewer(r, it.event_id); },
-  }, mediaInPlace(it.content.msgtype === 'm.video' ? it.content.info?.thumbnail_url : it.content.url, 96, (url) => h('img', { src: url, alt: '' }), () => h('span', { class: 'mwait' })),
+  }, it.content.msgtype === 'm.video' && !it.content.info?.thumbnail_url ? null
+    : mediaInPlace(it.content.msgtype === 'm.video' ? it.content.info.thumbnail_url : it.content.url, 96, (url) => h('img', { src: url, alt: '' }), () => h('span', { class: 'mwait' })),
   it.content.msgtype === 'm.video' ? h('span', { class: 'play' }, icon('play')) : null)));
 }
 const openViewer = (r, eventId) => openOverlay('image', { room: r.id, event: eventId, zoom: 1, x: 0, y: 0 });
