@@ -8135,8 +8135,9 @@ function onePerPerson(rows, app, merged, query = '') {
     seen.add(g.id);
     // The name that matched, when the merged row's own title does not match the query without a typo („zorka“ finds
     // Zora through her Messenger chat „Zorka …“). Only a search hit has a rank.
+    // Never the row's own title again („Ján Novák | Ján Novák“ when a typo found him through a chat of that name).
     const matched = x.rank === undefined || nameScore(e.title, query) >= 0 ? '' : x.person || x.e.title;
-    return [{ ...x, e, person: matched }];
+    return [{ ...x, e, person: matched && norm(bareName(matched)) !== norm(bareName(e.title)) ? matched : '' }];
   });
 }
 
