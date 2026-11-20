@@ -163,7 +163,7 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   service as `stash-<id>`: it sends with one device and that id as the transaction id, so presses on several devices
   send it once. The window keeps its hand-over (localStorage `ep_stash_send:<user>`) and writes it again while the list
   lacks it (another window may overwrite the list); the draft shows „odosiela sa…“ and leaves only once the list says
-  sent, a refused one stays with a note. The inbox row says „odložené N“. Checks: `overenie/stash/two.cjs` (two browser contexts against the
+  sent (in every window, also when the window that sent it is closed), a refused one stays with a note. The inbox row says „odložené N“. Checks: `overenie/stash/two.cjs` (two browser contexts against the
   fake homeserver `overenie/stash/fakehs.py`), `overenie/stash/send_once.py` (a throwaway Tuwunel).
 - Old Discord messages (collect_history.py, GET only: the guild in `WEFT_DISCORD_GUILD` with DMs, another with `--guild ID --no-dms`) keep
   their attachments as rows without a file; the archive downloads one into `media/discord/` when Weft's file button
