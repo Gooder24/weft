@@ -3243,34 +3243,26 @@ function forwardPickView(o) {
 /** Sends the copy into `to` as Karchi's own message; the chat it came from says where it went, and a copy that did
  *  not go stays in `to` as „neodoslané“ with „Znova odoslať“. */
 async function forwardTo(from, to, content) {
-  // What `to` holds of the same text already (forwarded before) is not this copy.
-  const before = new Set(forwardCopies(to, content).map((ev) => ev.event_id));
-  const note = { id: txnId(), from: from.id, to: to.id, content, before, at: Date.now() };
-  // The same message again to the same chat: one note, about the newest try (the copies cannot be told apart).
-  S.forwards = [...(S.forwards || []).filter((x) => !(x.from === from.id && x.to === to.id && forwardSig(x.content) === forwardSig(content))), note];
-  await sendAgain(to, 'm.room.message', content, async () => content);
+  const note = { id: txnId(), from: from.id, to: to.id, content, state: 'sending' };
+  S.forwards = [...(S.forwards || []), note];
+  const sending = sendAgain(to, 'm.room.message', content, async () => content);
+  note.txn = [...to.pending.values()].find((x) => x.content === content)?.event_id; // sendAgain's bubble, made at once
+  await sending;
   render();
 }
-/** What a message says, for telling a forwarded copy: the outbox and a retry keep copies of the content, and the
- *  server's echo is another object, so copies are compared by text and file. */
-const forwardSig = (c) => `${c?.msgtype}|${c?.body}|${c?.url || c?.file?.url || ''}`;
-/** Karchi's bubbles and messages in `r` that say what `content` says. */
-function forwardCopies(r, content) {
-  const want = forwardSig(content);
-  return [...(r?.pending.values() || []), ...(r?.events.values() || [])].filter((ev) => ev.sender === S.userId && forwardSig(ev.content) === want);
-}
-/** Where a forwarded copy is now: its bubble still on its way, or a message on the server (sent). Neither: it was
- *  dropped, so it did not go. */
+/** Follows the copy's own bubble in `to` by its transaction id (the outbox keeps it; „Znova odoslať“ makes a new
+ *  bubble with the same content object). A bubble that leaves after it was on its way went out; one that leaves after
+ *  it failed was dropped („Zahodiť“), so it did not go. */
 function forwardState(it) {
   const r = S.rooms.get(it.to);
-  const mine = forwardCopies(r, it.content).filter((ev) => !it.before.has(ev.event_id));
-  const p = mine.findLast((ev) => r.pending.has(ev.event_id));
-  if (p) return p.failed ? 'failed' : p.waiting ? 'waiting' : 'sending';
-  // Older history paged in later is not this copy; a minute's slack for the server's clock.
-  return mine.some((ev) => ev.event_id.startsWith('$') && ev.origin_server_ts >= it.at - 60e3) ? 'sent' : 'failed';
+  const p = r?.pending.get(it.txn) || [...(r?.pending.values() || [])].find((x) => x.content === it.content);
+  if (p) { it.txn = p.event_id; it.state = p.failed ? 'failed' : p.waiting ? 'waiting' : 'sending'; }
+  else if (it.state !== 'failed') it.state = 'sent';
+  return it.state;
 }
 /** Over the message box, in sight wherever the chat is scrolled: where a forwarded message went, or that it did not. */
 function forwardBar(rooms) {
+  for (const it of S.forwards || []) forwardState(it); // every note follows its copy, also while its chat is not open
   const ids = new Set(rooms.map((x) => x.id));
   const notes = (S.forwards || []).filter((it) => ids.has(it.from)).map((it) => {
     const to = S.rooms.get(it.to);
