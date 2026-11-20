@@ -8080,12 +8080,12 @@ function searchResults(o) {
   chats.sort((a, b) => a.rank - b.rank); // stable: the newest first within a rank
   const shown = messages.slice(0, byMessage ? 60 : 30);
   for (const x of shown) x.sender = x.e.kind === 'room' ? memberName(x.e.room, x.ev.sender) : nameOf(x.ev.sender);
-  return [[T('Chaty'), onePerPerson(chats, f.app, base.merged, tokens).slice(0, 30)], [T('V skupinách'), groups.slice(0, 30)], [T('Správy'), shown]];
+  return [[T('Chaty'), onePerPerson(chats, f.app, base.merged, query).slice(0, 30)], [T('V skupinách'), groups.slice(0, 30)], [T('Správy'), shown]];
 }
 
 /** Chat results with a merged person's chats as one row, the merged chat, where its first chat came. Not with a
  *  network filter (`app`): then each chat is that network's. */
-function onePerPerson(rows, app, merged, tokens = []) {
+function onePerPerson(rows, app, merged, query = '') {
   if (app) return rows;
   const seen = new Set();
   return rows.flatMap((x) => {
@@ -8094,9 +8094,9 @@ function onePerPerson(rows, app, merged, tokens = []) {
     if (!e) return [x];
     if (seen.has(g.id)) return [];
     seen.add(g.id);
-    // The name that matched, when the merged row's own title does not match the query („zorka“ finds Zora through
-    // her Messenger chat „Zorka …“). Only a search hit has a rank.
-    const matched = x.rank === undefined || nameMatches(e.title, tokens) ? '' : x.person || x.e.title;
+    // The name that matched, when the merged row's own title does not match the query without a typo („zorka“ finds
+    // Zora through her Messenger chat „Zorka …“). Only a search hit has a rank.
+    const matched = x.rank === undefined || nameScore(e.title, query) >= 0 ? '' : x.person || x.e.title;
     return [{ ...x, e, person: matched }];
   });
 }
