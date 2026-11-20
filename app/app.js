@@ -596,6 +596,7 @@ function checkStash() {
   const keep = ops.filter((op) => !(op.ok && Date.now() - op.ok > RECHECK_MS && stashHas(server, op)));
   if (keep.length !== ops.length) saveStashOps(keep);
   adoptAgentDrafts();
+  checkStashSends();
   if (S.stashError && Date.now() - S.stashError.at < 60000) return;
   if (stashOps().some((op) => !stashHas(server, op))) flushStash();
 }
@@ -723,25 +724,62 @@ async function takeStashFiles(r, it) {
 /** „Poslať“: the item goes out now, beside whatever is in the box, once however many devices press it. A window's
  *  own send cannot promise that (each device has its own transaction ids), so the item goes to the send-later
  *  service: it sends with its one device and the item's id as the transaction id, and the homeserver lets one
- *  transaction id through once. Two devices hand over the same id, so a lost or repeated write changes nothing. */
-async function sendStashed(r, it) {
+ *  transaction id through once. Two devices hand over the same id, so a repeated write changes nothing. The service's
+ *  list is one blob another window may overwrite with an older copy, so the hand-over is kept (ep_stash_send) and
+ *  made again after every sync that lacks it, and the draft leaves the stash only once the service says it is sent. */
+function sendStashed(r, it) {
   const to = S.rooms.get(it.room) && liveChat(S.rooms.get(it.room)) ? S.rooms.get(it.room) : r;
   if (it.files?.length) return takeStashed(r, it); // files come down first: they go out from the box
-  if (S.editing?.room === r.id || !it.body.trim() || S.stashSending?.has(it.id)) return;
+  const sends = stashSends();
+  if (S.editing?.room === r.id || !it.body.trim() || sends[it.id]) return;
   const key = `stash:${it.id}`;
   if (it.picks?.length) picked.set(key, it.picks);
   let content;
   try { content = textMessage(to, it.body.trim(), 0, key); } finally { picked.delete(key); }
-  const id = `stash-${it.id}`;
-  (S.stashSending ||= new Set()).add(it.id);
-  render();
+  if (!saveStashSends({ ...sends, [it.id]: { id: `stash-${it.id}`, room: to.id, content, at: Date.now() } })) return;
   noteHeldReply(to);
-  await saveLater((list) => (list.some((x) => x.id === id) ? list : [...list, { id, room: to.id, at: Date.now(), seq: 0, content }]));
-  S.stashSending.delete(it.id);
-  if (!laterItems().some((x) => x.id === id)) return render(); // not handed over (saveLater said so): the draft stays
-  stashDo({ op: 'del', id: it.id });
-  if (S.stashSel === it.id) S.stashSel = null;
   render();
+  pushStashSends();
+}
+const stashSendsKey = () => `ep_stash_send:${S.userId}`;
+const stashSends = () => (S.userId ? readJson(stashSendsKey(), {}) : {});
+function saveStashSends(sends) {
+  try { localStorage.setItem(stashSendsKey(), JSON.stringify(sends)); return true; } catch { return false; }
+}
+let stashPushing = null;
+/** Puts every waiting hand-over on the service's list as it is on the server now (one failed before this press is
+ *  tried again, like its „Skúsiť znova“). */
+function pushStashSends() {
+  const sends = Object.values(stashSends());
+  if (!sends.length || stashPushing) return;
+  stashPushing = saveLater((list) => {
+    let out = list;
+    for (const s of sends) {
+      const x = out.find((y) => y.id === s.id);
+      if (!x) out = [...out, { id: s.id, room: s.room, at: s.at, seq: 0, content: s.content }];
+      else if (x.failed && x.failed < s.at) out = out.map((y) => (y === x ? { ...x, at: s.at, failed: undefined, error: undefined } : y));
+    }
+    return out;
+  }).finally(() => { stashPushing = null; });
+}
+/** After a sync: a sent hand-over takes its draft out of the stash, a refused one leaves it with the reason, one the
+ *  list lacks (another window wrote over it) is made again. Older than the service keeps its record: never again. */
+function checkStashSends() {
+  const sends = stashSends();
+  const ids = Object.keys(sends);
+  if (!ids.length) return;
+  const left = { ...sends };
+  let missing = false;
+  for (const sid of ids) {
+    const s = sends[sid];
+    const x = laterItems().find((y) => y.id === s.id);
+    if (x?.sent) { stashDo({ op: 'del', id: sid }); delete left[sid]; }
+    else if (x?.failed && x.failed >= s.at) { delete left[sid]; S.stashNote = { room: s.room, text: T`Koncept neodišiel (${x.error || '?'}), ostáva v Odložených.` }; }
+    else if (Date.now() - s.at > 6 * 864e5) delete left[sid];
+    else if (!x || (x.failed && x.failed < s.at)) missing = true;
+  }
+  if (Object.keys(left).length !== ids.length) { saveStashSends(left); render(); }
+  if (missing) pushStashSends();
 }
 /** Saves an edited item as a new one in its place; a window that changed the same item meanwhile keeps its version too. */
 function saveStashEdit(it, body) {
@@ -907,6 +945,7 @@ function stashRow(r, it, on) {
     it.twin ? T('iná verzia (upravené v dvoch oknách)') : '',
     it.remind > Date.now() && entryOf(it.room)?.remind ? T`pripomenie sa ${dayLabel(it.remind)} ${timeLabel(it.remind)}` : '',
     it.elsewhere ? T('medzitým zmenené v inom okne; uloží sa ako nový') : '',
+    stashSends()[it.id] ? T('odosiela sa…') : '',
     it.relay ? T`odpoveď z chatu ${it.relay.title || 'chat'}` : '',
     it.files?.length ? T`súbory: ${it.files.length}` : '',
     net ? T`cez ${net}` : '',
