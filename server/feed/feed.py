@@ -52,6 +52,7 @@ WEB_EVERY = int(os.environ.get('FEED_WEB_EVERY', '600'))
 X_API = os.environ.get('FEED_X_API', 'https://api.fxtwitter.com/2/profile/')
 YT_FEED = 'https://www.youtube.com/feeds/videos.xml?channel_id='
 X_MEDIA = ('pbs.twimg.com', 'video.twimg.com')
+X_PAUSE = 1.5  # seconds between FxTwitter tries
 DEFAULTS = {'sources': [], 'instagram': True, 'daily': True, 'limitOnce': True, 'hiddenStories': {}}
 
 
@@ -186,10 +187,16 @@ def youtube_channel(url):
     raise ValueError('YouTube channel not found')
 
 
-def x_posts(handle):
-    data = json.loads(public_bytes(X_API + urllib.parse.quote(handle) + '/statuses'))
-    if not isinstance(data, dict) or data.get('code') != 200 or not isinstance(data.get('results'), list): raise ValueError('X profile not found')
-    return data['results']
+def x_posts(handle, tries=3):
+    """FxTwitter now and then answers 404 or 5xx for an account that exists, so it is asked up to three times."""
+    for attempt in range(tries):
+        try:
+            data = json.loads(public_bytes(X_API + urllib.parse.quote(handle) + '/statuses'))
+            if isinstance(data, dict) and data.get('code') == 200 and isinstance(data.get('results'), list): return data['results']
+        except urllib.error.HTTPError as e:
+            if e.code not in (404, 429) and e.code < 500: raise
+        if attempt + 1 < tries: time.sleep(X_PAUSE)
+    raise ValueError('X profile not found')
 
 
 def x_items(source):
