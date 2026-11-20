@@ -1015,7 +1015,7 @@ export default {
   "Zelená": "Green",
   "Modrá": "Blue",
   "Oblá": "Round",
-  "List": "Leaf",
+  "Cíp": "Tip",
   "Hranatá": "Square",
   "Ideš zajtra?": "Coming tomorrow?",
   "Jasné, o piatej.": "Sure, at five.",

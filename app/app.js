@@ -11763,7 +11763,7 @@ function batchSettings() {
 const LOOK = 'sk.karchi.people.look';
 const LOOK_MODES = [['same', T('Rovnako')], ['color', T('Farba')], ['both', T('Farba a tvar')]];
 const LOOK_COLORS = [T('Červená'), T('Žltá'), T('Zelená'), T('Modrá')]; // .look-c0… in app.css
-const LOOK_SHAPES = [T('Oblá'), T('List'), T('Hranatá')]; // .look-s0…
+const LOOK_SHAPES = [T('Oblá'), T('Cíp'), T('Hranatá')]; // .look-s0…
 const lookData = () => S.account[LOOK] || {};
 const lookMode = () => (['color', 'both'].includes(lookData().mode) ? lookData().mode : 'same');
 function saveLook(data) {
@@ -11791,7 +11791,7 @@ function lookOwn(id) {
   const s = n ? lookHash(lookKey(id)) % n : 0;
   return { color: p.color ?? (n ? s % LOOK_COLORS.length : null), shape: p.shape ?? (lookMode() === 'both' ? Math.floor(s / LOOK_COLORS.length) : null), pickedColor: p.color != null, pickedShape: p.shape != null };
 }
-const lookClasses = (l) => `${l.color != null ? ` who look-c${l.color}` : ''}${l.shape ? ` look-s${l.shape}` : ''}`;
+const lookClasses = (l) => `${l.color != null ? ` tinted look-c${l.color}` : ''}${l.shape ? ` look-s${l.shape}` : ''}`;
 /** The classes of a person's look in a room ('' for Karchi and while all look alike). */
 function lookClass(r, user) {
   if (user === S.userId) return '';
@@ -11850,7 +11850,7 @@ function lookSettings() {
       both: T('Každý má svoju farbu aj tvar rohov správy, takže sa rozoznajú aj vo väčšej skupine.'),
     }[mode]),
     h('div', { class: 'lookdemo', 'aria-hidden': 'true' }, demo.map(([name, text], i) => {
-      const look = mode === 'same' ? '' : ` who look-c${i}${mode === 'both' && i ? ` look-s${i}` : ''}`;
+      const look = mode === 'same' ? '' : ` tinted look-c${i}${mode === 'both' && i ? ` look-s${i}` : ''}`;
       return h('div', { class: `msg${look}`, 'data-key': `${mode}${i}` }, h('div', { class: 'mname' }, name), h('div', { class: 'mrow' }, h('div', { class: 'bubble' }, text)));
     })),
   ];

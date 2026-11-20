@@ -790,15 +790,16 @@ a.rnote.rlink { color: var(--link); text-decoration: none; }
 .seg button.on { background: var(--accent); color: var(--accent-text); }
 .seg button:focus-visible { outline: var(--bw) solid var(--text); outline-offset: 0; }
 /* Ľudia v chate (Settings → Správy, the profile's „V správach“): a person's colour is their name and their bubble's
-   edge, drawn inside it so the bubble keeps its size and its text its contrast; the shape is the bubble's corners. */
+   edge, drawn inside it so the bubble keeps its size and its text its contrast; the shape is the bubble's corners:
+   round, a sharp tip toward the picture (Cíp), or square-ish. */
 .look-c0 { --who: var(--message); }
 .look-c1 { --who: var(--warning); }
 .look-c2 { --who: var(--notice); }
 .look-c3 { --who: var(--info); }
-.look-s1 { --corners: var(--radius-l) var(--radius-s); }
+.look-s1 { --corners: var(--radius-l) var(--radius-l) var(--radius-l) var(--bw); }
 .look-s2 { --corners: var(--radius-s); }
-.msg.who .mname { color: var(--who); }
-.msg.who .bubble:not(.sticker) { outline: var(--bw) solid var(--who); outline-offset: calc(-1 * var(--bw)); }
+.msg.tinted .mname { color: var(--who); }
+.msg.tinted .bubble:not(.sticker) { outline: var(--bw) solid var(--who); outline-offset: calc(-1 * var(--bw)); }
 .msg[class*='look-s'] .bubble:not(.sticker) { border-radius: var(--corners); }
 .lookdemo { display: flex; flex-direction: column; padding: 4px 0 2px; }
 .lookdemo .mname { margin-left: 0; }
@@ -806,7 +807,7 @@ a.rnote.rlink { color: var(--link); text-decoration: none; }
 .lookpick button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
 .swatch { flex: none; width: 10px; height: 10px; border-radius: 3px; background: var(--who); }
 .swatch.shape { width: 14px; border: var(--bw) solid currentColor; border-radius: 5px; background: none; }
-.swatch.shape.look-s1 { border-radius: 5px 1px; }
+.swatch.shape.look-s1 { border-radius: 5px 5px 5px 0; }
 .swatch.shape.look-s2 { border-radius: 1px; }
 .form .bline { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 10px 0 2px; color: var(--text); font-size: var(--fs); }
 .form .bline input { width: 62px; padding: 4px 6px; border-radius: var(--radius-s); text-align: center; }
