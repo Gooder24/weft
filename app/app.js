@@ -3191,6 +3191,79 @@ function relayBar(rooms) {
   });
 }
 
+// ------------------------------------------------------------------ forward: a message again, in another chat
+
+/** What forwarding `ev` sends: its text (as it reads now, without the quote it answers or mentions of this chat's
+ *  people) or its file (the same upload, no new one). null when it is nothing Weft can send again (a poll, a call). */
+function forwardContent(m, ev) {
+  if (ev.type !== 'm.room.message' || isRedacted(m, ev) || pollIn(ev, ev.content) || callOf(ev)) return null;
+  const c = contentOf(m, ev);
+  if (['m.text', 'm.notice', 'm.emote'].includes(c.msgtype)) {
+    const body = plainBody({ ...c, 'm.relates_to': ev.content?.['m.relates_to'] }).trim();
+    return body ? { msgtype: 'm.text', body } : null;
+  }
+  if (!['m.image', 'm.video', 'm.audio', 'm.file'].includes(c.msgtype) || !(c.url || c.file?.url)?.startsWith('mxc://')) return null;
+  const { msgtype, body, filename, info, url, file } = c;
+  return structuredClone(Object.fromEntries(Object.entries({ msgtype, body: body || filename || 'file', filename, info, url, file }).filter(([, v]) => v !== undefined)));
+}
+/** „Preposlať…“: asks which chat gets the message. */
+function openForward(r, ev) {
+  if (!forwardContent(roomModel(r), ev)) return;
+  openOverlay('forward', { room: r.id, event: ev.event_id });
+}
+/** Ctrl+J „Preposlať poslednú správu…“: the open chat's newest message that can go elsewhere, a merged chat's included. */
+function forwardLast(r) {
+  const t = timelineOf(r);
+  const ev = t.msgs.findLast((x) => !x.pending && forwardContent(roomModel(t.roomOf(x)), x));
+  if (ev) openForward(t.roomOf(ev), ev);
+}
+function forwardPickView(o) {
+  const from = S.rooms.get(o.room);
+  const ev = from && roomModel(from).byId.get(o.event);
+  const content = ev && forwardContent(roomModel(from), ev);
+  const words = norm(o.query).split(/\s+/).filter(Boolean);
+  const pool = [...S.rooms.values()].filter((x) => isChat(x) && !x.archiveOnly && x.id !== o.room && roomTitle(x))
+    .sort((a, b) => (roomModel(b).messages.at(-1)?.origin_server_ts || 0) - (roomModel(a).messages.at(-1)?.origin_server_ts || 0));
+  const list = pool.filter((x) => words.every((w) => norm(`${roomTitle(x)} ${appOf(x.app)?.name || ''}`).includes(w))).slice(0, 40);
+  o.flat = content ? list.map((x) => () => { S.overlay = null; forwardTo(from, x, content); }) : [];
+  if (o.index >= o.flat.length) o.index = 0;
+  const what = !content ? '' : content.msgtype === 'm.text' ? content.body.replace(/\s+/g, ' ') : content.body;
+  return [
+    cmdInput(o, T('Preposlať do… (meno)')),
+    h('div', { class: 'rsec fwdwhat' }, content ? (what.length > 80 ? `${what.slice(0, 80)}…` : what) : T('Táto správa sa nedá preposlať.')),
+    h('div', { class: 'results' }, list.length && content
+      ? list.map((x, i) => resultRow(o, null, i, [avatar(roomAvatar(x), roomTitle(x), 28),
+        h('div', { class: 'rmeta' }, h('b', {}, highlighted(roomTitle(x), o.query)), h('small', {}, appOf(x.app)?.name || 'Matrix')),
+        appOf(x.app) ? h('img', { class: 'rnet', src: appOf(x.app).icon, alt: '' }) : null]))
+      : content ? h('div', { class: 'empty' }, T('Taký chat sa nenašiel.')) : null),
+  ];
+}
+/** Sends the copy into `to` as Karchi's own message; the chat it came from says where it went, and a copy that did
+ *  not go stays in `to` as „neodoslané“ with „Znova odoslať“. */
+async function forwardTo(from, to, content) {
+  const note = { id: txnId(), from: from.id, to: to.id, state: 'sending' };
+  S.forwards = [...(S.forwards || []), note];
+  render();
+  await sendAgain(to, 'm.room.message', content, async () => content);
+  const left = [...to.pending.values()].find((p) => p.content === content);
+  note.state = !left ? 'sent' : left.failed ? 'failed' : 'waiting';
+  if (note.state === 'sent') setTimeout(() => { S.forwards = (S.forwards || []).filter((x) => x !== note); render(); }, 8000);
+  render();
+}
+/** Under the chat's last message: where a forwarded message went, or that it did not. */
+function forwardBar(rooms) {
+  const ids = new Set(rooms.map((x) => x.id));
+  return (S.forwards || []).filter((it) => ids.has(it.from)).map((it) => {
+    const to = S.rooms.get(it.to);
+    const name = to ? roomTitle(to) : 'chat';
+    const label = it.state === 'sending' ? T`Preposiela sa do chatu ${name}…` : it.state === 'sent' ? T`Preposlané do chatu ${name}`
+      : it.state === 'waiting' ? T`Preposlanie do chatu ${name} odíde, keď bude sieť` : T`Preposlanie do chatu ${name} neodišlo`;
+    return h('div', { class: `cnote relay${it.state === 'failed' ? ' failed' : ''}`, 'data-key': `fwd:${it.id}` }, label,
+      to ? h('button', { class: 'ghost', onclick: () => { S.forwards = S.forwards.filter((x) => x !== it); select(to.id); } }, T('Otvoriť')) : null,
+      h('button', { class: 'ghost', onclick: () => { S.forwards = S.forwards.filter((x) => x !== it); render(); } }, 'OK'));
+  });
+}
+
 /** Tells the network Karchi read the chat, as Beeper does when a chat is open. */
 function markRoomRead(r, force = false) {
   if (r?.archiveOnly || (preview() && !force)) return; // Karchi's own „Prečítané“ goes out at once
@@ -6861,6 +6934,7 @@ function msgActs(r, m, ev, mine) {
       class: 'qreply', title: T('Odpovedať (Ctrl+R)'),
       onclick: () => { writeIn(r); S.replyTo = { room: r.id, event: ev.event_id }; S.focusComposer = true; render(); },
     }, icon('undo')),
+    forwardContent(m, ev) ? h('button', { class: 'qfwd', title: T('Preposlať'), onclick: () => openForward(r, ev) }, icon('forward')) : null,
     mine ? h('button', { class: 'qmenu', title: canEdit(r, m, ev) || canDelete(r, m, ev) ? T('Upraviť, odstrániť, počkať na odpoveď') : T('Počkať na odpoveď'), onclick: (e) => openMsgMenu(e, r, ev) }, icon('more-horizontal')) : null);
 }
 
@@ -7028,7 +7102,8 @@ function msgMenuView(o) {
   const item = (glyph, label, key, fn, danger) => ctxItem(glyph, label, key, () => { S.overlay = null; render(); fn(); }, danger);
   return ctxMenu(o, [
     [canEdit(r, m, ev) ? item(icon('pencil'), T('Upraviť'), lastEditable(r) === ev ? '↑' : null, () => startEdit(r, ev)) : null,
-      ev.sender === S.userId && !r.archiveOnly ? item(icon('forward'), T('Keď odpíše, ukázať kamošovi…'), null, () => openRelay(r, ev)) : null,
+      !r.archiveOnly && forwardContent(m, ev) ? item(icon('forward'), T('Preposlať…'), null, () => openForward(r, ev)) : null,
+      ev.sender === S.userId && !r.archiveOnly ? item(icon('eye'), T('Keď odpíše, ukázať kamošovi…'), null, () => openRelay(r, ev)) : null,
       ev.sender !== S.userId && !isBot(ev.sender) && !dmPartner(r) ? item(icon('label'), T`Prezývka pre ${memberName(r, ev.sender)}…`, null, () => openNickFor([ev.sender], networkName(r, ev.sender))) : null],
     // The one thing that reaches other people and cannot be undone: last, apart, in the error colour.
     [canDelete(r, m, ev) ? item(icon('trash'), T('Odstrániť pre všetkých'), null, () => deleteMessage(r, ev), true) : null],
@@ -7215,6 +7290,7 @@ function chatView(r, e = null) {
   items.push(typingLine(t.parts, partner));
   for (const x of t.parts) items.push(...laterBubbles(x, roomModel(x)));
   items.push(...relayBar(t.parts));
+  items.push(...forwardBar(t.parts));
   pruneGifs(r);
   const group = !partner && joinedPeople(r).length > 0;
   const held = t.parts.reduce((sum, x) => sum + roomModel(x).held, 0);
@@ -9254,6 +9330,7 @@ function toolList() {
     [T('Upraviť svoju poslednú správu'), 'edit opravit', '↑', () => { const [lr, ev] = r ? lastEditableIn(r) : []; if (ev) startEdit(lr, ev); render(); }, !!r],
     [T('Nahrať hlasovku'), 'voice hlasova sprava audio nahravka mikrofon', 'Ctrl+Shift+A', toggleRecording, !!r],
     [T('Odoslať neskôr'), 'send later sendlater naplanovat', 'Ctrl+Shift+Enter', () => openLater(r), !!r],
+    [T('Preposlať poslednú správu…'), 'forward preposlat poslat dalej zdielat share', '', () => forwardLast(r), !!r],
     [T('Keď odpíše, ukázať odpoveď kamošovi…'), 'relay screenshot preposlat odpoved kamos cakam odpise obrazok', '', () => openRelay(r), !!r],
     [T('Poslať GIF'), 'gif klipy obrazok', '/gif', () => openGifs(r), !!r],
     ...(call ? [[callWhere(call.network), 'call hovor volat zavolat videohovor telefon video', '', () => openCall(r)]] : []),
@@ -9319,9 +9396,12 @@ function overlayView() {
   const live = o.kind === 'search' && document.querySelector('#app > .veil.search');
   if (live?._o === o) { if (!o.base || !sameSig(o.base.sig, searchSig())) searchRedrawSoon(o); return live; }
   const body = o.kind === 'search' ? searchView(o) : o.kind === 'new' ? newChatView(o) : o.kind === 'remind' ? remindView(o) : o.kind === 'stashask' ? stashAskView(o)
-    : o.kind === 'gif' ? gifView(o) : o.kind === 'emoji' ? emojiView(o) : o.kind === 'later' ? laterView(o) : o.kind === 'tools' ? toolsView(o) : o.kind === 'merge' ? mergePickView(o) : o.kind === 'relay' ? relayPickView(o) : o.kind === 'nick' ? nickView(o)
+    : o.kind === 'gif' ? gifView(o) : o.kind === 'emoji' ? emojiView(o) : o.kind === 'later' ? laterView(o) : o.kind === 'tools' ? toolsView(o) : o.kind === 'merge' ? mergePickView(o) : o.kind === 'relay' ? relayPickView(o) : o.kind === 'forward' ? forwardPickView(o) : o.kind === 'nick' ? nickView(o)
     : [h('div', { class: 'rsec' }, T('Klávesové skratky')), h('div', { class: 'results keys' }, SHORTCUTS.map(([k, label]) => h('div', { class: 'krow' }, h('kbd', {}, k), label)))];
-  const veil = h('div', { class: `veil${o.kind === 'search' || o.kind === 'tools' || o.kind === 'merge' || o.kind === 'relay' ? ' search' : ''}`, onclick: (e) => onVeil(e) && close() }, h('div', { class: `cmd ${o.kind}`, onclick: (e) => e.stopPropagation() },
+  // Pickers that send the open chat's message elsewhere stand over that chat, not over the inbox beside it.
+  const pane = (o.kind === 'forward' || o.kind === 'relay') && document.querySelector('#app .detail.chat')?.getBoundingClientRect();
+  const side = pane?.left > 0 && pane.width >= 360 ? { paddingLeft: `${Math.round(pane.left) + 16}px`, paddingRight: `${Math.max(0, Math.round(innerWidth - pane.right)) + 16}px` } : null;
+  const veil = h('div', { class: `veil${o.kind === 'search' || o.kind === 'tools' || o.kind === 'merge' || o.kind === 'relay' || o.kind === 'forward' ? ' search' : ''}${side ? ' overchat' : ''}`, style: side, onclick: (e) => onVeil(e) && close() }, h('div', { class: `cmd ${o.kind}`, onclick: (e) => e.stopPropagation() },
     h('button', { class: 'pclose', title: T('Zavrieť'), onclick: close }, icon('close')), body));
   if (o.kind === 'search') {
     veil._o = o;

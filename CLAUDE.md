@@ -130,6 +130,9 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   Instagram person's @username and a name for ghosts Meta never named (archive `GET /_archive/rooms/{room}/people`: the
   bridge's database, else the export's sender at the same millisecond), never an internal id. Checks:
   `overenie/mentions/run.sh`, `overenie/mentions-ui/` (`run.sh` before/after screenshots, `people_test.py`).
+- Forwarding („Preposlať“: the bar over a message, its ⋯ menu, Ctrl+J for the newest) sends a copy into a chat Karchi
+  picks as his own new message: text without the quote it answers or mentions, a file as the same upload. The picker,
+  like „Keď odpíše…“, stands over the open chat, not the inbox. Check: `overenie/forward/run.sh`.
 - A shared Instagram post or reel comes as its picture until Weft asks the bridge for it once in sight
   (`resolve_media`); a post with several photos or videos then lists them all in `com.beeper.meta.carousel`
   (`server/bridges/instagram-carousel.patch`, asus build/meta branch `weft-ig-carousel` on `weft-archive-ig`). The bubble
