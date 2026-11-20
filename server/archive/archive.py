@@ -676,7 +676,7 @@ def chats_body(c):
         key = (CHATS["gen"], *c.execute("SELECT (SELECT max(rowid) FROM messages), (SELECT count(*) FROM chats)").fetchone())
         if CHATS["key"] != key or time.monotonic() - CHATS["at"] > 60:
             raw = json.dumps({"chats": conversations(c)}, ensure_ascii=False).encode()
-            CHATS.update(key=key, at=time.monotonic(), raw=raw, gz=gzip.compress(raw, 6), tag=hashlib.sha256(raw).hexdigest()[:32])
+            CHATS.update(key=key, at=time.monotonic(), raw=raw, gz=gzip.compress(raw, 6, mtime=0), tag=hashlib.sha256(raw).hexdigest()[:32])
         return CHATS["raw"], CHATS["gz"], CHATS["tag"]
 
 
@@ -685,19 +685,20 @@ def chats_changed():
 
 
 def accepts_gzip(header):
-    """Whether an Accept-Encoding header allows gzip (a q=0 refuses it)."""
+    """Whether an Accept-Encoding header allows gzip: its own entry decides, else *; a q=0 refuses."""
+    q = {}
     for part in (header or "").lower().split(","):
         coding, *params = [x.strip() for x in part.split(";")]
-        if coding in ("gzip", "x-gzip", "*"):
-            q = next((p[2:] for p in params if p.startswith("q=")), "1")
-            try: return float(q) > 0
-            except ValueError: return False
-    return False
+        try: q.setdefault(coding, float(next((p[2:] for p in params if p.startswith("q=")), "1")))
+        except ValueError: q.setdefault(coding, 0.0)
+    return next((q[k] for k in ("gzip", "x-gzip", "*") if k in q), 0.0) > 0
 
 
-def etag_matches(header, tag):
-    """If-None-Match (a list, weak or *) names tag."""
-    return any(t.strip() in ("*", tag) or t.strip().removeprefix("W/") == tag for t in (header or "").split(","))
+def etag_matches(values, tag):
+    """If-None-Match (all its field lines; a list, weak tags, or *) names the weak tag W/"<opaque>"."""
+    joined = ",".join(values or [])
+    if joined.strip() == "*": return True
+    return tag.removeprefix("W/") in re.findall(r'(?:W/)?("[^"]*")', joined)
 
 
 def export(folder, c=None):
@@ -1319,8 +1320,8 @@ class Api(BaseHTTPRequestHandler):
             try: raw, gz, sha = chats_body(c)
             finally: c.close()
             zipped = accepts_gzip(self.headers.get("Accept-Encoding"))
-            tag = f'"{sha}-gz"' if zipped else f'"{sha}"'
-            if etag_matches(self.headers.get("If-None-Match"), tag):  # Weft already has this list: nothing to parse again
+            tag = f'W/"{sha}"'  # weak: the gzip and plain lists are the same list, also when Caddy unzips it
+            if etag_matches(self.headers.get_all("If-None-Match"), tag):  # Weft already has this list: nothing to parse again
                 self.send_response(304)
                 self.send_header("ETag", tag)
                 self.send_header("Vary", "Accept-Encoding")
