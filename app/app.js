@@ -11807,7 +11807,7 @@ function lookClass(r, user) {
 }
 /** The looks of a group's people. Only who is in it now (bridge bots too: they write) shares them out, by id: each
  *  takes their own, or the next free one when someone has it, a free colour before a free shape (shapes tell apart
- *  only those the colours cannot); a picked colour is taken first and never moves, a picked shape keeps its shape.
+ *  only those the colours cannot); a picked colour or shape never moves.
  *  Someone who left keeps their own. So one person may look different in a group than in their own chat; a
  *  one-to-one chat and a group fuller than the looks keep everyone's own. */
 function roomLooks(r) {
@@ -11823,17 +11823,20 @@ function roomLooks(r) {
   const colors = new Set();
   const take = (l) => { taken.add(slotOf(l)); colors.add(l.color); };
   const free = (from, ok) => { for (let i = 0; i < n; i++) { const x = (from + i) % n; if (!taken.has(x) && ok(x)) return x; } return -1; };
-  for (const [, l] of all) if (l.pickedColor) take(l);
-  for (const [id, l] of all) {
-    if (!l.pickedColor) {
-      const fits = (x) => !both || !l.pickedShape || Math.floor(x / C) === l.shape;
-      let x = free(slotOf(l), (y) => fits(y) && !colors.has(y % C));
-      if (x < 0) x = free(slotOf(l), fits);
-      if (x >= 0) { l.color = x % C; if (both) l.shape = Math.floor(x / C); }
-      take(l);
-    }
-    looks.set(id, lookClasses(l));
-  }
+  // What Karchi picked goes first, most picked first: a whole look, then a colour with any free shape, then a shape
+  // with a free colour; the automatic ones share what is left.
+  const place = (l, fits) => {
+    let x = free(slotOf(l), (y) => fits(y) && !colors.has(y % C));
+    if (x < 0) x = free(slotOf(l), fits);
+    if (x >= 0) { l.color = x % C; if (both) l.shape = Math.floor(x / C); }
+    take(l);
+  };
+  const rank = (l) => (l.pickedColor ? (l.pickedShape || !both ? 0 : 1) : l.pickedShape && both ? 2 : 3);
+  for (const [, l] of all.filter(([, x]) => rank(x) === 0)) take(l);
+  for (const [, l] of all.filter(([, x]) => rank(x) === 1)) place(l, (y) => y % C === l.color);
+  for (const [, l] of all.filter(([, x]) => rank(x) === 2)) place(l, (y) => Math.floor(y / C) === l.shape);
+  for (const [, l] of all.filter(([, x]) => rank(x) === 3)) place(l, () => true);
+  for (const [id, l] of all) looks.set(id, lookClasses(l));
   return looks;
 }
 /** Settings → Správy: how people's messages look. */
