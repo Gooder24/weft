@@ -665,18 +665,39 @@ def conversations(c):
 
 # /_archive/chats is several MB (every old mail thread): built once and kept, as JSON and gzip, until a message is
 # added, a chat is linked here, or a minute passed (edits and other processes' changes). One build at a time.
-CHATS = {"key": None, "at": 0.0, "raw": b"", "gz": b"", "tag": ""}
+CHATS = {"key": None, "at": 0.0, "raw": b"", "gz": b"", "tag": "", "gen": 0}
 CHATS_LOCK = threading.Lock()
 
 
 def chats_body(c):
-    """(json bytes, gzip bytes, ETag) of {"chats": conversations(c)}, from CHATS while the archive is unchanged."""
+    """(json bytes, gzip bytes, hash for the ETags) of {"chats": conversations(c)}, from CHATS while the archive is
+    unchanged. A link bumps gen (chats_changed), also during a build, which then is not taken as current."""
     with CHATS_LOCK:
-        key = c.execute("SELECT (SELECT max(rowid) FROM messages), (SELECT count(*) FROM chats)").fetchone()
+        key = (CHATS["gen"], *c.execute("SELECT (SELECT max(rowid) FROM messages), (SELECT count(*) FROM chats)").fetchone())
         if CHATS["key"] != key or time.monotonic() - CHATS["at"] > 60:
             raw = json.dumps({"chats": conversations(c)}, ensure_ascii=False).encode()
-            CHATS.update(key=key, at=time.monotonic(), raw=raw, gz=gzip.compress(raw, 6), tag=f'"{hashlib.sha256(raw).hexdigest()[:32]}"')
+            CHATS.update(key=key, at=time.monotonic(), raw=raw, gz=gzip.compress(raw, 6), tag=hashlib.sha256(raw).hexdigest()[:32])
         return CHATS["raw"], CHATS["gz"], CHATS["tag"]
+
+
+def chats_changed():
+    CHATS["gen"] += 1  # without the lock: a build running now keeps the old gen in its key
+
+
+def accepts_gzip(header):
+    """Whether an Accept-Encoding header allows gzip (a q=0 refuses it)."""
+    for part in (header or "").lower().split(","):
+        coding, *params = [x.strip() for x in part.split(";")]
+        if coding in ("gzip", "x-gzip", "*"):
+            q = next((p[2:] for p in params if p.startswith("q=")), "1")
+            try: return float(q) > 0
+            except ValueError: return False
+    return False
+
+
+def etag_matches(header, tag):
+    """If-None-Match (a list, weak or *) names tag."""
+    return any(t.strip() in ("*", tag) or t.strip().removeprefix("W/") == tag for t in (header or "").split(","))
 
 
 def export(folder, c=None):
@@ -1242,7 +1263,7 @@ class Api(BaseHTTPRequestHandler):
             now = c.execute("SELECT room FROM chats WHERE id = ?", (chat.removeprefix("archive:"),)).fetchone()
         finally: c.close()
         if ok:
-            CHATS["key"] = None  # the chat left the list of old conversations
+            chats_changed()  # the chat left the list of old conversations
             return self.send(200, {"linked": True})
         # Already linked (Weft in another window): say where, so that window opens the live room.
         if now and now[0] and not now[0].startswith("archive:"):
@@ -1295,13 +1316,15 @@ class Api(BaseHTTPRequestHandler):
             finally: c.close()
         if url.path == "/_archive/chats":
             c = db()
-            try: raw, gz, tag = chats_body(c)
+            try: raw, gz, sha = chats_body(c)
             finally: c.close()
-            if self.headers.get("If-None-Match") == tag:  # Weft already has this list: nothing to parse again
+            zipped = accepts_gzip(self.headers.get("Accept-Encoding"))
+            tag = f'"{sha}-gz"' if zipped else f'"{sha}"'
+            if etag_matches(self.headers.get("If-None-Match"), tag):  # Weft already has this list: nothing to parse again
                 self.send_response(304)
                 self.send_header("ETag", tag)
+                self.send_header("Vary", "Accept-Encoding")
                 return self.end_headers()
-            zipped = "gzip" in (self.headers.get("Accept-Encoding") or "")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Vary", "Accept-Encoding")
