@@ -26,8 +26,9 @@ one page at a time, two seconds apart). Their photos and videos up to 50 MB the 
 Weft's gallery (Ctrl+P) reads them all through /_archive/rooms/{room}/media and /_archive/media/{id}?w=320.
     archive.py instagram-media ZIP... the attachments of already imported Instagram messages
     archive.py thumbs                 every stored photo's and video's thumbnail made ahead (also hourly)
-Build those bridges on asus in ~/build/meta: the running commit (Messenger d9c56fd, Instagram tag v0.2610.0) with
-its patch applied, `go build -tags goolm ./cmd/mautrix-meta` (or ./cmd/mautrix-instagram), plus bridge-archive.conf.
+Build those bridges on asus: the running commit with its patch applied (Messenger upstream main efc4c92 in
+~/build/meta-calls, branch weft-calls, for its call records; Instagram tag v0.2610.0 in ~/build/meta-carousel),
+`go build -tags goolm ./cmd/mautrix-meta` (or ./cmd/mautrix-instagram), plus bridge-archive.conf.
 Its own device logs in once with a token from mint-login-token.py; the token stays in ./token (0600)."""
 import collections, datetime, filecmp, hashlib, json, os, re, shutil, sqlite3, stat, subprocess, sys, threading, time, unicodedata, zipfile
 import urllib.error, urllib.parse, urllib.request

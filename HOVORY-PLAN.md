@@ -22,8 +22,8 @@ Instagram, WhatsApp, Discord, Teams; prijať aj začať hovor (hlas, video) z We
    slovensky a tlačidlo, ktoré otvorí ten istý chat na sieti; hovor tam spustí Karchi sám. Na x270 to dá
    málo: presný chat na Discorde a pri WhatsAppe len zoznam chatov. Messenger a Instagram tlačidlo v shelli
    nemajú, lebo `facebook.com` si tam blokuje; Teams počká na pripojený účet. Riadok hovoru dnes príde len
-   z WhatsAppu (prichádzajúci hovor): mosty Messengera a Instagramu, ako sú nasadené, hovory neoznačujú a
-   začnú až po aktualizácii, ktorá čaká na Karchiho áno (rozhodnutie 4).
+   z WhatsAppu (prichádzajúci hovor) a od 20. 11. z Messengera (zmeškaný a ukončený, po aktualizácii mosta)
+   a z Teams (ukončený); most Instagramu hovory neoznačuje ani v upstreame (sekcia „Mosty“).
 4. **Druhé (krok 2, `desktop/`, po Karchiho áno): okno hovoru**, najprv len pre Messenger, kde volá najviac.
    Okno Weftu s vlastným prihlásením, zamknuté na jeden chat a jeho hovor, cez tunel na asus. Inú cestu, ako z
    x270 volať cez Messenger, som nenašiel, a je to zároveň diera v jeho vlastnom bloku Facebooku: preto
@@ -213,7 +213,7 @@ predvolenom odmietaní povolení.
 | Vec | Stav | Odkiaľ to viem |
 |---|---|---|
 | WhatsApp most (mautrix-whatsapp v26.10) | Prichádzajúci hovor hneď zapíše do chatu: „Incoming call. Use the WhatsApp app to answer.“ s `com.beeper.action_message: {type: "call", call_type}`. Koniec, prijatie ani odmietnutie nepremostí. Staršie ako 15 min zahodí. | zdroják `pkg/connector/handlewhatsapp.go` (`handleWACallStart`, `convertCallStart`); `call_start_notices: true` v `whatsapp/config.yaml`; v binárke je `convertCallStart` |
-| Messenger a Instagram most (mautrix-meta, naše buildy v26.10+dev.6643ca46 a pre Instagram v26.10+dev.14c13fe3, oba zo zdrojáku z 9. 11.) | Hovory neoznačuje vôbec; čo s nimi robí, neviem (živú ukážku nemám). Upstream main to pridal až 13. až 17. 11. 2026: v šifrovaných chatoch `FBCallEvent` premostí „Missed audio call“ a „Audio call (3:12)“ a začiatok hovoru zahodí; v nešifrovaných chatoch a na Instagrame príde záznam hovoru (`xma_rtc_*`) ako tá istá action_message. | zdroják `pkg/connector/handlewhatsapp.go` (`handleWAFBCall`), `pkg/msgconv/from-meta.go` (`CallLogToMatrix`), whatsmeow `notification.go`; v binárkach `mautrix-meta` ani `mautrix-instagram` nie je reťazec `FBCall` ani `xma_rtc_` |
+| Messenger a Instagram most (mautrix-meta; do 19. 11. naše buildy v26.10+dev.6643ca46 a pre Instagram v26.10+dev.14c13fe3, oba zo zdrojáku z 9. 11.; Messenger od 20. 11. na upstream `main`, sekcia „Mosty“) | Do 19. 11. hovory neoznačoval vôbec. Upstream main to pridal 13. až 17. 11. 2026, len pre Messenger: v šifrovaných chatoch `FBCallEvent` premostí „Missed audio call“ a „Audio call (3:12)“ a začiatok hovoru zahodí; v nešifrovaných chatoch príde záznam hovoru (`xma_rtc_*`) ako tá istá action_message. Instagram má vlastný prevodník (`pkg/msgconv/igconv`): poznámku o hovore (`IG_VIDEO_CALL_XMAT`) pošle ako obyčajný text bez značky, aj v `main` (v kóde je len `TODO`). | zdroják `pkg/connector/handlewhatsapp.go` (`handleWAFBCall`), `pkg/msgconv/from-meta.go` (`CallLogToMatrix`), whatsmeow `notification.go`; v binárkach `mautrix-meta` ani `mautrix-instagram` nie je reťazec `FBCall` ani `xma_rtc_` |
 | Discord most (mautrix-discord 0.7.7) | Správa typu CALL príde ako `m.emote` „started a call“; jej úpravu (koniec hovoru) zahodí. | zdroják `portal_convert.go`, `portal.go` |
 | Teams most (vlastný, Graph, poll 20 s) | Do 19. 11. hovory nevidel (`apply` v `server/microsoft/bridge.py` bral len `messageType == "message"`); od 20. 11. posiela ukončený hovor ako riadok hovoru (sekcia „Mosty“). Graph v chate dáva aj systémové správy „hovor začal“ a „hovor skončil“ ([Microsoft Learn](https://learn.microsoft.com/en-us/graph/system-messages)); zvonenie prihlásenému používateľovi nedáva. Teams účet zatiaľ nie je pripojený (0 miestností). | kód, dokumentácia, živý stav |
 | Živé miestnosti (403) | Nenašiel som žiadnu udalosť `m.call.*` ani MatrixRTC a žiadnu poznámku mosta o hovore. Hľadanie ide cez text správ, takže to nedokazuje, že nikto nevolal; len nemám živú ukážku. | `/sync` a `/search` cez token `weft`, len čítanie |
@@ -233,7 +233,7 @@ predvolenom odmietaní povolení.
 | C. Otvoriť v prehliadači x270 | nie (blok) | nie (blok) | áno | áno | áno |
 | C. Natívna appka na Linuxe | nie je | nie je | nie je | je | nie je |
 | D. Most pošle udalosť pri zvonení (podľa zdrojáku, živú ukážku nemám) | možno po záplate (hypotéza), len šifrované chaty | neisté | áno, so značkou | len neoznačenú správu o začatí hovoru (od emote sa nedá odlíšiť) | nie |
-| D. Most ohlási zmeškaný a ukončený (podľa zdrojáku, živú ukážku nemám) | po aktualizácii mosta | po aktualizácii mosta, ako záznam | nie | nie | po úprave vlastného mosta |
+| D. Most ohlási zmeškaný a ukončený (podľa zdrojáku, živú ukážku nemám) | áno od 20. 11. (aktualizovaný most) | nie: most značku neposiela ani v upstreame, treba vlastnú záplatu | nie | nie | ukončený áno od 20. 11. (vlastný most) |
 | E. Vlastné WebRTC | len odkaz v správe | to isté | to isté | to isté | to isté |
 
 ## Cesty
@@ -372,8 +372,8 @@ napísaná veta „Incoming call. Use the WhatsApp app to answer.“ hovorom nie
 call` napísané človekom, takže ho rozpoznávač za hovor neberie a v chate ostane ako doteraz.
 
 **Čo funguje:** riadok hovoru v chate a zmeškaný hovor ako neprečítaná položka pre udalosti, ktoré most
-označí značkou (Discord teda nie). Na dnes nasadených mostoch ju dáva len WhatsApp; Messenger a Instagram až
-po aktualizácii mautrix-meta.
+označí značkou (Discord teda nie). Dáva ju WhatsApp, od 20. 11. Messenger (aktualizovaný most) a Teams; Instagram
+nie (sekcia „Mosty“).
 WhatsApp udalosť má podľa zdrojáku prísť pri zvonení.
 
 **Čo nefunguje:**
@@ -443,8 +443,9 @@ istý chat na sieti, kde hovor spustí sám. Mení sa len `app/`.
 1. **Rozpoznanie.** `callOf(ev)` z prílohy do `app/app.js`. Rozhoduje značka `com.beeper.action_message`,
    nikdy samotný text. Discord „started a call“ značku nemá a ostáva emote ako dnes. Výsledok nezávisí od
    času: čerstvosť zvonenia pridá až krok 3. Na dnes nasadených mostoch značku posiela len WhatsApp pri
-   prichádzajúcom hovore; tvary Messengera a Instagramu sú z upstream zdrojáku a v Karchiho chatoch sa
-   objavia až po aktualizácii mosta (rozhodnutie 4). Na testoch to nič nemení, bežia na vymyslenom `/sync`.
+   prichádzajúcom hovore; tvary Messengera sú z upstream zdrojáku a v Karchiho chatoch sa
+   objavia až po aktualizácii mosta (rozhodnutie 4; spravená 20. 11.). Tvar Instagramu je odhad: jeho most
+   značku neposiela ani v upstreame (sekcia „Mosty“). Na testoch to nič nemení, bežia na vymyslenom `/sync`.
 2. **Riadok hovoru.** V bubline (`bubbleBody`/`textMessage`) namiesto anglickej vety riadok s ikonou:
    „Prichádzajúci hovor“, „Zmeškaný hovor“, „Hovor 3:12“, „Videohovor 3:12“, s časom ako ostatné správy.
    Záznam bez dĺžky (`seconds: null`, napríklad Instagram „… started a video chat“) je len „Hovor“ alebo
@@ -577,11 +578,21 @@ Karchi 19. 11.: „Smie zvoniť, ale vytvor na to nastavenie, či aj hovory zast
   obrazovky a ostatné systémové správy do miestnosti nejdú. Kontrola proti falošnému Microsoftu:
   `overenie/microsoft/check.py` (štyri nové prípady). Tvar správy je z dokumentácie Graphu; živú ukážku
   nemám, lebo Teams účet nie je pripojený.
-- **mautrix-meta (Messenger a Instagram).** Záznamy hovorov sú v upstreame: Instagram a nešifrovaný Messenger
-  od v26.11 (16. 11.), šifrovaný Messenger až v `main` po vydaní (17. 11.). Naše mosty bežia na vlastných
-  zostaveniach so záplatami (archív, opätovné prihlásenie, galéria), Instagram ešte na základe v26.10.
-  Aktualizácia teda znamená preniesť záplaty na upstream `main`, zostaviť oba mosty a vymeniť ich so zálohou
-  binárok a databáz.
+- **Messenger (mautrix-meta): aktualizovaný 20. 11.** Most beží na upstream `main` z 19. 11. (`efc4c92`,
+  v26.11+dev) s našimi záplatami (archív); zdroják je na asuse v `~/build/meta-calls`, vetva `weft-calls`.
+  Zmeškaný a ukončený hovor odteraz príde ako riadok hovoru: v šifrovaných chatoch „Missed audio call“
+  a „Audio call (3:12)“, v nešifrovaných záznam `xma_rtc_*`. Pri štarte sa správal ako pri bežnom reštarte:
+  pripojený, žiadna nová miestnosť (169 pred aj po), žiadna zmena databázy, žiadne sťahovanie histórie
+  (`e2ee_backfill` ostáva vypnutý). Cesta späť: `bin/mautrix-meta.bak-20261120-calls`; záloha databázy
+  a nastavení je v `messenger/backup-20261120-calls/`. Živý hovor som nevidel: prvý riadok ukáže až
+  skutočný hovor. Text nešifrovaného záznamu je titulok od Mety, možno po slovensky; Weft rozozná zmeškaný
+  len podľa anglického „missed“, takže taký záznam by ukázal ako „Hovor“.
+- **Instagram: nezmenený.** Plán sa tu mýlil: upstream značku hovoru na Instagrame neposiela ani v `main`
+  (`mutateWrappedAdminText` v `pkg/msgconv/igconv/from-instagram.go` má pri `IG_VIDEO_CALL_XMAT` len
+  `TODO`), takže aktualizácia by pre hovory nič nepriniesla a niesla by zmeny databázy a prihlasovania.
+  Treba vlastnú záplatu na pár riadkov. Nepísal som ju naslepo: v Karchiho chatoch nie je ani jedna živá
+  poznámka o hovore z Instagramu (len z exportu, „Audio call ended“), Weft z textu číta stav hovoru
+  a nesprávna značka by zo zmeškaného spravila „Hovor“. Príde po skúšobnom hovore, ktorý ukáže text.
 - **Začiatok hovoru na Messengeri** (zvonenie) ostáva hypotéza: záplatu má zmysel písať až po skúšobnom
   hovore, ktorý ukáže, aké udalosti chodia.
 - **Telefón pre WhatsApp** (tlačidlo by otvorilo chat namiesto zoznamu chatov): zatiaľ nepostavené.

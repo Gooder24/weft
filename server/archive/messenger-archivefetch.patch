@@ -1,4 +1,4 @@
-From bd1a64f039fbe13ee8130eb456b927511c3c86d1 Mon Sep 17 00:00:00 2001
+From dc015a991d6e85b01600e23f18321d3f3f2776f8 Mon Sep 17 00:00:00 2001
 From: weft <weft@localhost>
 Date: Sun, 8 Nov 2026 15:20:54 +0100
 Subject: [PATCH 1/9] archivefetch: page older history for Weft archive
@@ -14,7 +14,7 @@ Subject: [PATCH 1/9] archivefetch: page older history for Weft archive
  create mode 100644 pkg/archivefetch/archivefetch.go
 
 diff --git a/cmd/mautrix-instagram/main.go b/cmd/mautrix-instagram/main.go
-index 3dde3b0..5cbdbba 100644
+index be8140d..a441708 100644
 --- a/cmd/mautrix-instagram/main.go
 +++ b/cmd/mautrix-instagram/main.go
 @@ -3,6 +3,7 @@ package main
@@ -33,7 +33,7 @@ index 3dde3b0..5cbdbba 100644
  	m.Run()
  }
 diff --git a/cmd/mautrix-meta/main.go b/cmd/mautrix-meta/main.go
-index d2667f4..a19bfd3 100644
+index 3aacf30..10f0774 100644
 --- a/cmd/mautrix-meta/main.go
 +++ b/cmd/mautrix-meta/main.go
 @@ -3,6 +3,7 @@ package main
@@ -244,7 +244,7 @@ index 0000000..5cd142e
 +	return out, nil
 +}
 diff --git a/pkg/msgconv/from-whatsapp.go b/pkg/msgconv/from-whatsapp.go
-index 9018710..dcf6cc5 100644
+index f7f1c47..0e9ea82 100644
 --- a/pkg/msgconv/from-whatsapp.go
 +++ b/pkg/msgconv/from-whatsapp.go
 @@ -277,6 +277,18 @@ func (mc *MessageConverter) reuploadWhatsAppAttachment(
@@ -280,7 +280,7 @@ index 7463b6b..a997232 100644
  
  func ShouldFetchXMA(ctx context.Context) bool {
 diff --git a/pkg/msgconv/mediadl/reupload.go b/pkg/msgconv/mediadl/reupload.go
-index a60aca8..2a9d536 100644
+index 2d83d3d..2e38855 100644
 --- a/pkg/msgconv/mediadl/reupload.go
 +++ b/pkg/msgconv/mediadl/reupload.go
 @@ -232,6 +232,10 @@ func ReuploadFileToMatrix(ctx context.Context, params ReuploadParams) (*bridgev2
@@ -298,7 +298,7 @@ index a60aca8..2a9d536 100644
 2.47.3
 
 
-From b2a91a239594870c07c80216cb9995e86acee707 Mon Sep 17 00:00:00 2001
+From 11e7a4713096fbc0e5c49475d29a360a2d1b4282 Mon Sep 17 00:00:00 2001
 From: weft <weft@localhost>
 Date: Sun, 8 Nov 2026 15:38:11 +0100
 Subject: [PATCH 2/9] archivefetch: media placeholders keep a FileInfo (e2ee
@@ -309,7 +309,7 @@ Subject: [PATCH 2/9] archivefetch: media placeholders keep a FileInfo (e2ee
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/pkg/msgconv/from-whatsapp.go b/pkg/msgconv/from-whatsapp.go
-index dcf6cc5..4d7b313 100644
+index 0e9ea82..72190c4 100644
 --- a/pkg/msgconv/from-whatsapp.go
 +++ b/pkg/msgconv/from-whatsapp.go
 @@ -287,7 +287,7 @@ func (mc *MessageConverter) reuploadWhatsAppAttachment(
@@ -325,7 +325,7 @@ index dcf6cc5..4d7b313 100644
 2.47.3
 
 
-From a5b19bea609e8b63a27321726163c363ad5b6def Mon Sep 17 00:00:00 2001
+From 38680b4edbc0b2d65361795ca15335b4840929b9 Mon Sep 17 00:00:00 2001
 From: weft <weft@localhost>
 Date: Sun, 8 Nov 2026 15:49:42 +0100
 Subject: [PATCH 3/9] archivefetch: GIF placeholders keep Extra; drop
@@ -383,10 +383,10 @@ index fc05c07..7937481 100644
 +	return err == nil && msg == nil
 +}
 diff --git a/pkg/connector/handlemeta.go b/pkg/connector/handlemeta.go
-index f282aa8..a949609 100644
+index 7bb7123..07354b3 100644
 --- a/pkg/connector/handlemeta.go
 +++ b/pkg/connector/handlemeta.go
-@@ -705,10 +705,16 @@ func (m *MetaClient) wrapReaction(portalKey networkid.PortalKey, uncertainReceiv
+@@ -709,10 +709,16 @@ func (m *MetaClient) wrapReaction(portalKey networkid.PortalKey, uncertainReceiv
  }
  
  func (m *MetaClient) handleUpsertReaction(tk handlerParams, evt *table.LSUpsertReaction) bridgev2.RemoteEvent {
@@ -404,7 +404,7 @@ index f282aa8..a949609 100644
  }
  
 diff --git a/pkg/msgconv/from-whatsapp.go b/pkg/msgconv/from-whatsapp.go
-index 4d7b313..037e500 100644
+index 72190c4..17a0e3c 100644
 --- a/pkg/msgconv/from-whatsapp.go
 +++ b/pkg/msgconv/from-whatsapp.go
 @@ -287,7 +287,7 @@ func (mc *MessageConverter) reuploadWhatsAppAttachment(
@@ -420,7 +420,7 @@ index 4d7b313..037e500 100644
 2.47.3
 
 
-From dbbe46d433a4396d2d38e2df6df3c1318c06d207 Mon Sep 17 00:00:00 2001
+From 74defd23cf04d6be5d3b4156595f7ba2a975b02b Mon Sep 17 00:00:00 2001
 From: weft <weft@localhost>
 Date: Sun, 8 Nov 2026 15:59:17 +0100
 Subject: [PATCH 4/9] archivefetch: drop only reactions in the table that
@@ -462,10 +462,10 @@ index 7937481..50d0f6a 100644
  	return err == nil && msg == nil
  }
 diff --git a/pkg/connector/handlemeta.go b/pkg/connector/handlemeta.go
-index a949609..055ca15 100644
+index 07354b3..d1773d5 100644
 --- a/pkg/connector/handlemeta.go
 +++ b/pkg/connector/handlemeta.go
-@@ -428,6 +428,20 @@ func (m *MetaClient) parseTable(ctx context.Context, tbl *table.LSTable) (innerQ
+@@ -432,6 +432,20 @@ func (m *MetaClient) parseTable(ctx context.Context, tbl *table.LSTable) (innerQ
  		}
  	}
  	collectPortalEvents(params, maps.Values(upsert), m.handleUpsertMessages, &innerQueue)
@@ -486,7 +486,7 @@ index a949609..055ca15 100644
  	collectPortalEvents(params, tbl.LSUpdateExistingMessageRange, m.handleUpdateExistingMessageRange, &innerQueue)
  
  	for _, resync := range threadResyncs {
-@@ -705,16 +719,10 @@ func (m *MetaClient) wrapReaction(portalKey networkid.PortalKey, uncertainReceiv
+@@ -709,16 +723,10 @@ func (m *MetaClient) wrapReaction(portalKey networkid.PortalKey, uncertainReceiv
  }
  
  func (m *MetaClient) handleUpsertReaction(tk handlerParams, evt *table.LSUpsertReaction) bridgev2.RemoteEvent {
@@ -507,7 +507,7 @@ index a949609..055ca15 100644
 2.47.3
 
 
-From e591129724db30d3125c6c1b6e1e100aef76b626 Mon Sep 17 00:00:00 2001
+From cf12ac291333a25a2f8025ff0f70e6a6a4f65074 Mon Sep 17 00:00:00 2001
 From: weft <weft@localhost>
 Date: Mon, 9 Nov 2026 16:39:48 +0100
 Subject: [PATCH 5/9] archivefetch: keep photos and videos up to 50 MB in the
@@ -564,7 +564,7 @@ index 5cd142e..8212a19 100644
  		}
  		out.Messages = append(out.Messages, msg)
 diff --git a/pkg/msgconv/from-whatsapp.go b/pkg/msgconv/from-whatsapp.go
-index 037e500..37d8cbf 100644
+index 17a0e3c..c4b4170 100644
 --- a/pkg/msgconv/from-whatsapp.go
 +++ b/pkg/msgconv/from-whatsapp.go
 @@ -17,6 +17,7 @@
@@ -669,7 +669,7 @@ index 0000000..76003f5
 +	return filepath.Join(network, name), n, nil
 +}
 diff --git a/pkg/msgconv/mediadl/reupload.go b/pkg/msgconv/mediadl/reupload.go
-index 2a9d536..8511c02 100644
+index 2e38855..b4419a6 100644
 --- a/pkg/msgconv/mediadl/reupload.go
 +++ b/pkg/msgconv/mediadl/reupload.go
 @@ -22,6 +22,7 @@ import (
@@ -706,7 +706,7 @@ index 2a9d536..8511c02 100644
 2.47.3
 
 
-From 4d4b26824e34b29de288c3ff12315285a8e23e74 Mon Sep 17 00:00:00 2001
+From ff60df432615a134a0033c9a5672e93ed8035be9 Mon Sep 17 00:00:00 2001
 From: weft <weft@localhost>
 Date: Mon, 9 Nov 2026 16:42:25 +0100
 Subject: [PATCH 6/9] archivefetch: the message type decides what is kept (an
@@ -736,7 +736,7 @@ index 76003f5..dfff8d5 100644
 2.47.3
 
 
-From c08d64e612b37e9a265459a4efa8d08433c6c0aa Mon Sep 17 00:00:00 2001
+From c8005baf63c6cf274f7798c4b62c198ddf0702af Mon Sep 17 00:00:00 2001
 From: weft <weft@localhost>
 Date: Mon, 9 Nov 2026 16:44:08 +0100
 Subject: [PATCH 7/9] archivefetch: decide on the message type after it is
@@ -747,7 +747,7 @@ Subject: [PATCH 7/9] archivefetch: decide on the message type after it is
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/pkg/msgconv/mediadl/reupload.go b/pkg/msgconv/mediadl/reupload.go
-index 8511c02..6e71ac1 100644
+index b4419a6..30222d7 100644
 --- a/pkg/msgconv/mediadl/reupload.go
 +++ b/pkg/msgconv/mediadl/reupload.go
 @@ -234,6 +234,7 @@ func ReuploadFileToMatrix(ctx context.Context, params ReuploadParams) (*bridgev2
@@ -770,7 +770,7 @@ index 8511c02..6e71ac1 100644
 2.47.3
 
 
-From 46cfe434edb4a3e22c77f2d7edbefc1fb68d933d Mon Sep 17 00:00:00 2001
+From fa6884156823f8e96bc3e3cbfb3d8404b13b609b Mon Sep 17 00:00:00 2001
 From: weft <weft@localhost>
 Date: Mon, 9 Nov 2026 16:44:30 +0100
 Subject: [PATCH 8/9] archivefetch: stickers stay notes
@@ -780,7 +780,7 @@ Subject: [PATCH 8/9] archivefetch: stickers stay notes
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/pkg/msgconv/mediadl/reupload.go b/pkg/msgconv/mediadl/reupload.go
-index 6e71ac1..cb26374 100644
+index 30222d7..3adc2d5 100644
 --- a/pkg/msgconv/mediadl/reupload.go
 +++ b/pkg/msgconv/mediadl/reupload.go
 @@ -236,7 +236,7 @@ func ReuploadFileToMatrix(ctx context.Context, params ReuploadParams) (*bridgev2
@@ -796,7 +796,7 @@ index 6e71ac1..cb26374 100644
 2.47.3
 
 
-From 6643ca464c5f6e05a28970dabd31677e6a2bede3 Mon Sep 17 00:00:00 2001
+From 3ccd033ba015025b22da6f94099d7dd1b0507b87 Mon Sep 17 00:00:00 2001
 From: Gooder24 <162874774+Gooder24@users.noreply.github.com>
 Date: Mon, 9 Nov 2026 17:04:49 +0100
 Subject: [PATCH 9/9] fix(archive): e2ee stickers and link previews are not
@@ -807,7 +807,7 @@ Subject: [PATCH 9/9] fix(archive): e2ee stickers and link previews are not
  1 file changed, 3 insertions(+), 1 deletion(-)
 
 diff --git a/pkg/msgconv/from-whatsapp.go b/pkg/msgconv/from-whatsapp.go
-index 37d8cbf..355c492 100644
+index c4b4170..fb9ac61 100644
 --- a/pkg/msgconv/from-whatsapp.go
 +++ b/pkg/msgconv/from-whatsapp.go
 @@ -231,6 +231,8 @@ func (mc *MessageConverter) reuploadWhatsAppAttachment(
