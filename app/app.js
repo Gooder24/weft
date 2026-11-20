@@ -3083,8 +3083,13 @@ function relayPickView(o) {
   const list = pool.filter((x) => words.every((w) => norm(`${roomTitle(x)} ${appOf(x.app)?.name || ''}`).includes(w))).slice(0, 40);
   o.flat = list.map((x) => () => { S.overlay = null; startRelay(o, x.id); });
   if (o.index >= o.flat.length) o.index = 0;
+  const name = from ? roomTitle(from) : 'chat';
   return [
-    cmdInput(o, T`Keď ${from ? roomTitle(from) : 'chat'} odpíše, obrázok odpovede ako koncept do… (meno)`),
+    cmdInput(o, o.draft ? T`Keď ${name} odpíše, obrázok odpovede ako koncept do… (meno)` : T`Keď ${name} odpíše, obrázok odpovede pôjde do… (meno)`),
+    h('div', { class: 'chips relayopts' }, relayOpts.map(([key, keys]) => h('button', {
+      type: 'button', class: `chip${o[key] ? ' on' : ''}`, 'aria-pressed': String(!!o[key]), title: keys,
+      onclick: () => { relayToggle(o, key); document.querySelector('.cmd .cmdinput')?.focus(); },
+    }, key === 'draft' ? T('Len koncept') : T('Ukázať meno a fotku')))),
     h('div', { class: 'results' }, list.length
       ? list.map((x, i) => resultRow(o, null, i, [avatar(roomAvatar(x), roomTitle(x), 28),
         h('div', { class: 'rmeta' }, h('b', {}, highlighted(roomTitle(x), o.query)), h('small', {}, appOf(x.app)?.name || 'Matrix')),
@@ -3092,10 +3097,13 @@ function relayPickView(o) {
       : h('div', { class: 'empty' }, T('Taký chat sa nenašiel.'))),
   ];
 }
+/** The picker's two choices: by default the picture is sent at once and hides the other side's name and photo. */
+const relayOpts = [['draft', 'Alt+K'], ['who', 'Alt+M']];
+function relayToggle(o, key) { o[key] = !o[key]; render(); }
 function startRelay(o, to) {
   const now = Date.now();
   const item = { id: crypto.randomUUID(), room: o.room, ...(o.rooms.length > 1 ? { rooms: o.rooms } : {}), from_event: o.event, from_ts: o.ts,
-    to_room: to, note: '', at: now, expires: now + 7 * 864e5, status: 'waiting', by: 'weft' };
+    to_room: to, note: '', send: !o.draft, who: !!o.who, at: now, expires: now + 7 * 864e5, status: 'waiting', by: 'weft' };
   saveRelay((list) => [...list, item]).catch(() => alert(T('Sledovanie sa nepodarilo uložiť. Skús to znova.')));
 }
 /** Under a chat's last message: what waits for an answer here, and what did not work out, each with a way out. */
@@ -3107,7 +3115,8 @@ function relayBar(rooms) {
     const to = S.rooms.get(it.to_room);
     const name = to ? roomTitle(to) : 'chat';
     return h('div', { class: `cnote relay${it.status === 'failed' ? ' failed' : ''}`, 'data-key': `relay:${it.id}` },
-      it.status === 'failed' ? T`Obrázok odpovede pre ${name} sa nepodaril: ${it.error || 'chyba'}` : T`Čaká na odpoveď → obrázok pre ${name}`,
+      it.status === 'failed' ? T`Obrázok odpovede pre ${name} sa nepodaril: ${it.error || 'chyba'}`
+        : it.send ? T`Čaká na odpoveď → obrázok pôjde do chatu ${name}` : T`Čaká na odpoveď → koncept do chatu ${name}`,
       h('button', { class: 'ghost', onclick: () => saveRelay((list) => list.map((x) => (x.id !== it.id ? x
         : it.status === 'failed' ? { ...x, seen: true } : { ...x, status: 'cancelled', done_at: Date.now() }))) }, it.status === 'failed' ? 'OK' : T('Zrušiť')));
   });
@@ -8191,6 +8200,8 @@ function cmdInput(o, placeholder) {
     // Typing in Ctrl+N only filters what Weft has; the network mode asks its network on Enter alone.
     oninput: (e) => { o.query = e.target.value; o.index = 0; if (o.kind === 'search') serverSearch(o); if (o.kind === 'gif') searchGifs(o); if (o.kind === 'search') overlayRedraw(o); else render(); },
     onkeydown: (e) => {
+      const opt = o.kind === 'relay' && e.altKey && !e.ctrlKey && relayOpts.find(([, keys]) => e.code === `Key${keys.at(-1)}`);
+      if (opt) { e.preventDefault(); return relayToggle(o, opt[0]); }
       const rem = o.kind === 'new' && o.remote;
       if (rem && e.key === 'Tab') {
         e.preventDefault();

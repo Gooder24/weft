@@ -15,9 +15,10 @@
     weft draft CHAT [TEXT] [--file PATH]...                 a draft (text, files) that Weft puts on top of that chat's stash
     weft drafts [--clear CHAT]                              the stash (Karchi's and agents' drafts not sent yet);
                                                             --clear takes the agents' ones in CHAT away
-    weft relay CHAT --to FRIEND [--note TEXT] [--from ID] [--days 7]
-                                                            when CHAT answers Karchi, a picture of the answer goes to
-                                                            FRIEND's chat as a draft (server/relay/relay.py); never sent
+    weft relay CHAT --to FRIEND [--note TEXT] [--from ID] [--days 7] [--draft] [--show-name]
+                                                            when CHAT answers Karchi, a picture of the answer is sent
+                                                            to FRIEND's chat (--draft: only a draft there), without
+                                                            CHAT's name and photo unless --show-name (server/relay/)
     weft relays [--cancel ID]                               what waits for an answer, and what came of it
     weft cals                                               calendars
     weft cal [--from YYYY-MM-DD] [--days 7]                 events, repeating ones expanded as Weft draws them
@@ -70,7 +71,7 @@ def drafts_left(mx):
     stash = mx.account(STASH)
     return [x for x in mx.account(DRAFTS).get("items", []) if not adopted(stash, x)]
 RELAY = "sk.karchi.relay"         # {"items": [{id, room, from_ts, to_room, note, expires, status}]}; server/relay/relay.py
-RELAY_STATUS = {"waiting": "čaká na odpoveď", "captured": "odpoveď je v koncepte", "cancelled": "zrušené", "expired": "vypršalo",
+RELAY_STATUS = {"waiting": "čaká na odpoveď", "captured": "odpoveď je v koncepte", "sent": "obrázok odpovede ide kamošovi", "cancelled": "zrušené", "expired": "vypršalo",
                 "failed": "nepodarilo sa"}
 NETWORKS = {"facebookgo": "messenger", "facebook": "messenger", "instagramgo": "instagram", "instagram": "instagram",
             "discordgo": "discord", "discord": "discord", "whatsapp": "whatsapp", "teams": "teams"}
@@ -897,6 +898,7 @@ def main(argv=None):
     s = sub.add_parser("draft"); s.add_argument("chat"); s.add_argument("text", nargs="*"); s.add_argument("--file", action="append", metavar="PATH")
     s = sub.add_parser("relay"); s.add_argument("chat"); s.add_argument("--to", required=True, metavar="FRIEND")
     s.add_argument("--note", default=""); s.add_argument("--from", dest="frm", metavar="ID"); s.add_argument("--days", type=float, default=7)
+    s.add_argument("--draft", action="store_true"); s.add_argument("--show-name", action="store_true")
     s = sub.add_parser("relays"); s.add_argument("--cancel", metavar="ID")
     s = sub.add_parser("drafts"); s.add_argument("--clear", metavar="CHAT")
     sub.add_parser("cals")
@@ -1116,9 +1118,11 @@ def main(argv=None):
         if a.frm: anchor = message_of(mx, rid, a.frm)
         else: anchor = next((ev for ev in reversed(matrix_raw(mx, rid, 30)) if ev["sender"] == mx.user), None)
         item = {"id": str(uuid.uuid4()), "room": rid, "from_event": anchor and anchor["event_id"], "from_ts": anchor["origin_server_ts"] if anchor else now,
-                "to_room": to, "note": a.note, "at": now, "expires": now + int(a.days * 864e5), "status": "waiting", "by": os.environ.get("WEFT_BY") or "agent"}
+                "to_room": to, "note": a.note, "send": not a.draft, "who": a.show_name, "at": now, "expires": now + int(a.days * 864e5), "status": "waiting", "by": os.environ.get("WEFT_BY") or "agent"}
         mx.put_account(RELAY, {"items": mx.account(RELAY).get("items", []) + [item]})
-        return out(item, [f"čakám na odpoveď v {rooms.name(rid)}; obrázok pôjde ako koncept do {rooms.name(to)}"])
+        how = "ako koncept do" if a.draft else "rovno do"
+        return out(item, [f"čakám na odpoveď v {rooms.name(rid)}; obrázok pôjde {how} {rooms.name(to)}"
+                          + ("" if a.show_name else f" (bez mena a fotky z {rooms.name(rid)})")])
     if a.cmd == "relays":
         items = mx.account(RELAY).get("items", [])
         if a.cancel:
@@ -1129,7 +1133,7 @@ def main(argv=None):
             mx.put_account(RELAY, {"items": items})
             return out(hit[0], [f"zrušené: {rooms.name(hit[0]['room'])} → {rooms.name(hit[0]['to_room'])}"])
         return out(items, [f"{x['id'][:8]}  {when(x['at']):>16}  {rooms.name(x['room'])} → {rooms.name(x['to_room'])}: "
-                           f"{RELAY_STATUS.get(x.get('status', 'waiting'), x.get('status'))}" + (f" ({x['error']})" if x.get("error") else "")
+                           f"{RELAY_STATUS.get('sent' if x.get('later') else x.get('status', 'waiting'), x.get('status'))}" + (f" ({x['error']})" if x.get("error") else "")
                            for x in items] or ["(nič nečaká)"])
     if a.cmd == "drafts":
         stash = mx.account(STASH)

@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
-"""Weft's reply relay: when someone answers a message Karchi is waiting on, a picture of that answer goes into
-a friend's chat as a draft, so he does not have to screenshot and forward it himself. Nothing is ever sent.
+"""Weft's reply relay: when someone answers a message Karchi is waiting on, a picture of that answer goes to a
+friend's chat, so he does not have to screenshot and forward it himself.
 
 Weft (or `weft relay`) keeps what to watch in his account data under sk.karchi.relay as
-{"items": [{id, room, rooms?, from_event?, from_ts, to_room, note?, at, expires, status}]}: `room` is the chat he
-waits in (`rooms`, when given, all rooms of a merged chat), `to_room` the friend's chat. While an item is
+{"items": [{id, room, rooms?, from_event?, from_ts, to_room, note?, send?, who?, at, expires, status}]}: `room` is the
+chat he waits in (`rooms`, when given, all rooms of a merged chat), `to_room` the friend's chat. While an item is
 "waiting", the first message from someone else after `from_ts` is an answer. Once the answer has settled (no new
 message from them for a while, Karchi wrote again, or it is long), this draws Karchi's message and the answer as
-Weft draws them (snap.html with Weft's app.css, in headless Chromium), uploads the PNG and adds a draft
-{id: "relay-<id>", room: to_room, body: note, files: [{url, name, mimetype, size, w, h}]} to sk.karchi.drafts,
-which Weft puts into the friend's message box. The item turns "captured" (or "expired" / "failed").
+Weft draws them (snap.html with Weft's app.css, in headless Chromium) and uploads the PNG. The picture hides the
+other side's name and photo unless the item says `who: true`. With `send: true` the picture (then the note) goes
+to sk.karchi.sendlater, due now, and the send-later service sends it as Karchi; without it, a draft
+{id: "relay-<id>", room: to_room, body: note, files: [{url, name, mimetype, size, w, h}]} goes to sk.karchi.drafts,
+which Weft puts on the friend's chat's stash. The item turns "captured" (or "expired" / "failed").
 
-Reading here never sends a receipt or read marker, and the service never sends a message.
+Reading here never sends a receipt or read marker; the service itself sends nothing, the send-later service does.
 Its own device logs in once with a token from mint-login-token.py; the token stays in ./token (0600)."""
 import base64, datetime as dt, fcntl, html, io, json, os, re, shutil, stat, subprocess, sys, tempfile, time, unicodedata
 import urllib.error, urllib.parse, urllib.request
@@ -21,6 +23,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 BASE = os.environ.get("HS", "http://127.0.0.1:8008")
 KEY = "sk.karchi.relay"
 DRAFTS = "sk.karchi.drafts"
+LATER = "sk.karchi.sendlater"  # server/sendlater: {"items": [{id, room, at, seq, batch, content}]}
 TOKEN_FILE = os.environ.get("TOKEN_FILE", os.path.join(HERE, "token"))
 MINT = os.path.expanduser("~/matrix-spike/homeserver/mint-login-token.py")
 APP_DIR = os.environ.get("APP_DIR", os.path.expanduser("~/matrix-spike/app"))  # the served Weft: its app.css, font, icons
@@ -262,19 +265,22 @@ def bubble(mx, ev):
     return {"kind": "text", "text": text}
 
 
-def snap_data(mx, infos, me, events, now):
-    """snap.html's JSON: the chat's head and its messages, grouped and dated as Weft's chatView does."""
+def snap_data(mx, infos, me, events, now, hide=True):
+    """snap.html's JSON: the chat's head and its messages, grouped and dated as Weft's chatView does. `hide` leaves
+    out the other side's names and photos: the head names only the network, a group's people are „Osoba 1, 2…“."""
     rid = events[-1]["room_id"]
     info = infos[rid]
     person = people(info, me)
     group = len(person) > 1
     net = info["net"]
     icon = ICONS.get(net)
-    head_avatar = None if group or not person else mx.media(info["members"][person[0]].get("avatar"), 96)
-    avatars, out, prev, day = {}, [], None, ""
+    head_avatar = None if hide or group or not person else mx.media(info["members"][person[0]].get("avatar"), 96)
+    avatars, out, prev, day, nth = {}, [], None, "", {}
     for ev in events:
         sender = ev["sender"]
         who = infos[ev["room_id"]]["members"].get(sender) or {"name": sender[1:].split(":")[0]}
+        if hide and sender != me:
+            who = {"name": f"Osoba {nth.setdefault(sender, len(nth) + 1)}"}
         if sender != me and sender not in avatars:
             avatars[sender] = mx.media(who.get("avatar"), 96)
         label = day_label(ev["origin_server_ts"], now)
@@ -282,7 +288,7 @@ def snap_data(mx, infos, me, events, now):
         out.append({**bubble(mx, ev), "mine": sender == me, "name": who["name"], "avatar": avatars.get(sender), "time": time_label(ev["origin_server_ts"]),
                     "grouped": grouped, "day": label if label != day else None})
         prev, day = ev, label
-    return {"title": title(info, me), "group": group, "avatar": head_avatar,
+    return {"title": (icon[0] if icon else "Chat") if hide else title(info, me), "hidden": hide, "group": group, "avatar": head_avatar,
             "net": {"name": icon[0], "icon": "file://" + os.path.join(APP_DIR, icon[1])} if icon else None, "messages": out}
 
 
@@ -315,12 +321,18 @@ def render(data):
             if not os.environ.get("BROWSER_SLOT"):
                 fcntl.flock(lock, fcntl.LOCK_EX)  # released when the file closes
             for height, scale in ((2400, 2), (6000, 2), (16000, 1), (32000, 1)):
-                subprocess.run([CHROMIUM, "--headless=new", "--disable-gpu", "--no-first-run", "--hide-scrollbars", "--mute-audio",
-                                f"--user-data-dir={os.path.join(work, 'profile')}", "--allow-file-access-from-files",
-                                f"--force-device-scale-factor={scale}", f"--window-size=420,{height}", "--virtual-time-budget=4000",
-                                "--blink-settings=preferredColorScheme=0",  # Weft is dark, as Karchi's desktop
-                                f"--screenshot={out}", "file://" + src],
-                               check=True, capture_output=True, timeout=120)
+                # A busy machine sometimes ends Chromium before it writes the picture: one more go before a try counts.
+                for _ in range(2):
+                    if os.path.exists(out):
+                        os.remove(out)  # a picture of the smaller window before must not pass for this one
+                    subprocess.run([CHROMIUM, "--headless=new", "--disable-gpu", "--no-first-run", "--hide-scrollbars", "--mute-audio",
+                                    f"--user-data-dir={os.path.join(work, 'profile')}", "--allow-file-access-from-files",
+                                    f"--force-device-scale-factor={scale}", f"--window-size=420,{height}", "--virtual-time-budget=4000",
+                                    "--blink-settings=preferredColorScheme=0",  # Weft is dark, as Karchi's desktop
+                                    f"--screenshot={out}", "file://" + src],
+                                   check=True, capture_output=True, timeout=120)
+                    if os.path.exists(out):
+                        break
                 img = Image.open(out).convert("RGB")
                 px = img.load()
                 bar = lambda y: all(px[x, y] == END for x in range(0, img.width, 7))
@@ -373,17 +385,37 @@ def add_draft(mx, draft):
     mx.put_account(DRAFTS, {"items": current + [draft]})
 
 
+def add_later(mx, parts):
+    """The picture and its note, due now, for the send-later service; once only, also when a crash makes this run
+    twice (the ids are the item's, and sendlater sends each id once)."""
+    current = mx.account(LATER).get("items", [])
+    if any(x.get("id") == parts[0]["id"] for x in current):
+        return
+    mx.put_account(LATER, {"items": current + parts})
+
+
 def capture(mx, it, infos, anchor, reply, now):
     events = anchor + reply
-    data = snap_data(mx, infos, mx.user, events, now)
+    hide = not it.get("who")
+    data = snap_data(mx, infos, mx.user, events, now, hide)
     png, w, h = render(data)
-    name = f"odpoved-{slug(data['title'])}.png"
+    chat = title(infos[events[-1]["room_id"]], mx.user)
+    name = "odpoved.png" if hide else f"odpoved-{slug(chat)}.png"
     url = mx.upload(png, name, "image/png")
+    done = {"status": "captured", "done_at": now, "reply_events": [ev["event_id"] for ev in reply]}
+    if it.get("send"):
+        image = {"msgtype": "m.image", "body": name, "url": url, "info": {"mimetype": "image/png", "size": len(png), "w": w, "h": h}}
+        parts = [image] + ([{"msgtype": "m.text", "body": it["note"]}] if it.get("note") else [])
+        batch = f"relay-{it['id']}"
+        later = [{"id": f"{batch}-{seq}", "room": it["to_room"], "at": now, "seq": seq, "batch": batch, "by": "relay", "content": c}
+                 for seq, c in enumerate(parts)]
+        add_later(mx, later)
+        return {**done, "later": [x["id"] for x in later]}
     draft = {"id": f"relay-{it['id']}", "room": it["to_room"], "body": it.get("note") or "", "at": now, "by": "relay",
              "files": [{"url": url, "name": name, "mimetype": "image/png", "size": len(png), "w": w, "h": h}],
-             "relay": {"id": it["id"], "room": events[-1]["room_id"], "title": data["title"]}}
+             "relay": {"id": it["id"], "room": events[-1]["room_id"], "title": chat}}
     add_draft(mx, draft)
-    return {"status": "captured", "done_at": now, "draft_id": draft["id"], "reply_events": [ev["event_id"] for ev in reply]}
+    return {**done, "draft_id": draft["id"]}
 
 
 def process(mx, now=None):

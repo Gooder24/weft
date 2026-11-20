@@ -36,15 +36,18 @@
   // Weft's avatar: the picture, else initials on a colour of their own (app.js hue/initialsOf).
   const hue = (t) => [...String(t)].reduce((a, ch) => (a * 31 + ch.charCodeAt(0)) % 360, 7);
   const initials = (t) => String(t).split(/\s+/).filter(Boolean).slice(0, 2).map((w) => [...w][0].toUpperCase()).join('') || '?';
+  // A hidden person keeps a colour of their own (apart from the others in a group) but no letters.
   const avatar = (src, name, cls) => {
     if (src) { const i = el('img', cls); i.src = src; i.alt = ''; return i; }
-    const n = el('div', `${cls} initials`, initials(name));
+    const n = el('div', `${cls} initials`, d.hidden ? '' : initials(name));
     n.style.background = `hsl(${hue(name)} 45% 64%)`;
     return n;
   };
   const root = document.getElementById('snap');
-  const icon = d.net?.icon ? Object.assign(el('img'), { src: d.net.icon, alt: d.net.name }) : null;
-  root.append(el('div', 'chead', avatar(d.avatar, d.title, 'av'), el('span', 'ctitle', el('b', null, d.title), icon)));
+  const icon = d.net?.icon && !d.hidden ? Object.assign(el('img'), { src: d.net.icon, alt: d.net.name }) : null;
+  // Hidden, the head shows only the network: its icon in the avatar's place and its name.
+  const head = d.hidden && d.net?.icon ? avatar(d.net.icon, d.title, 'av') : avatar(d.avatar, d.title, 'av');
+  root.append(el('div', 'chead', head, el('span', 'ctitle', el('b', null, d.title), icon)));
   const msgs = el('div', 'msgs');
   for (const m of d.messages) {
     if (m.day) msgs.append(el('div', 'cday', m.day));
