@@ -508,7 +508,8 @@ async function flushOut() {
         goOffline();
         break;
       }
-      failLocal(r, it.txn, err, () => sendAgain(r, 'm.room.message', it.content, async () => it.content));
+      // Again with the bubble's own content (the same text): whoever follows that bubble (a forward's note) keeps it.
+      failLocal(r, it.txn, err, () => sendAgain(r, 'm.room.message', shown.content, async () => shown.content));
     }
     saveOutbox(outbox().filter((x) => x.txn !== it.txn));
   }
