@@ -3247,9 +3247,8 @@ async function forwardTo(from, to, content) {
   const before = new Set(forwardCopies(to, content).map((ev) => ev.event_id));
   const note = { id: txnId(), from: from.id, to: to.id, content, before, at: Date.now() };
   // The same message again to the same chat: one note, about the newest try (the copies cannot be told apart).
-  S.forwards = [...(S.forwards || []).filter((x) => !(x.to === to.id && forwardSig(x.content) === forwardSig(content))), note];
+  S.forwards = [...(S.forwards || []).filter((x) => !(x.from === from.id && x.to === to.id && forwardSig(x.content) === forwardSig(content))), note];
   await sendAgain(to, 'm.room.message', content, async () => content);
-  if (forwardState(note) === 'sent') setTimeout(() => { S.forwards = (S.forwards || []).filter((x) => x !== note); render(); }, 8000);
   render();
 }
 /** What a message says, for telling a forwarded copy: the outbox and a retry keep copies of the content, and the
@@ -3277,6 +3276,8 @@ function forwardBar(rooms) {
     const to = S.rooms.get(it.to);
     const name = to ? roomTitle(to) : 'chat';
     const state = forwardState(it);
+    // „Preposlané“ goes after a while, however late the copy went (the outbox sends it once the network is back).
+    if (state === 'sent' && !it.gone) it.gone = setTimeout(() => { S.forwards = (S.forwards || []).filter((x) => x !== it); render(); }, 8000);
     const label = state === 'sending' ? T`Preposiela sa do chatu ${name}…` : state === 'sent' ? T`Preposlané do chatu ${name}`
       : state === 'waiting' ? T`Preposlanie do chatu ${name} odíde, keď bude sieť` : T`Preposlanie do chatu ${name} neodišlo`;
     return h('div', { class: `replybar fwdnote${state === 'failed' ? ' failed' : ''}`, 'data-key': `fwd:${it.id}` }, h('span', {}, label),
@@ -6287,7 +6288,7 @@ function viewerKey(e) {
   e.preventDefault();
   return true;
 }
-addEventListener('resize', () => S.overlay?.kind === 'image' && render());
+addEventListener('resize', () => ['image', 'forward', 'relay'].includes(S.overlay?.kind) && render()); // pickers follow the chat pane
 
 function jumpTo(r, eventId) {
   S.focusEvent = eventId;
