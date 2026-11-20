@@ -256,7 +256,9 @@ export function createFeed({ h, api, kv, refresh, offline, user, settingsPanel, 
     // Today's windows were all used (a window still running from before midnight leaves today's free).
     const locked = !open && windowsLeft() === 0;
     const p = policy();
-    const items = (doc?.items || []).filter((i) => (i.source === 'instagram' ? c.instagram : c.sources.some((s) => s.id === i.source)) && !(i.kind === 'story' && c.hiddenStories[i.user]));
+    // A story leaves once its 24 hours pass, also while Feed stays open (the server drops it on the next load).
+    const now = Date.now();
+    const items = (doc?.items || []).filter((i) => (i.source === 'instagram' ? c.instagram : c.sources.some((s) => s.id === i.source)) && !(i.kind === 'story' && (c.hiddenStories[i.user] || (i.expires || (i.at || 0) + 86400000) <= now)));
     return h('section', { class: 'daily-feed', 'aria-label': T('Denný feed') },
       h('div', { class: 'feed-head' }, h('h2', {}, 'Feed'),
         h('span', { class: 'feed-date' }, doc?.at ? T`Obnovené ${new Date(doc.at).toLocaleString(LOCALE)}` : T('RSS, YouTube, X a Instagram')),
@@ -354,8 +356,8 @@ export function createFeed({ h, api, kv, refresh, offline, user, settingsPanel, 
       h('textarea', { rows: 4, placeholder: T('Vlož sem obsah subscriptions.csv…'), 'aria-label': T('Odbery YouTube'), oninput: (e) => { state._opml = e.target.value; } }),
       h('div', { class: 'row' },
         h('button', { class: 'ghost', disabled: state.busy || offline(), onclick: () => { if (state._opml) importOpml(state._opml); } }, T('Importovať z textu')),
-        h('label', { class: 'ghost', style: 'cursor:pointer' }, T('Nahrať súbor'),
-          h('input', { type: 'file', accept: '.csv,.opml,.xml,.txt', style: 'display:none', onchange: (e) => { const f = e.target.files && e.target.files[0]; if (!f) return; const r = new FileReader(); r.onload = () => importOpml(r.result); r.readAsText(f); e.target.value = ''; } }))),
+        h('label', { class: 'ghost', style: { cursor: 'pointer' } }, T('Nahrať súbor'),
+          h('input', { type: 'file', accept: '.csv,.opml,.xml,.txt', hidden: true, onchange: (e) => { const f = e.target.files && e.target.files[0]; if (!f) return; const r = new FileReader(); r.onload = () => importOpml(r.result); r.readAsText(f); e.target.value = ''; } }))),
       h('h3', {}, T('AI novinky (modely a firmy)')),
       h('p', { class: 'hint' }, T('Pridá predvolené zdroje: OpenAI, Google DeepMind, Google AI, Hugging Face, The Verge, TechCrunch, MIT Tech Review, Simon Willison, Ars Technica.')),
       h('button', { class: 'ghost', disabled: state.busy || offline(), onclick: addAiNews }, T('Pridať AI novinky')),
