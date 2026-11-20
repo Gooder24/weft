@@ -947,6 +947,8 @@ export default {
   "Odložiť koncept na neskôr, aj s pripomienkou; uvidíš ho v každom okne (Ctrl+S)": "Stash the draft for later, with a reminder if you like; every window shows it (Ctrl+S)",
   "Odložiť koncept a pripomenúť: {}": "Stash the draft and remind: {}",
   "Len odložiť": "Just stash",
+  "odosiela sa…": "sending…",
+  "Koncept neodišiel ({}), ostáva v Odložených.": "The draft did not go out ({}); it stays in the stash.",
   "bez pripomienky": "no reminder",
   "pripomenie sa {} {}": "reminds {} {}",
   "Odložiť": "Stash",
