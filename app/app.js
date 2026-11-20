@@ -11836,7 +11836,27 @@ function roomLooks(r) {
   for (const [, l] of all.filter(([, x]) => rank(x) === 1)) place(l, (y) => y % C === l.color);
   for (const [, l] of all.filter(([, x]) => rank(x) === 2)) place(l, (y) => Math.floor(y / C) === l.shape);
   for (const [, l] of all.filter(([, x]) => rank(x) === 3)) place(l, () => true);
-  for (const [id, l] of all) looks.set(id, lookClasses(l));
+  // Where two still share a look, others move within what their picks allow (a matching over at most 12 looks), so
+  // everyone differs whenever that is possible.
+  for (const [, l] of all) Object.assign(l, { pick: slotOf(l), pickColor: l.color, pickShape: l.shape });
+  const owner = new Array(n).fill(null);
+  const claim = (l, seen) => {
+    for (let i = 0; i < n; i++) {
+      const x = (l.pick + i) % n;
+      const ok = [x === l.pick, x % C === l.pickColor, Math.floor(x / C) === l.pickShape, true][rank(l)];
+      if (seen.has(x) || !ok) continue;
+      seen.add(x);
+      if (!owner[x] || claim(owner[x], seen)) { owner[x] = l; l.slot = x; return true; }
+    }
+    return false;
+  };
+  const clash = [];
+  for (const [, l] of all) { if (owner[l.pick]) clash.push(l); else { owner[l.pick] = l; l.slot = l.pick; } }
+  for (const l of clash) claim(l, new Set());
+  for (const [id, l] of all) {
+    if (l.slot != null) { l.color = l.slot % C; if (both) l.shape = Math.floor(l.slot / C); }
+    looks.set(id, lookClasses(l));
+  }
   return looks;
 }
 /** Settings → Správy: how people's messages look. */
