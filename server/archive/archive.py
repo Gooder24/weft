@@ -30,7 +30,7 @@ Build those bridges on asus: the running commit with its patch applied (Messenge
 ~/build/meta-calls, branch weft-calls, for its call records; Instagram tag v0.2610.0 in ~/build/meta-carousel),
 `go build -tags goolm ./cmd/mautrix-meta` (or ./cmd/mautrix-instagram), plus bridge-archive.conf.
 Its own device logs in once with a token from mint-login-token.py; the token stays in ./token (0600)."""
-import collections, datetime, filecmp, gzip, hashlib, json, os, re, shutil, sqlite3, stat, subprocess, sys, threading, time, unicodedata, zipfile
+import collections, datetime, filecmp, statistics, gzip, hashlib, json, os, re, shutil, sqlite3, stat, subprocess, sys, threading, time, unicodedata, zipfile
 import urllib.error, urllib.parse, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import discord_weft
@@ -970,6 +970,68 @@ def month_counts(items):
     return out
 
 
+# ---------------------------------------------------------------- what a person and Karchi wrote each other
+
+STATS_REPLY_GAP = 24 * 3600_000  # a later answer is a new conversation, not a reply
+STATS_MONTHS = 24
+mirrored_at = {}  # room -> time.monotonic() of its last mirror_room for /stats
+
+
+def room_stats(c, rooms, today=None):
+    """GET /_archive/stats?room=..: what Karchi and the person of these rooms (one person's chats, merged) wrote each
+    other over the whole history the archive has: counts, the first message, the longest run of days with a message,
+    the median time each side takes to answer (gaps under a day) and STATS_MONTHS months of counts, oldest first.
+    Days and months are asus's time zone (Karchi's). An exported message also on the homeserver or among the bridge's
+    pages counts once, as in the chat itself: history unless mapped to a native message (HISTORY_VISIBLE), Messenger's
+    export unless the same message is native (NATIVE_DUPLICATE), other exports only below the room's first native one."""
+    marks = ",".join("?" * len(rooms))
+    rows = c.execute(f"""SELECT m.ts, m.me FROM messages m JOIN chats c ON c.id = m.chat
+        WHERE COALESCE(c.room, 'archive:' || c.id) IN ({marks}) AND {HISTORY_VISIBLE}
+          AND (c.source IN ('matrix', 'bridge', 'history')
+               OR (c.source = 'messenger-export' AND NOT {NATIVE_DUPLICATE})
+               OR (c.source != 'messenger-export' AND m.ts < COALESCE((SELECT min(n.ts) FROM messages n JOIN chats nc ON nc.id = n.chat
+                                   WHERE nc.room = c.room AND nc.source IN ('matrix', 'bridge')), 1e18)))
+        ORDER BY m.ts""", rooms).fetchall()
+    mine = sum(me for _, me in rows)
+    days, gaps, prev = set(), {0: [], 1: []}, None
+    months = collections.Counter()
+    for ts, me in rows:
+        t = time.localtime(ts / 1000)
+        days.add(datetime.date(t.tm_year, t.tm_mon, t.tm_mday))
+        months[f"{t.tm_year:04d}-{t.tm_mon:02d}"] += 1
+        if prev and prev[1] != me and 0 <= ts - prev[0] < STATS_REPLY_GAP: gaps[me].append(ts - prev[0])
+        prev = (ts, me)
+    streak = run = 0
+    last = None
+    for d in sorted(days):
+        run = run + 1 if last and (d - last).days == 1 else 1
+        streak, last = max(streak, run), d
+    median = lambda xs: statistics.median(xs) if xs else None
+    today = today or datetime.date.today()
+    y, mo, span = today.year, today.month, []
+    for _ in range(STATS_MONTHS):
+        span.append(f"{y:04d}-{mo:02d}")
+        y, mo = (y, mo - 1) if mo > 1 else (y - 1, 12)
+    return {"total": len(rows), "me": mine, "them": len(rows) - mine, "first": rows[0][0] if rows else None,
+            "streak": streak, "reply": {"them": median(gaps[0]), "me": median(gaps[1])},
+            "months": [[k, months.get(k, 0)] for k in reversed(span)]}
+
+
+def fresh_rooms(rooms, token, me, log=print):
+    """Copies the homeserver's newest messages of these rooms first (at most once a minute each), so the counts
+    include what came since the hourly mirror. A room that fails keeps what the archive has."""
+    c = db()
+    try:
+        for room in rooms:
+            if not room.startswith("!") or time.monotonic() - mirrored_at.get(room, -1e9) < 60: continue
+            mirrored_at[room] = time.monotonic()
+            try: mirror_room(c, token, me, room)
+            except Exception as e:
+                c.rollback()
+                log(f"stats: {room} not mirrored: {e}")
+    finally: c.close()
+
+
 thumb_slots = threading.Semaphore(1)  # Keep full-size decode buffers out of concurrent HTTP requests.
 THUMB = 320
 
@@ -1296,8 +1358,15 @@ class Api(BaseHTTPRequestHandler):
         rc = re.fullmatch(r"/_archive/rooms/([^/]+)/receipts", url.path)
         pp = re.fullmatch(r"/_archive/rooms/([^/]+)/people", url.path)
         dc = url.path in ("/_archive/discord/dms", "/_archive/discord/channels", "/_archive/discord/people")
-        if not (m or g or f or rc or pp or dc) and url.path not in ("/_archive/search", "/_archive/chats"): return self.send(404, {"error": "not found"})
+        if not (m or g or f or rc or pp or dc) and url.path not in ("/_archive/search", "/_archive/chats", "/_archive/stats"): return self.send(404, {"error": "not found"})
         if not self.karchi(): return self.send(401, {"error": "not Karchi"})
+        if url.path == "/_archive/stats":
+            rooms = list(dict.fromkeys(urllib.parse.parse_qs(url.query).get("room", [])))
+            if not rooms: return self.send(400, {"error": "room=… missing"})
+            fresh_rooms(rooms, Api.hs_token, Api.owner, lambda *a: print(*a, flush=True))
+            c = db()
+            try: return self.send(200, room_stats(c, rooms))
+            finally: c.close()
         args = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
         if dc: return self.discord(url.path.rsplit("/", 1)[1], args)
         if g: return self.gallery(urllib.parse.unquote(g.group(1)), args)

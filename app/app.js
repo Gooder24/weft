@@ -6717,7 +6717,7 @@ function bubbleView(r, m, ev, grouped, group, sug = null) {
   },
     mine ? null : grouped ? h('div', { class: 'mav' }) : r.archiveOnly ? avatar(member?.avatar, memberName(r, ev.sender), 28, 'mav') : h('button', {
       class: 'mavbtn', title: T`Profil: ${memberName(r, ev.sender)}`,
-      onclick: () => (isDirect(r) ? openProfile(entryOf(r.id)) : openProfile(null, { room: r, user: ev.sender })),
+      onclick: (e) => openPersonCard(e, r, ev.sender),
     }, avatar(member?.avatar, memberName(r, ev.sender), 28, 'mav')),
     // A sticker stands alone, without a bubble, as in Beeper.
     h('div', { class: `bubble${ev.type === 'm.sticker' && !gone ? ' sticker' : ''}` },
@@ -9044,6 +9044,156 @@ function profileView() {
       h('p', { class: 'muted' }, T`${bare.map((a) => a.name).join(', ')}: o človeku len meno a fotka.`)) : null);
 }
 
+// ------------------------------------------------------------------ the card beside a message's picture
+
+// A click on the picture beside someone's message opens a small card out of it: what Karchi and that person wrote
+// each other over the whole history the archive has (GET /_archive/stats, all networks of a merged chat at once).
+// In a group it is about Karchi's own chat with that person, when Weft has one. The name opens the full profile.
+const statsCache = new Map(); // room ids joined by ' ' → { at, data } or { at, error }; loading: true while asked
+const STATS_FRESH = 2 * 60e3;
+
+/** The chat (an inbox entry) Karchi has with this one person, on any network; null when there is none. In a
+ *  one-to-one chat every message not Karchi's is the person's, also an archived one under its old name. */
+function personEntry(r, user) {
+  if (isDirect(r) && dmPartner(r)) return entryOf(r.id);
+  const dm = [...S.rooms.values()].find((x) => !x.archiveOnly && isDirect(x) && dmPartner(x)?.[0] === user);
+  return dm ? entryOf(dm.id) : null;
+}
+const statsRooms = (e) => (e?.kind === 'room' ? (e.rooms || [e.room]).filter((x) => !x.archiveOnly).map((x) => x.id).sort() : []);
+
+function loadStats(e) {
+  const rooms = statsRooms(e);
+  const key = rooms.join(' ');
+  const had = statsCache.get(key);
+  if (!rooms.length || had?.loading || (had && Date.now() - had.at < (had.error ? 10e3 : STATS_FRESH))) return;
+  statsCache.set(key, { ...had, loading: true });
+  archiveGet(`/_archive/stats?${rooms.map((id) => `room=${q(id)}`).join('&')}`)
+    .then((data) => statsCache.set(key, { at: Date.now(), data }))
+    .catch(() => statsCache.set(key, { ...had, at: Date.now(), error: true, loading: false }))
+    .finally(() => { if (S.overlay?.kind === 'whocard') redrawCard(S.overlay); });
+}
+// The card keeps its first drawing while it grows out of the picture (personCardView, o.grown); what came meanwhile
+// shows right after.
+function redrawCard(o) {
+  (o.grown || Promise.resolve()).then(() => { if (S.overlay === o) { render(); countUp(); } });
+}
+
+function openPersonCard(ev, r, user) {
+  const at = ev.currentTarget.getBoundingClientRect();
+  const e = personEntry(r, user);
+  const o = { kind: 'whocard', room: r.id, user, key: e?.key || null, at: { left: at.left, right: at.right, top: at.top, bottom: at.bottom }, grownDone: true };
+  S.overlay = o;
+  loadStats(e);
+  // WhatsApp names group members by LID and DMs by phone: only the bridge knows their chat (it creates nothing).
+  const start = !e && r.app === 'whatsapp' && memberStart(r, user);
+  if (start) {
+    o.finding = true;
+    prov(LINKS.find((a) => a.id === 'whatsapp'), 'GET', `/resolve_identifier/${q(start.id)}`)
+      .then((found) => {
+        const dm = found.dm_room_mxid && S.rooms.has(found.dm_room_mxid) && entryOf(found.dm_room_mxid);
+        if (dm) { o.key = dm.key; loadStats(dm); } else if (found.dm_room_mxid) o.findFailed = true; // a chat Weft has not loaded
+      })
+      .catch(() => { o.findFailed = true; })
+      .finally(() => { o.finding = false; redrawCard(o); });
+  }
+  render();
+  // It grows out of the picture once: a circle opening from the picture's centre.
+  const card = document.querySelector('.whocard');
+  if (card && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    const box = card.getBoundingClientRect();
+    const x = (at.left + at.right) / 2 - box.left, y = (at.top + at.bottom) / 2 - box.top;
+    const far = Math.hypot(Math.max(x, box.width - x), Math.max(y, box.height - y)) + 4;
+    const grow = card.animate([{ clipPath: `circle(14px at ${x}px ${y}px)`, transform: 'scale(.94)' }, { clipPath: `circle(${far}px at ${x}px ${y}px)`, transform: 'none' }],
+      { duration: 220, easing: 'cubic-bezier(.2, .7, .3, 1)' });
+    o.grownDone = false;
+    o.grown = grow.finished.catch(() => {}).then(() => { o.grownDone = true; });
+  }
+  countUp();
+}
+
+/** The card's numbers run up to their value once, when they first show. */
+function countUp() {
+  const card = document.querySelector('.whocard');
+  const els = card ? [...card.querySelectorAll('[data-n]:not([data-counted])')] : [];
+  if (!els.length) return;
+  els.forEach((el) => el.setAttribute('data-counted', ''));
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const start = performance.now();
+  const step = (now) => {
+    const k = Math.min(1, (now - start) / 600);
+    const eased = 1 - (1 - k) ** 3;
+    for (const el of els) if (el.isConnected) el.textContent = Math.round(Number(el.dataset.n) * eased).toLocaleString(LOCALE);
+    if (k < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+
+/** How long an answer takes, rounded as people say it. */
+function answerTime(ms) {
+  const min = Math.round(ms / 60e3);
+  return min < 1 ? '<1 min' : min < 60 ? `${min} min` : `${Math.round(min / 60)} h`;
+}
+const daysWord = (n) => `${n.toLocaleString(LOCALE)} ${n === 1 ? T('deň') : n >= 2 && n <= 4 ? T('dni') : T('dní')}`;
+const messagesWord = (n) => (n === 1 ? T('správa') : n >= 2 && n <= 4 ? T('správy') : T('správ'));
+
+function personCardView(o) {
+  const r = S.rooms.get(o.room);
+  if (!r) return null;
+  const e = o.key ? entryOf(o.key) : null;
+  const had = e && statsCache.get(statsRooms(e).join(' '));
+  const sig = [e?.key, e?.title, o.finding, o.findFailed, had?.at, had?.error].join('|');
+  const live = document.querySelector('#app > .veil.whoveil');
+  if (live?._o === o && (live._sig === sig || !o.grownDone)) return live;
+  const veil = whoCard(o, r, e);
+  Object.assign(veil, { _o: o, _sig: sig });
+  return veil;
+}
+function whoCard(o, r, e) {
+  const title = e ? e.title : memberName(r, o.user);
+  const pic = r.members.get(o.user)?.avatar || (e && roomAvatar(e.rooms?.find(roomAvatar) || e.room));
+  const apps = [...new Set((e ? e.rooms || [e.room] : [r]).map((x) => x.app))].map(appOf).filter(Boolean);
+  const got = e && statsCache.get(statsRooms(e).join(' '));
+  const st = got?.data;
+  const close = () => { S.overlay = null; render(); };
+  const full = () => { S.overlay = null; if (e && personChat(e)) openProfile(e); else openProfile(null, { room: r, user: o.user }); };
+  // Beside the picture, toward the middle of the window; upward from it when it sits low, as the newest messages do.
+  const W = 248;
+  const left = o.at.right + 10 + W <= innerWidth - 8 ? o.at.right + 10 : Math.max(8, o.at.left - 10 - W);
+  const up = o.at.bottom > 280;
+  const place = up ? { left: `${left}px`, bottom: `${Math.max(8, innerHeight - o.at.bottom)}px` } : { left: `${left}px`, top: `${Math.max(8, o.at.top)}px` };
+  const n = (v) => h('span', { 'data-n': String(v) }, v.toLocaleString(LOCALE));
+  const first = st?.first ? new Date(st.first) : null;
+  const top = st ? Math.max(1, ...st.months.map(([, c]) => c)) : 1;
+  const monthLabel = ([ym, c]) => `${MONTHS[Number(ym.slice(5)) - 1]} ${ym.slice(0, 4)}: ${c.toLocaleString(LOCALE)}`;
+  const shortMonth = (ym) => `${MONTHS[Number(ym.slice(5)) - 1]} ${ym.slice(2, 4)}`;
+  const firstName = String(title).split(/\s+/)[0];
+  return h('div', { class: 'veil clear whoveil', onclick: close, oncontextmenu: (ev) => { ev.preventDefault(); close(); } },
+    h('div', { class: 'whocard', style: place, onclick: (ev) => ev.stopPropagation() },
+      h('div', { class: 'pc-head' }, avatar(pic, title, 28),
+        h('div', { class: 'pc-who' },
+          h('button', { class: 'pc-name', title: T('Celý profil'), onclick: full }, title),
+          h('div', { class: 'pc-sum' },
+            st ? [n(st.total), ` ${messagesWord(st.total)}`] : got?.error ? T('archív teraz neodpovedá') : e || o.finding ? T('počítam…') : o.findFailed ? T('chat sa nepodarilo nájsť') : T('len v skupinách'),
+            apps.map((a) => h('img', { src: a.icon, alt: a.name, title: a.name }))))),
+      st?.total ? [
+        h('div', { class: 'pc-sec' },
+          h('div', { class: 'pc-split', title: T`ty ${st.me} · ${firstName} ${st.them}` }, h('i', { style: { width: `${(st.me / st.total) * 100}%` } })),
+          h('div', { class: 'pc-legend' }, h('span', {}, h('em', { class: 'me' }), T('ty'), ' ', n(st.me)), h('span', {}, h('em'), `${firstName} `, n(st.them)))),
+        h('dl', { class: 'pc-sec pc-rows' },
+          h('dt', {}, T('Od')), h('dd', {}, `${MONTHS[first.getMonth()]} ${first.getFullYear()}`),
+          h('dt', {}, T('Séria')), h('dd', {}, T`${daysWord(st.streak)} po sebe`),
+          h('dt', {}, T('Odpovedá')), h('dd', {}, st.reply.them == null ? '–' : T`do ${answerTime(st.reply.them)}`, st.reply.me == null ? null : h('small', {}, T` · ty ${answerTime(st.reply.me)}`))),
+        h('div', { class: 'pc-sec' },
+          h('div', {
+            class: 'pc-spark',
+            // The month under the pointer is named under the bars; nothing covers the card.
+            onpointerover: (ev) => { const b = ev.target.closest('i[data-m]'); ev.currentTarget.parentElement.querySelector('.pc-mon').textContent = b ? b.dataset.m : ''; },
+            onpointerleave: (ev) => { ev.currentTarget.parentElement.querySelector('.pc-mon').textContent = ''; },
+          }, st.months.map((m, i) => h('i', { 'data-m': monthLabel(m), style: { height: `${Math.max(2, Math.round((m[1] / top) * 18))}px`, animationDelay: `${i * 20}ms` } }))),
+          h('div', { class: 'pc-axis' }, h('span', {}, shortMonth(st.months[0][0])), h('span', { class: 'pc-mon' }), h('span', {}, shortMonth(st.months.at(-1)[0])))),
+      ] : null));
+}
+
 const SHORTCUTS = [
   ['Ctrl+J', T('Nájsť nástroj podľa mena (bez skratky)')], ['Ctrl+K', T('Hľadať chaty, ľudí a správy')], ['Ctrl+Shift+K', T('Nová správa (aj Ctrl+N)')], ['Ctrl+U', T('Ďalší neprečítaný chat')],
   // avoid-ai-design-ignore: CP3 — literal arrow keys in the shortcut reference.
@@ -9149,6 +9299,7 @@ function overlayView() {
   if (!o) return null;
   if (o.kind === 'menu') return menuView(o);
   if (o.kind === 'msgmenu') return msgMenuView(o);
+  if (o.kind === 'whocard') return personCardView(o);
   const close = () => closeOverlay();
   if (o.kind === 'image') return viewerView(o);
   if (o.kind === 'gallery') return gal?.el || null;

@@ -111,6 +111,11 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   with `whatsmeow-status-stanza.patch`, which lets statuses into the status room, and `discord-weft-profile.patch`;
   build notes in each patch). The WhatsApp status room is no chat and never gets a receipt, so looking is never
   „videné“. Check: `overenie/profil-ludi/run.sh`.
+  A click on the picture beside someone's message opens a small card out of it instead: how many messages the two
+  wrote (theirs and Karchi's), since when, the longest run of days, how fast each answers and 24 months of counts,
+  over the whole archive and every network of a merged chat (archive `GET /_archive/stats?room=…`, which first copies
+  the rooms' newest messages from the homeserver); in a group it is Karchi's own chat with that person. Its name opens
+  the profile. Check: `overenie/profil-karta/run.sh` (`stats_test.py`, `ui.cjs`).
 - Mentions (like Beeper): „@“ in a Messenger, Instagram, WhatsApp or Discord chat lists its people; a picked or fully
   typed „@Name“ goes out as a Matrix mention (`formatted_body` matrix.to link + `m.mentions`), which the mautrix
   bridges turn into the network's own. Drafts, replies, edits, send-later and the merged chat's network switch keep

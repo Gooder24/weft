@@ -1216,4 +1216,32 @@ button.prof-status:hover { background: var(--hover); }
 /* A person's picture opens their profile: in the inbox, the chat's head and beside a group's messages. */
 .mavbtn { flex: none; display: flex; padding: 0; border: 0; border-radius: 50%; background: none; cursor: pointer; }
 .mavbtn:hover .mav, .item.person .avwrap:hover > .av, .cwho.person .av:hover { outline: var(--bw) solid var(--link); outline-offset: 2px; }
+.whocard { position: fixed; width: 248px; padding: 10px; display: flex; flex-direction: column; gap: 8px;
+  background: var(--panel); border: var(--bw) solid var(--line-strong); border-radius: var(--radius-l); }
+.pc-head { display: flex; gap: 8px; align-items: center; min-width: 0; }
+.pc-head .av { width: 28px; height: 28px; font-size: var(--fs); }
+.pc-who { min-width: 0; display: flex; flex-direction: column; }
+.pc-name { padding: 0; border: 0; background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pc-name:hover { color: var(--link); }
+.pc-sum { display: flex; align-items: center; gap: 4px; color: var(--muted); }
+.pc-sum > span:first-child { color: var(--text); }
+.pc-sum img { width: 11px; height: 11px; border-radius: 3px; }
+.pc-sum img:first-of-type { margin-left: 4px; }
+.pc-sec { margin: 0; border-top: var(--bw) solid var(--line); padding-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+.pc-split { height: 4px; border-radius: 2px; background: var(--link); overflow: hidden; display: flex; }
+.pc-split i { display: block; background: var(--accent); }
+.pc-legend { display: flex; justify-content: space-between; color: var(--muted); }
+.pc-legend em { display: inline-block; width: 8px; height: 8px; margin-right: 4px; border-radius: 2px; background: var(--link); }
+.pc-legend em.me { background: var(--accent); }
+.pc-rows { display: grid; grid-template-columns: auto 1fr; column-gap: 8px; row-gap: 2px; }
+.pc-rows dt { color: var(--muted); }
+.pc-rows dd { margin: 0; }
+.pc-rows small { color: var(--muted); font-size: var(--fs); }
+.pc-spark { display: flex; align-items: flex-end; gap: 2px; height: 18px; }
+.pc-spark i { flex: 1; border-radius: 2px 2px 0 0; background: var(--accent); transform-origin: bottom; animation: pc-rise .45s cubic-bezier(.2, .7, .3, 1) both; }
+.pc-spark i:hover { background: var(--text); }
+.pc-axis { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); }
+.pc-mon { color: var(--text); }
+@keyframes pc-rise { from { transform: scaleY(0); } }
+@media (prefers-reduced-motion: reduce) { .pc-spark i { animation: none; } }
 .item.person .avwrap { cursor: pointer; }
