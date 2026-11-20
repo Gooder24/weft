@@ -295,6 +295,7 @@ function clearSession() {
   feed.clear();
   S.homeReady = S.homeSynced = false;
   S.rooms.clear(); // also what a kept copy showed before asus said the session had ended
+  S.archiveTag = null; S.archiveAt = 0;
   S.fromSnapshot = false;
   cal.doc = null; cal.loaded = false;
   forgetCodes();
@@ -1133,12 +1134,16 @@ function refreshArchiveChats(force = false) {
 async function readArchiveChats() {
   const token = S.token;
   try {
-    const res = await fetch('/_archive/chats', { headers: { Authorization: `Bearer ${token}` } });
+    // An unchanged list answers 304 to the tag of the last one taken: thousands of old mail threads are not walked again.
+    const tag = S.archiveTag?.token === token ? S.archiveTag.etag : '';
+    const res = await fetch('/_archive/chats', { cache: 'no-store', headers: { Authorization: `Bearer ${token}`, ...(tag ? { 'If-None-Match': tag } : {}) } });
+    if (res.status === 304) { if (S.token === token) S.archiveAt = Date.now(); return; }
     if (!res.ok) return;
     const { chats = [] } = await res.json();
     if (S.token !== token) return;
     takeArchiveChats(chats);
     S.archiveAt = Date.now();
+    S.archiveTag = { token, etag: res.headers.get('ETag') || '' };
     refresh();
     // Kept for the next start, so Ctrl+K finds these people at once (previews cut short: the archive has the rest);
     // written again only when a chat or its last message changed.

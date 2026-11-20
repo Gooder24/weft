@@ -30,7 +30,7 @@ Build those bridges on asus: the running commit with its patch applied (Messenge
 ~/build/meta-calls, branch weft-calls, for its call records; Instagram tag v0.2610.0 in ~/build/meta-carousel),
 `go build -tags goolm ./cmd/mautrix-meta` (or ./cmd/mautrix-instagram), plus bridge-archive.conf.
 Its own device logs in once with a token from mint-login-token.py; the token stays in ./token (0600)."""
-import collections, datetime, filecmp, hashlib, json, os, re, shutil, sqlite3, stat, subprocess, sys, threading, time, unicodedata, zipfile
+import collections, datetime, filecmp, gzip, hashlib, json, os, re, shutil, sqlite3, stat, subprocess, sys, threading, time, unicodedata, zipfile
 import urllib.error, urllib.parse, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import discord_weft
@@ -663,6 +663,22 @@ def conversations(c):
         {"id": ident,"ts": ts,"sender": sender,"me": bool(me),"body": body,"preview": True}}
         for chat,network,title,room,ident,ts,sender,me,body in rows if not (room in seen or seen.add(room))]
 
+# /_archive/chats is several MB (every old mail thread): built once and kept, as JSON and gzip, until a message is
+# added, a chat is linked here, or a minute passed (edits and other processes' changes). One build at a time.
+CHATS = {"key": None, "at": 0.0, "raw": b"", "gz": b"", "tag": ""}
+CHATS_LOCK = threading.Lock()
+
+
+def chats_body(c):
+    """(json bytes, gzip bytes, ETag) of {"chats": conversations(c)}, from CHATS while the archive is unchanged."""
+    with CHATS_LOCK:
+        key = c.execute("SELECT (SELECT max(rowid) FROM messages), (SELECT count(*) FROM chats)").fetchone()
+        if CHATS["key"] != key or time.monotonic() - CHATS["at"] > 60:
+            raw = json.dumps({"chats": conversations(c)}, ensure_ascii=False).encode()
+            CHATS.update(key=key, at=time.monotonic(), raw=raw, gz=gzip.compress(raw, 6), tag=f'"{hashlib.sha256(raw).hexdigest()[:32]}"')
+        return CHATS["raw"], CHATS["gz"], CHATS["tag"]
+
+
 def export(folder, c=None):
     """One text file per conversation: a Weft chat with everything the archive has of it (its messages on the
     homeserver, the bridge's older pages, the export below them), and each exported chat that has no Weft chat.
@@ -1225,7 +1241,9 @@ class Api(BaseHTTPRequestHandler):
             ok = link_chat(c, chat, room)
             now = c.execute("SELECT room FROM chats WHERE id = ?", (chat.removeprefix("archive:"),)).fetchone()
         finally: c.close()
-        if ok: return self.send(200, {"linked": True})
+        if ok:
+            CHATS["key"] = None  # the chat left the list of old conversations
+            return self.send(200, {"linked": True})
         # Already linked (Weft in another window): say where, so that window opens the live room.
         if now and now[0] and not now[0].startswith("archive:"):
             return self.send(409, {"error": "already linked", "room": now[0]})
@@ -1277,8 +1295,21 @@ class Api(BaseHTTPRequestHandler):
             finally: c.close()
         if url.path == "/_archive/chats":
             c = db()
-            try: return self.send(200, {"chats": conversations(c)})
+            try: raw, gz, tag = chats_body(c)
             finally: c.close()
+            if self.headers.get("If-None-Match") == tag:  # Weft already has this list: nothing to parse again
+                self.send_response(304)
+                self.send_header("ETag", tag)
+                return self.end_headers()
+            zipped = "gzip" in (self.headers.get("Accept-Encoding") or "")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Vary", "Accept-Encoding")
+            self.send_header("ETag", tag)
+            if zipped: self.send_header("Content-Encoding", "gzip")
+            self.send_header("Content-Length", str(len(gz if zipped else raw)))
+            self.end_headers()
+            return self.wfile.write(gz if zipped else raw)
         if not m:
             try: limit = max(1, min(500, int(args.get("limit", 100))))
             except ValueError: return self.send(400, {"error": "limit is a number"})
