@@ -555,6 +555,9 @@ kbd { margin-left: auto; font-family: inherit; font-size: var(--fs); color: var(
 /* avoid-ai-design-ignore: K4 — Existing reply quotation marker identifies a quoted message. */
 .replybar { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; padding: 4px 10px; border-left: 3px solid var(--link); background: var(--tint); font-size: var(--fs); color: var(--muted); }
 .replybar span { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fwdnotes { flex: none; padding: 0 16px; }
+.fwdnotes .replybar { margin: 6px 0 0; }
+.replybar.fwdnote.failed { border-left-color: var(--error); color: var(--error); }
 
 /* Search, new chat, reminders and shortcuts: one box over everything, like a command bar. */
 .cmd { position: relative; width: 100%; max-width: 620px; max-height: 76vh; display: flex; flex-direction: column; background: var(--panel); border: var(--bw) solid var(--line-strong); border-radius: var(--radius-l); overflow: hidden; }

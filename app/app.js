@@ -3199,7 +3199,7 @@ function forwardContent(m, ev) {
   if (ev.type !== 'm.room.message' || isRedacted(m, ev) || pollIn(ev, ev.content) || callOf(ev)) return null;
   const c = contentOf(m, ev);
   if (['m.text', 'm.notice', 'm.emote'].includes(c.msgtype)) {
-    const body = plainBody({ ...c, 'm.relates_to': ev.content?.['m.relates_to'] }).trim();
+    const body = plainBody(c).trim(); // an edit's new text has no quote to cut
     return body ? { msgtype: 'm.text', body } : null;
   }
   if (!['m.image', 'm.video', 'm.audio', 'm.file'].includes(c.msgtype) || !(c.url || c.file?.url)?.startsWith('mxc://')) return null;
@@ -3214,18 +3214,20 @@ function openForward(r, ev) {
 /** Ctrl+J „Preposlať poslednú správu…“: the open chat's newest message that can go elsewhere, a merged chat's included. */
 function forwardLast(r) {
   const t = timelineOf(r);
-  const ev = t.msgs.findLast((x) => !x.pending && forwardContent(roomModel(t.roomOf(x)), x));
-  if (ev) openForward(t.roomOf(ev), ev);
+  const ev = t.msgs.findLast((x) => !x.pending && !isRedacted(roomModel(t.roomOf(x)), x));
+  if (ev) openOverlay('forward', { room: t.roomOf(ev).id, event: ev.event_id }); // one Weft cannot send says so
 }
 function forwardPickView(o) {
   const from = S.rooms.get(o.room);
   const ev = from && roomModel(from).byId.get(o.event);
   const content = ev && forwardContent(roomModel(from), ev);
   const words = norm(o.query).split(/\s+/).filter(Boolean);
-  const pool = [...S.rooms.values()].filter((x) => isChat(x) && !x.archiveOnly && x.id !== o.room && roomTitle(x))
+  // The list is taken once: a message arriving or a chat leaving meanwhile must not move another chat under the highlight.
+  const pool = o.pool ||= [...S.rooms.values()].filter((x) => isChat(x) && !x.archiveOnly && x.id !== o.room && roomTitle(x))
     .sort((a, b) => (roomModel(b).messages.at(-1)?.origin_server_ts || 0) - (roomModel(a).messages.at(-1)?.origin_server_ts || 0));
   const list = pool.filter((x) => words.every((w) => norm(`${roomTitle(x)} ${appOf(x.app)?.name || ''}`).includes(w))).slice(0, 40);
-  o.flat = content ? list.map((x) => () => { S.overlay = null; forwardTo(from, x, content); }) : [];
+  // A chat that left while the picker was open stays in its place, but cannot be picked.
+  o.flat = content ? list.map((x) => () => { if (S.rooms.get(x.id) !== x) return; S.overlay = null; forwardTo(from, x, content); }) : [];
   if (o.index >= o.flat.length) o.index = 0;
   const what = !content ? '' : content.msgtype === 'm.text' ? content.body.replace(/\s+/g, ' ') : content.body;
   return [
@@ -3234,34 +3236,54 @@ function forwardPickView(o) {
     h('div', { class: 'results' }, list.length && content
       ? list.map((x, i) => resultRow(o, null, i, [avatar(roomAvatar(x), roomTitle(x), 28),
         h('div', { class: 'rmeta' }, h('b', {}, highlighted(roomTitle(x), o.query)), h('small', {}, appOf(x.app)?.name || 'Matrix')),
-        appOf(x.app) ? h('img', { class: 'rnet', src: appOf(x.app).icon, alt: '' }) : null]))
+        appOf(x.app) ? h('img', { class: 'rnet', src: appOf(x.app).icon, alt: '' }) : null], S.rooms.get(x.id) === x ? '' : ' dim'))
       : content ? h('div', { class: 'empty' }, T('Taký chat sa nenašiel.')) : null),
   ];
 }
 /** Sends the copy into `to` as Karchi's own message; the chat it came from says where it went, and a copy that did
  *  not go stays in `to` as „neodoslané“ with „Znova odoslať“. */
 async function forwardTo(from, to, content) {
-  const note = { id: txnId(), from: from.id, to: to.id, state: 'sending' };
-  S.forwards = [...(S.forwards || []), note];
-  render();
+  // What `to` holds of the same text already (forwarded before) is not this copy.
+  const before = new Set(forwardCopies(to, content).map((ev) => ev.event_id));
+  const note = { id: txnId(), from: from.id, to: to.id, content, before, at: Date.now() };
+  // The same message again to the same chat: one note, about the newest try (the copies cannot be told apart).
+  S.forwards = [...(S.forwards || []).filter((x) => !(x.to === to.id && forwardSig(x.content) === forwardSig(content))), note];
   await sendAgain(to, 'm.room.message', content, async () => content);
-  const left = [...to.pending.values()].find((p) => p.content === content);
-  note.state = !left ? 'sent' : left.failed ? 'failed' : 'waiting';
-  if (note.state === 'sent') setTimeout(() => { S.forwards = (S.forwards || []).filter((x) => x !== note); render(); }, 8000);
+  if (forwardState(note) === 'sent') setTimeout(() => { S.forwards = (S.forwards || []).filter((x) => x !== note); render(); }, 8000);
   render();
 }
-/** Under the chat's last message: where a forwarded message went, or that it did not. */
+/** What a message says, for telling a forwarded copy: the outbox and a retry keep copies of the content, and the
+ *  server's echo is another object, so copies are compared by text and file. */
+const forwardSig = (c) => `${c?.msgtype}|${c?.body}|${c?.url || c?.file?.url || ''}`;
+/** Karchi's bubbles and messages in `r` that say what `content` says. */
+function forwardCopies(r, content) {
+  const want = forwardSig(content);
+  return [...(r?.pending.values() || []), ...(r?.events.values() || [])].filter((ev) => ev.sender === S.userId && forwardSig(ev.content) === want);
+}
+/** Where a forwarded copy is now: its bubble still on its way, or a message on the server (sent). Neither: it was
+ *  dropped, so it did not go. */
+function forwardState(it) {
+  const r = S.rooms.get(it.to);
+  const mine = forwardCopies(r, it.content).filter((ev) => !it.before.has(ev.event_id));
+  const p = mine.findLast((ev) => r.pending.has(ev.event_id));
+  if (p) return p.failed ? 'failed' : p.waiting ? 'waiting' : 'sending';
+  // Older history paged in later is not this copy; a minute's slack for the server's clock.
+  return mine.some((ev) => ev.event_id.startsWith('$') && ev.origin_server_ts >= it.at - 60e3) ? 'sent' : 'failed';
+}
+/** Over the message box, in sight wherever the chat is scrolled: where a forwarded message went, or that it did not. */
 function forwardBar(rooms) {
   const ids = new Set(rooms.map((x) => x.id));
-  return (S.forwards || []).filter((it) => ids.has(it.from)).map((it) => {
+  const notes = (S.forwards || []).filter((it) => ids.has(it.from)).map((it) => {
     const to = S.rooms.get(it.to);
     const name = to ? roomTitle(to) : 'chat';
-    const label = it.state === 'sending' ? T`Preposiela sa do chatu ${name}…` : it.state === 'sent' ? T`Preposlané do chatu ${name}`
-      : it.state === 'waiting' ? T`Preposlanie do chatu ${name} odíde, keď bude sieť` : T`Preposlanie do chatu ${name} neodišlo`;
-    return h('div', { class: `cnote relay${it.state === 'failed' ? ' failed' : ''}`, 'data-key': `fwd:${it.id}` }, label,
+    const state = forwardState(it);
+    const label = state === 'sending' ? T`Preposiela sa do chatu ${name}…` : state === 'sent' ? T`Preposlané do chatu ${name}`
+      : state === 'waiting' ? T`Preposlanie do chatu ${name} odíde, keď bude sieť` : T`Preposlanie do chatu ${name} neodišlo`;
+    return h('div', { class: `replybar fwdnote${state === 'failed' ? ' failed' : ''}`, 'data-key': `fwd:${it.id}` }, h('span', {}, label),
       to ? h('button', { class: 'ghost', onclick: () => { S.forwards = S.forwards.filter((x) => x !== it); select(to.id); } }, T('Otvoriť')) : null,
-      h('button', { class: 'ghost', onclick: () => { S.forwards = S.forwards.filter((x) => x !== it); render(); } }, 'OK'));
+      h('button', { class: 'ghost', title: T('Zavrieť'), onclick: () => { S.forwards = S.forwards.filter((x) => x !== it); render(); } }, icon('close')));
   });
+  return notes.length ? h('div', { class: 'fwdnotes', 'data-key': '__fwd' }, notes) : null;
 }
 
 /** Tells the network Karchi read the chat, as Beeper does when a chat is open. */
@@ -7290,7 +7312,6 @@ function chatView(r, e = null) {
   items.push(typingLine(t.parts, partner));
   for (const x of t.parts) items.push(...laterBubbles(x, roomModel(x)));
   items.push(...relayBar(t.parts));
-  items.push(...forwardBar(t.parts));
   pruneGifs(r);
   const group = !partner && joinedPeople(r).length > 0;
   const held = t.parts.reduce((sum, x) => sum + roomModel(x).held, 0);
@@ -7328,6 +7349,7 @@ function chatView(r, e = null) {
       items,
       heldBar(r, held === m.held ? m : { held }),
       h('div', { class: 'tonew', 'data-key': '__tonew' }, h('button', { type: 'button', title: T('Na najnovšie správy (Ctrl+↓)'), 'aria-label': T('Na najnovšie správy'), hidden: !S.chatAway, onclick: chatToNew }, icon('arrow-down'), h('kbd', {}, 'Ctrl+↓')))),
+    forwardBar(t.parts),
     r.archiveOnly ? archiveCompose(r) : chatCompose(r, m, merged ? t : null));
 }
 
