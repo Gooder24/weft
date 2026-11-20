@@ -6694,7 +6694,7 @@ function bubbleView(r, m, ev, grouped, group, sug = null) {
   const acts = !(gone || ev.pending || ev.archived);
   const fail = mine && !gone ? (ev.pending ? (ev.failed ? { reason: ev.failed, sure: true } : null) : m.failed?.get(ev.event_id)) : null;
   return h('div', {
-    class: `msg${mine ? ' mine' : ''}${grouped ? ' grouped' : ''}${ev.pending && !fail ? ' pending' : ''}${fail ? ' failed' : ''}${S.focusEvent === ev.event_id ? ' focus' : ''}${S.actsFor === ev.event_id ? ' acts' : ''}`,
+    class: `msg${mine ? ' mine' : lookClass(r, ev.sender)}${grouped ? ' grouped' : ''}${ev.pending && !fail ? ' pending' : ''}${fail ? ' failed' : ''}${S.focusEvent === ev.event_id ? ' focus' : ''}${S.actsFor === ev.event_id ? ' acts' : ''}`,
     'data-event': ev.event_id,
     oncontextmenu: (e) => {
       // Someone else's name or picture in a group: the menu offers a nickname for them.
@@ -6755,7 +6755,7 @@ function bubbleKept(r, m, ev, grouped, group, sug = null) {
   // old bubbles and the history their handlers hold.
   if (bubbleMemoRoom !== r.id || bubbleMemoSeq !== seq) { bubbleMemo.clear(); bubbleMemoRoom = r.id; bubbleMemoSeq = seq; }
   const id = ev.event_id;
-  const sig = `${seq}|${grouped}|${group}|${S.focusEvent === id}|${S.actsFor === id}|${hoverMsg === id}|${hoverMsg === id || S.actsFor === id ? receiptSeq : ''}|${S.focusEvent === id ? S.findQuery || '' : ''}|${!!ev.pending}|${!!ev.waiting}|${linkVer.get(id) || 0}|${sug ? calSugKey(sug) : ''}`;
+  const sig = `${seq}|${lookClass(r, ev.sender)}|${grouped}|${group}|${S.focusEvent === id}|${S.actsFor === id}|${hoverMsg === id}|${hoverMsg === id || S.actsFor === id ? receiptSeq : ''}|${S.focusEvent === id ? S.findQuery || '' : ''}|${!!ev.pending}|${!!ev.waiting}|${linkVer.get(id) || 0}|${sug ? calSugKey(sug) : ''}`;
   const hit = bubbleMemo.get(id);
   if (hit?.sig === sig && hit.el.isConnected) return ref(hit.el);
   mediaAwaited = false;
@@ -9037,9 +9037,11 @@ function profileView() {
   // Networks that tell nothing more about a person (Messenger, Instagram, EduPage…) are named, not left out silently.
   const apps = [...new Set((e ? e.rooms || [e.room] : [r]).map((x) => x.app))];
   const bare = apps.filter((a) => !parts.some((p) => p.app === a)).map(appOf).filter(Boolean);
+  const lookUser = e ? entryPeople(e)[0]?.[0] : who.user;
   return h('div', { class: 'profile' },
     h('div', { class: 'prof-head' }, avatar(pic, title, 64), h('div', {}, h('h2', {}, title),
       h('p', { class: 'prof-nets' }, apps.map(appOf).filter(Boolean).map((a) => h('span', {}, h('img', { src: a.icon, alt: '' }), a.name))))),
+    lookUser ? lookPicker(lookUser) : null,
     parts.map((p) => (p.app === 'whatsapp' ? waProfile(p, { name: title, avatar: pic }) : discordProfile(p))),
     bare.length ? h('section', { class: 'prof-sec', 'data-key': 'bare' },
       h('p', { class: 'muted' }, T`${bare.map((a) => a.name).join(', ')}: o človeku len meno a fotka.`)) : null);
@@ -11743,6 +11745,7 @@ function batchSettings() {
       h('span', {}, T('Aj EduPage počká'), h('small', {}, T('Inak ju vidíš hneď, aj na hodine.')))),
     workSettings(),
     ringSettings(),
+    lookSettings(),
     h('h3', {}, T('Spojené chaty')),
     h('label', { class: 'bcheck' },
       h('input', { type: 'checkbox', checked: mergeData().auto !== false, onchange: (e) => { saveMerges({ ...mergeData(), auto: e.target.checked ? null : false }); autoMergeSoon(); } }),
@@ -11750,6 +11753,126 @@ function batchSettings() {
         h('small', {}, T('Rovnaké celé meno na viacerých sieťach, aj so zdrobneninou (Janka – Jana) alebo stredným menom, na každej sieti len raz, alebo človek z mapy ľudí. Rozpojené chaty sa znova nespoja, vypnutie nechá spojené tak, ako sú.')))),
     mergeSuggestions(),
   ];
+}
+
+// Settings → Správy → Ľudia v chate: everyone's messages look alike (the default), or each person is told apart by
+// a colour of the palette (their name and the bubble's edge), with „Farba a tvar“ also by the bubble's corners. A
+// person's look comes from their id, a merged chat's from its group (one person, one look), so every device shows the
+// same; in a group two people get different looks while there are free ones. A look picked in the profile wins and
+// shows in every mode. Account data: { mode?: 'color' | 'both', people: { [user id | merge:<id>]: { color?, shape? } } }.
+const LOOK = 'sk.karchi.people.look';
+const LOOK_MODES = [['same', T('Rovnako')], ['color', T('Farba')], ['both', T('Farba a tvar')]];
+const LOOK_COLORS = [T('Červená'), T('Žltá'), T('Zelená'), T('Modrá')]; // .look-c0… in app.css
+const LOOK_SHAPES = [T('Oblá'), T('List'), T('Hranatá')]; // .look-s0…
+const lookData = () => S.account[LOOK] || {};
+const lookMode = () => (['color', 'both'].includes(lookData().mode) ? lookData().mode : 'same');
+function saveLook(data) {
+  putAccount(LOOK, data).catch(() => alert(T('Nastavenie sa neuložilo.')));
+  render();
+}
+let lookKeys = { idx: null, map: new Map() };
+/** Whose look a sender wears: their merged chat's, else their own. */
+function lookKey(user) {
+  const idx = mergeIndex();
+  if (lookKeys.idx !== idx) {
+    const map = new Map();
+    for (const [id, g] of idx) { const p = dmPartner(S.rooms.get(id)); if (p) map.set(p[0], mergeKey(g)); }
+    lookKeys = { idx, map };
+  }
+  return lookKeys.map.get(user) || user;
+}
+const lookHash = (key) => { let x = 2166136261; for (let i = 0; i < key.length; i++) x = Math.imul(x ^ key.charCodeAt(i), 16777619); return x >>> 0; };
+const lookMemo = new Map(); // room id -> { data, idx, size, looks: Map(user -> class names) }
+/** The classes of a person's look in a room ('' for Karchi and while all look alike). */
+function lookClass(r, user) {
+  if (user === S.userId) return '';
+  const data = lookData();
+  const idx = mergeIndex();
+  let memo = lookMemo.get(r.id);
+  if (!memo || memo.data !== data || memo.idx !== idx || memo.size !== r.members.size) {
+    memo = { data, idx, size: r.members.size, looks: new Map() };
+    lookMemo.set(r.id, memo);
+  }
+  if (!memo.looks.has(user)) roomLooks(r, memo, user);
+  return memo.looks.get(user);
+}
+function roomLooks(r, memo, user) {
+  const mode = lookMode();
+  const picked = memo.data.people || {};
+  const n = mode === 'both' ? LOOK_COLORS.length * LOOK_SHAPES.length : mode === 'color' ? LOOK_COLORS.length : 0;
+  const slotOf = (look) => (mode === 'both' ? look.color + LOOK_COLORS.length * look.shape : look.color);
+  const own = (id) => {
+    const p = picked[lookKey(id)] || {};
+    const s = n ? lookHash(lookKey(id)) % n : 0;
+    return { color: p.color ?? (n ? s % LOOK_COLORS.length : null), shape: p.shape ?? (mode === 'both' ? Math.floor(s / LOOK_COLORS.length) : null), fixed: p.color != null || p.shape != null };
+  };
+  const looks = new Map();
+  // In a group the people (by id) take their own look, or the next free one when someone took it; a picked colour is
+  // taken first and never moves. A one-to-one chat and a group fuller than the looks keep everyone's own.
+  const ids = [...new Set([...r.members.keys(), user])].filter((id) => id !== S.userId).sort();
+  if (n && !dmPartner(r) && ids.length <= n) {
+    const all = ids.map((id) => [id, own(id)]);
+    // A free colour comes before a free shape: shapes tell apart only those the colours cannot.
+    const taken = new Set(all.filter(([, l]) => l.fixed).map(([, l]) => slotOf(l)));
+    const colors = new Set(all.filter(([, l]) => l.fixed).map(([, l]) => l.color));
+    const free = (from, ok) => { for (let i = 0; i < n; i++) { const s = (from + i) % n; if (!taken.has(s) && ok(s)) return s; } return -1; };
+    for (const [id, l] of all) {
+      if (!l.fixed) {
+        const want = slotOf(l);
+        let s = colors.size < LOOK_COLORS.length ? free(want, (x) => !colors.has(x % LOOK_COLORS.length)) : -1;
+        if (s < 0) s = free(want, () => true);
+        l.color = s % LOOK_COLORS.length;
+        if (mode === 'both') l.shape = Math.floor(s / LOOK_COLORS.length);
+      }
+      taken.add(slotOf(l));
+      colors.add(l.color);
+      looks.set(id, l);
+    }
+  }
+  for (const id of ids) if (!looks.has(id)) looks.set(id, own(id));
+  for (const [id, l] of looks) memo.looks.set(id, `${l.color != null ? ` who look-c${l.color}` : ''}${l.shape ? ` look-s${l.shape}` : ''}`);
+}
+/** Settings → Správy: how people's messages look. */
+function lookSettings() {
+  const mode = lookMode();
+  const demo = [['Ema', T('Ideš zajtra?')], ['Peter', T('Jasné, o piatej.')], ['Lucia', T('Ja prídem neskôr.')]];
+  return [
+    h('h3', {}, T('Ľudia v chate')),
+    h('div', { class: 'seg', role: 'radiogroup', 'aria-label': T('Ľudia v chate') }, LOOK_MODES.map(([id, label]) =>
+      h('button', { type: 'button', role: 'radio', 'aria-checked': String(mode === id), class: mode === id ? 'on' : '', onclick: () => mode !== id && saveLook({ ...lookData(), mode: id === 'same' ? undefined : id }) }, label))),
+    h('p', { class: 'hint' }, {
+      same: T('Správy všetkých vyzerajú rovnako. Jednému človeku dáš farbu v jeho profile.'),
+      color: T('Každý má svoju farbu mena a okraja správy, na každom zariadení rovnakú. V skupine sa farby neopakujú, kým sú voľné.'),
+      both: T('Každý má svoju farbu aj tvar rohov správy, takže sa rozoznajú aj vo väčšej skupine.'),
+    }[mode]),
+    h('div', { class: 'lookdemo', 'aria-hidden': 'true' }, demo.map(([name, text], i) => {
+      const look = mode === 'same' ? '' : ` who look-c${i}${mode === 'both' && i ? ` look-s${i}` : ''}`;
+      return h('div', { class: `msg${look}`, 'data-key': `${mode}${i}` }, h('div', { class: 'mname' }, name), h('div', { class: 'mrow' }, h('div', { class: 'bubble' }, text)));
+    })),
+  ];
+}
+/** The profile's „V správach“: Karchi picks this person's colour and shape himself, or leaves them automatic. */
+function lookPicker(user) {
+  const key = lookKey(user);
+  const data = lookData();
+  const mine = data.people?.[key] || {};
+  const set = (patch) => {
+    const next = { ...mine, ...patch };
+    for (const k of Object.keys(next)) if (next[k] == null) delete next[k];
+    const people = { ...(data.people || {}) };
+    if (Object.keys(next).length) people[key] = next; else delete people[key];
+    saveLook({ ...data, people });
+  };
+  const row = (label, field, names, mark) => h('div', { class: 'seg lookpick', role: 'radiogroup', 'aria-label': label },
+    [null, ...names.keys()].map((v) => h('button', {
+      type: 'button', role: 'radio', 'aria-checked': String((mine[field] ?? null) === v), class: (mine[field] ?? null) === v ? 'on' : '',
+      onclick: () => set({ [field]: v }),
+    }, v == null ? T('Automaticky') : [h('i', { class: mark(v) }), names[v]])));
+  return h('section', { class: 'prof-sec', 'data-key': 'look' },
+    h('h3', {}, T('V správach')),
+    row(T('Farba'), 'color', LOOK_COLORS, (v) => `swatch look-c${v}`),
+    row(T('Tvar'), 'shape', LOOK_SHAPES, (v) => `swatch shape look-s${v}`),
+    h('p', { class: 'muted' }, lookMode() === 'same' && mine.color == null ? T('Vybraná farba sa ukáže, aj keď ostatní vyzerajú rovnako (Nastavenia → Správy → Ľudia v chate).') : T('Platí na každom zariadení.')));
 }
 
 /** The network of a person: of a chat they are in. */

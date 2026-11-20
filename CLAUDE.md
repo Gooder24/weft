@@ -104,6 +104,12 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   refused never merges again (`dismissed`). Account data `sk.karchi.merges`; the row's inbox state is under
   `merge:<id>`, `S.selected` stays a member room and the switch by the message box picks the network. Ctrl+K and `weft chats`
   show a merged chat as one row. Checks: `overenie/merged-chats/run.sh`, `overenie/auto-merge/run.sh`.
+- People's look (Settings → Správy → Ľudia v chate): everyone's messages alike (default), „Farba“ (name and bubble
+  edge in one of four palette colours: --message, --warning, --notice, --info) or „Farba a tvar“ (also the bubble's
+  corners). A person's look comes from their id, a merged chat's from its group, so every device agrees; a group of
+  up to 12 gives everyone a different one, colours before shapes. The profile's „V správach“ picks one person's
+  colour and shape, shown in every mode. Account data `sk.karchi.people.look` (`lookClass` in app.js; the class is
+  part of bubbleKept's `sig`). Check: `overenie/ludia-vzhlad/run.sh`.
 - A person's profile (their picture in the inbox, the chat's head or beside a group message, or chat menu → „Profil“;
   each network of a merged chat; on networks without one only name, picture and networks): WhatsApp's „about“ text and the
   person's statuses of the last day, Discord's bio, pronouns, banner or colour, activity, mutual servers and connected
