@@ -747,12 +747,14 @@ function saveStashSends(sends) {
   try { localStorage.setItem(stashSendsKey(), JSON.stringify(sends)); return true; } catch { return false; }
 }
 let stashPushing = null;
+let stashPushAgain = false;
 /** Puts every waiting hand-over on the service's list as it is on the server now (one failed before this press is
  *  tried again, like its „Skúsiť znova“). */
 function pushStashSends() {
-  const sends = Object.values(stashSends());
-  if (!sends.length || stashPushing) return;
+  if (!Object.keys(stashSends()).length) return;
+  if (stashPushing) { stashPushAgain = true; return; } // a press during a write: written right after it
   stashPushing = saveLater((list) => {
+    const sends = Object.values(stashSends());
     let out = list;
     const olds = {};
     for (const s of sends) {
@@ -767,7 +769,10 @@ function pushStashSends() {
     for (const v of Object.values(cur)) if (v.old === undefined && v.id in olds) v.old = olds[v.id];
     saveStashSends(cur);
     return out;
-  }).finally(() => { stashPushing = null; });
+  }).finally(() => {
+    stashPushing = null;
+    if (stashPushAgain) { stashPushAgain = false; pushStashSends(); }
+  });
 }
 /** After a sync: a sent hand-over takes its draft out of the stash, a refused one leaves it with the reason, one the
  *  list lacks (another window wrote over it) is made again. Older than the service keeps its record: never again. */
@@ -3012,10 +3017,18 @@ function saveLater(change) {
   laterChain = laterChain.then(async () => {
     const seen = S.account[LATER];
     const now = await call('GET', `/user/${q(S.userId)}/account_data/${LATER}`).catch((err) => (err.status === 404 ? {} : Promise.reject(err)));
-    const next = { items: change(now.items || []) };
+    const base = now.items || [];
+    const next = { items: change(base) };
+    if (next.items === base) return; // nothing to change: a write would only put back what was read, maybe stale
     await call('PUT', `/user/${q(S.userId)}/account_data/${LATER}`, next);
-    // A sync meanwhile (the service marking an item) is newer than `next` may be; this write comes in a later one.
     if (S.account[LATER] === seen) S.account[LATER] = next;
+    else {
+      // A sync brought another writer's list meanwhile (the service marking an item, another device): neither it nor
+      // `next` is surely the newest, so the list is read again; callers look for their items in it.
+      const was = S.account[LATER];
+      const fresh = await call('GET', `/user/${q(S.userId)}/account_data/${LATER}`).catch(() => next);
+      if (S.account[LATER] === was) S.account[LATER] = fresh;
+    }
     render();
   });
   return laterChain.catch(() => { laterChain = Promise.resolve(); alert(T('Zmena naplánovaných správ sa neuložila.')); });
