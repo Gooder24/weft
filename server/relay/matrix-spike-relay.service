@@ -1,5 +1,5 @@
 [Unit]
-Description=matrix-spike: Weft's reply relay (a picture of an awaited answer, as a draft for a friend)
+Description=matrix-spike: Weft's reply relay (a picture of an awaited answer, for a friend)
 After=matrix-spike-homeserver.service
 Requires=matrix-spike-homeserver.service
 
