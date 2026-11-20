@@ -754,11 +754,18 @@ function pushStashSends() {
   if (!sends.length || stashPushing) return;
   stashPushing = saveLater((list) => {
     let out = list;
+    const olds = {};
     for (const s of sends) {
       const x = out.find((y) => y.id === s.id);
+      // `old`, noted at the first write from the server's list: a failure from before this press, retried here and
+      // told apart from a new one without comparing this device's clock with the server's.
+      if (s.old === undefined) olds[s.id] = x?.failed || 0;
       if (!x) out = [...out, { id: s.id, room: s.room, at: s.at, seq: 0, content: s.content }];
-      else if (x.failed && x.failed < s.at) out = out.map((y) => (y === x ? { ...x, at: s.at, failed: undefined, error: undefined } : y));
+      else if (x.failed && x.failed === (s.old ?? x.failed)) out = out.map((y) => (y === x ? { ...x, at: s.at, failed: undefined, error: undefined } : y));
     }
+    const cur = stashSends();
+    for (const v of Object.values(cur)) if (v.old === undefined && v.id in olds) v.old = olds[v.id];
+    saveStashSends(cur);
     return out;
   }).finally(() => { stashPushing = null; });
 }
@@ -766,6 +773,9 @@ function pushStashSends() {
  *  list lacks (another window wrote over it) is made again. Older than the service keeps its record: never again. */
 function checkStashSends() {
   const sends = stashSends();
+  // A draft another window handed over and the service sent (that window may be closed by now) leaves here too.
+  const sentHere = (stashNow().items || []).filter((it) => !sends[it.id] && laterItems().some((y) => y.id === `stash-${it.id}` && y.sent));
+  if (sentHere.length) stashDo(...sentHere.map((it) => ({ op: 'del', id: it.id })));
   const ids = Object.keys(sends);
   if (!ids.length) return;
   const left = { ...sends };
@@ -774,9 +784,9 @@ function checkStashSends() {
     const s = sends[sid];
     const x = laterItems().find((y) => y.id === s.id);
     if (x?.sent) { stashDo({ op: 'del', id: sid }); delete left[sid]; }
-    else if (x?.failed && x.failed >= s.at) { delete left[sid]; S.stashNote = { room: s.room, text: T`Koncept neodišiel (${x.error || '?'}), ostáva v Odložených.` }; }
+    else if (x?.failed && s.old !== undefined && x.failed !== s.old) { delete left[sid]; S.stashNote = { room: s.room, text: T`Koncept neodišiel (${x.error || '?'}), ostáva v Odložených.` }; }
     else if (Date.now() - s.at > 6 * 864e5) delete left[sid];
-    else if (!x || (x.failed && x.failed < s.at)) missing = true;
+    else if (!x || x.failed) missing = true; // the list lacks it, or still has the old failure: made again
   }
   if (Object.keys(left).length !== ids.length) { saveStashSends(left); render(); }
   if (missing) pushStashSends();
@@ -945,7 +955,7 @@ function stashRow(r, it, on) {
     it.twin ? T('iná verzia (upravené v dvoch oknách)') : '',
     it.remind > Date.now() && entryOf(it.room)?.remind ? T`pripomenie sa ${dayLabel(it.remind)} ${timeLabel(it.remind)}` : '',
     it.elsewhere ? T('medzitým zmenené v inom okne; uloží sa ako nový') : '',
-    stashSends()[it.id] ? T('odosiela sa…') : '',
+    stashSends()[it.id] || laterItems().some((y) => y.id === `stash-${it.id}` && !y.sent && !y.failed) ? T('odosiela sa…') : '',
     it.relay ? T`odpoveď z chatu ${it.relay.title || 'chat'}` : '',
     it.files?.length ? T`súbory: ${it.files.length}` : '',
     net ? T`cez ${net}` : '',
@@ -3000,10 +3010,12 @@ let laterChain = Promise.resolve();
 /** Changes the list as it stands on the server now: the service marks what it sent in the same list. */
 function saveLater(change) {
   laterChain = laterChain.then(async () => {
+    const seen = S.account[LATER];
     const now = await call('GET', `/user/${q(S.userId)}/account_data/${LATER}`).catch((err) => (err.status === 404 ? {} : Promise.reject(err)));
     const next = { items: change(now.items || []) };
     await call('PUT', `/user/${q(S.userId)}/account_data/${LATER}`, next);
-    S.account[LATER] = next;
+    // A sync meanwhile (the service marking an item) is newer than `next` may be; this write comes in a later one.
+    if (S.account[LATER] === seen) S.account[LATER] = next;
     render();
   });
   return laterChain.catch(() => { laterChain = Promise.resolve(); alert(T('Zmena naplánovaných správ sa neuložila.')); });
