@@ -9075,7 +9075,13 @@ function loadStats(e) {
 // The card keeps its first drawing while it grows out of the picture (personCardView, o.grown); what came meanwhile
 // shows right after.
 function redrawCard(o) {
-  (o.grown || Promise.resolve()).then(() => { if (S.overlay === o) { render(); countUp(); } });
+  (o.grown || Promise.resolve()).then(() => {
+    if (S.overlay !== o) return;
+    const had = !!document.activeElement?.closest?.('.whocard');
+    render();
+    if (had) document.querySelector('.whocard .pc-name')?.focus({ preventScroll: true }); // the new drawing keeps the keys
+    countUp();
+  });
 }
 
 function openPersonCard(ev, r, user) {
@@ -9097,8 +9103,10 @@ function openPersonCard(ev, r, user) {
       .finally(() => { o.finding = false; redrawCard(o); });
   }
   render();
-  // It grows out of the picture once: a circle opening from the picture's centre.
+  // It grows out of the picture once: a circle opening from the picture's centre. The keys go to its name (Enter: the
+  // full profile, Esc: closed), not to the chat behind it.
   const card = document.querySelector('.whocard');
+  card?.querySelector('.pc-name')?.focus({ preventScroll: true });
   if (card && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
     const box = card.getBoundingClientRect();
     const x = (at.left + at.right) / 2 - box.left, y = (at.top + at.bottom) / 2 - box.top;
