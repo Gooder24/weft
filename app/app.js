@@ -11782,55 +11782,59 @@ function lookKey(user) {
   return lookKeys.map.get(user) || user;
 }
 const lookHash = (key) => { let x = 2166136261; for (let i = 0; i < key.length; i++) x = Math.imul(x ^ key.charCodeAt(i), 16777619); return x >>> 0; };
-const lookMemo = new Map(); // room id -> { data, idx, size, looks: Map(user -> class names) }
+const lookMemo = new Map(); // room id -> { data, idx, version, size, looks: Map(user -> class names) }
+const lookSlots = () => (lookMode() === 'both' ? LOOK_COLORS.length * LOOK_SHAPES.length : lookMode() === 'color' ? LOOK_COLORS.length : 0);
+/** A person's own look: what Karchi picked, the rest from their id (colour and shape only where the mode shows them). */
+function lookOwn(id) {
+  const p = lookData().people?.[lookKey(id)] || {};
+  const n = lookSlots();
+  const s = n ? lookHash(lookKey(id)) % n : 0;
+  return { color: p.color ?? (n ? s % LOOK_COLORS.length : null), shape: p.shape ?? (lookMode() === 'both' ? Math.floor(s / LOOK_COLORS.length) : null), pickedColor: p.color != null, pickedShape: p.shape != null };
+}
+const lookClasses = (l) => `${l.color != null ? ` who look-c${l.color}` : ''}${l.shape ? ` look-s${l.shape}` : ''}`;
 /** The classes of a person's look in a room ('' for Karchi and while all look alike). */
 function lookClass(r, user) {
   if (user === S.userId) return '';
   const data = lookData();
   const idx = mergeIndex();
   let memo = lookMemo.get(r.id);
-  if (!memo || memo.data !== data || memo.idx !== idx || memo.size !== r.members.size) {
-    memo = { data, idx, size: r.members.size, looks: new Map() };
+  if (!memo || memo.data !== data || memo.idx !== idx || memo.version !== r.version || memo.size !== r.members.size) {
+    memo = { data, idx, version: r.version, size: r.members.size, looks: roomLooks(r) };
     lookMemo.set(r.id, memo);
   }
-  if (!memo.looks.has(user)) roomLooks(r, memo, user);
+  if (!memo.looks.has(user)) memo.looks.set(user, lookClasses(lookOwn(user)));
   return memo.looks.get(user);
 }
-function roomLooks(r, memo, user) {
-  const mode = lookMode();
-  const picked = memo.data.people || {};
-  const n = mode === 'both' ? LOOK_COLORS.length * LOOK_SHAPES.length : mode === 'color' ? LOOK_COLORS.length : 0;
-  const slotOf = (look) => (mode === 'both' ? look.color + LOOK_COLORS.length * look.shape : look.color);
-  const own = (id) => {
-    const p = picked[lookKey(id)] || {};
-    const s = n ? lookHash(lookKey(id)) % n : 0;
-    return { color: p.color ?? (n ? s % LOOK_COLORS.length : null), shape: p.shape ?? (mode === 'both' ? Math.floor(s / LOOK_COLORS.length) : null), fixed: p.color != null || p.shape != null };
-  };
+/** The looks of a group's people. Only who is in it now (bridge bots too: they write) shares them out, by id: each
+ *  takes their own, or the next free one when someone has it, a free colour before a free shape (shapes tell apart
+ *  only those the colours cannot); a picked colour is taken first and never moves, a picked shape keeps its shape.
+ *  Someone who left keeps their own. So one person may look different in a group than in their own chat; a
+ *  one-to-one chat and a group fuller than the looks keep everyone's own. */
+function roomLooks(r) {
   const looks = new Map();
-  // In a group the people (by id) take their own look, or the next free one when someone took it; a picked colour is
-  // taken first and never moves. A one-to-one chat and a group fuller than the looks keep everyone's own.
-  const ids = [...new Set([...r.members.keys(), user])].filter((id) => id !== S.userId).sort();
-  if (n && !dmPartner(r) && ids.length <= n) {
-    const all = ids.map((id) => [id, own(id)]);
-    // A free colour comes before a free shape: shapes tell apart only those the colours cannot.
-    const taken = new Set(all.filter(([, l]) => l.fixed).map(([, l]) => slotOf(l)));
-    const colors = new Set(all.filter(([, l]) => l.fixed).map(([, l]) => l.color));
-    const free = (from, ok) => { for (let i = 0; i < n; i++) { const s = (from + i) % n; if (!taken.has(s) && ok(s)) return s; } return -1; };
-    for (const [id, l] of all) {
-      if (!l.fixed) {
-        const want = slotOf(l);
-        let s = colors.size < LOOK_COLORS.length ? free(want, (x) => !colors.has(x % LOOK_COLORS.length)) : -1;
-        if (s < 0) s = free(want, () => true);
-        l.color = s % LOOK_COLORS.length;
-        if (mode === 'both') l.shape = Math.floor(s / LOOK_COLORS.length);
-      }
-      taken.add(slotOf(l));
-      colors.add(l.color);
-      looks.set(id, l);
+  const n = lookSlots();
+  const C = LOOK_COLORS.length;
+  const both = lookMode() === 'both';
+  const joined = [...r.members].filter(([id, m]) => m.membership === 'join' && id !== S.userId).map(([id]) => id).sort();
+  if (!n || dmPartner(r) || joined.length > n) return looks;
+  const all = joined.map((id) => [id, lookOwn(id)]);
+  const slotOf = (l) => (both ? l.color + C * l.shape : l.color);
+  const taken = new Set();
+  const colors = new Set();
+  const take = (l) => { taken.add(slotOf(l)); colors.add(l.color); };
+  const free = (from, ok) => { for (let i = 0; i < n; i++) { const x = (from + i) % n; if (!taken.has(x) && ok(x)) return x; } return -1; };
+  for (const [, l] of all) if (l.pickedColor) take(l);
+  for (const [id, l] of all) {
+    if (!l.pickedColor) {
+      const fits = (x) => !both || !l.pickedShape || Math.floor(x / C) === l.shape;
+      let x = free(slotOf(l), (y) => fits(y) && !colors.has(y % C));
+      if (x < 0) x = free(slotOf(l), fits);
+      if (x >= 0) { l.color = x % C; if (both) l.shape = Math.floor(x / C); }
+      take(l);
     }
+    looks.set(id, lookClasses(l));
   }
-  for (const id of ids) if (!looks.has(id)) looks.set(id, own(id));
-  for (const [id, l] of looks) memo.looks.set(id, `${l.color != null ? ` who look-c${l.color}` : ''}${l.shape ? ` look-s${l.shape}` : ''}`);
+  return looks;
 }
 /** Settings → Správy: how people's messages look. */
 function lookSettings() {

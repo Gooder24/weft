@@ -107,7 +107,8 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
 - People's look (Settings → Správy → Ľudia v chate): everyone's messages alike (default), „Farba“ (name and bubble
   edge in one of four palette colours: --message, --warning, --notice, --info) or „Farba a tvar“ (also the bubble's
   corners). A person's look comes from their id, a merged chat's from its group, so every device agrees; a group of
-  up to 12 gives everyone a different one, colours before shapes. The profile's „V správach“ picks one person's
+  up to 12 gives each joined member a different one, colours before shapes (so someone may look different there than
+  in their own chat). The profile's „V správach“ picks one person's
   colour and shape, shown in every mode. Account data `sk.karchi.people.look` (`lookClass` in app.js; the class is
   part of bubbleKept's `sig`). Check: `overenie/ludia-vzhlad/run.sh`.
 - A person's profile (their picture in the inbox, the chat's head or beside a group message, or chat menu → „Profil“;
