@@ -5018,6 +5018,7 @@ function closeOverlay(back = false) {
   if (o?.kind === 'tools' && o.composer && !o.back && !S.panel) S.focusComposer = true;
   S.overlay = o?.kind === 'tools' ? o.back || null : null;
   render();
+  if (o?.kind === 'whocard' && o.was?.isConnected) o.was.focus({ preventScroll: true }); // the keys go back to the picture
   // Back on the map, the cursor is in its search again; back in Ctrl+K, where it was in its text.
   if (o?.kind === 'tools' && !o.back && o.was?.isConnected && !o.composer) o.was.focus();
   if (o?.kind === 'tools' && o.caret) try { document.querySelector('[data-root="__overlay"]')?.setSelectionRange(...o.caret); } catch { /* not a text field */ }
@@ -9087,7 +9088,7 @@ function redrawCard(o) {
 function openPersonCard(ev, r, user) {
   const at = ev.currentTarget.getBoundingClientRect();
   const e = personEntry(r, user);
-  const o = { kind: 'whocard', room: r.id, user, key: e?.key || null, at: { left: at.left, right: at.right, top: at.top, bottom: at.bottom }, grownDone: true };
+  const o = { kind: 'whocard', was: ev.currentTarget, room: r.id, user, key: e?.key || null, at: { left: at.left, right: at.right, top: at.top, bottom: at.bottom }, grownDone: true };
   S.overlay = o;
   loadStats(e);
   // WhatsApp names group members by LID and DMs by phone: only the bridge knows their chat (it creates nothing).
@@ -9162,7 +9163,7 @@ function whoCard(o, r, e) {
   const apps = [...new Set((e ? e.rooms || [e.room] : [r]).map((x) => x.app))].map(appOf).filter(Boolean);
   const got = e && statsCache.get(statsRooms(e).join(' '));
   const st = got?.data;
-  const close = () => { S.overlay = null; render(); };
+  const close = () => closeOverlay();
   const full = () => { S.overlay = null; if (e && personChat(e)) openProfile(e); else openProfile(null, { room: r, user: o.user }); };
   // Beside the picture, toward the middle of the window; upward from it when it sits low, as the newest messages do.
   const W = 248;
