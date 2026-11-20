@@ -147,6 +147,10 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   `sk.karchi.work`, `{ [user id]: { name, until? } }`) never wait: their messages show at once, in groups too;
   unmarking keeps `until`, so what was seen stays seen. Check: `overenie/work-people/run.sh`.
   Checks: `overenie/reading-window/run.sh`.
+  Sources are RSS/Atom, YouTube channels (a channel, @handle or video address is stored as the channel's feed) and X
+  profiles (`x.com/<name>`, read without a login through FxTwitter's public API `api.fxtwitter.com/2/profile/<name>/statuses`).
+  Refresh reads them at most every 10 minutes and Instagram once a day; „Obnovené“ is the last successful read and
+  expired stories are never shown. Check: `overenie/feed-sources/check.py` (offline, fakes every source).
   Instagram feed uses its own session (`feed/data/instagram-session.json`, mode 600); it never reads
   the message bridge's credentials. Connect/disconnect in Feed → Zdroje a filtre using the desktop login
   window. Connecting clears the previous IG cache and today's collection limit, not the reading window; disconnecting clears

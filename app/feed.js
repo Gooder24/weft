@@ -46,7 +46,7 @@ export function createFeed({ h, api, kv, refresh, offline, user, settingsPanel, 
         if (run !== generation) return;
         accept(doc);
         // Collection only happens inside Feed, never because the eye opened the window for messages.
-        if (isOpen() && doc.access && doc.day !== doc.today) { const updated = await api('POST', '/refresh', {}); if (run !== generation) return; accept(updated); }
+        if (isOpen() && doc.access && (doc.due ?? doc.day !== doc.today)) { const updated = await api('POST', '/refresh', {}); if (run !== generation) return; accept(updated); }
         state.error = settingError;
       }
     } catch (err) { if (run === generation) state.error = T`Feed sa nenačítal: ${err.message}`; }
@@ -139,46 +139,6 @@ export function createFeed({ h, api, kv, refresh, offline, user, settingsPanel, 
       if (pending()) localStorage.setItem(key(), JSON.stringify({ ...pending(), instagram: true }));
     } catch (err) { if (run === generation) state.error = T`Instagram sa nepripojil: ${err.message}`; }
     finally { if (run === generation) { state.busy = false; refresh(); } }
-  }
-  function importOpml(text) {
-    let doc;
-    try { doc = new DOMParser().parseFromString(String(text || ''), 'text/xml'); } catch (e) { state.error = T('OPML sa nepodarilo prečítať.'); refresh(); return; }
-    const outlines = Array.from(doc.querySelectorAll('outline[xmlUrl]'));
-    const parsed = [];
-    for (const o of outlines) {
-      const url = (o.getAttribute('xmlUrl') || '').trim();
-      if (!url || !/youtube\.com\/feeds\/videos\.xml/i.test(url)) continue;
-      const name = (o.getAttribute('title') || o.getAttribute('text') || '').trim();
-      parsed.push({ url, name });
-    }
-    if (!parsed.length) { state.error = T('V OPML sa nenašli žiadne YouTube kanály. Skontroluj, či je to súbor odberov z YouTube.'); refresh(); return; }
-    const c = cfg();
-    const existingUrls = new Set((c.sources || []).map((s) => s.url));
-    const additions = [];
-    for (const p of parsed) {
-      if (existingUrls.has(p.url)) continue;
-      existingUrls.add(p.url);
-      additions.push({ id: p.url, url: p.url, name: p.name });
-    }
-    if (!additions.length) { state.error = T`Všetky kanály (${parsed.length}) už sú pridané.`; refresh(); return; }
-    configure({ sources: [...(c.sources || []), ...additions] }).then(() => { state.error = T`Importovaných ${additions.length} YouTube kanálov (z ${parsed.length}).`; refresh(); }).catch(() => {});
-  }
-  const AI_NEWS_SOURCES = [
-    { url: 'https://openai.com/blog/rss.xml', name: 'OpenAI' },
-    { url: 'https://www.anthropic.com/news/rss', name: 'Anthropic' },
-    { url: 'https://blog.google/technology/ai/rss/', name: 'Google AI' },
-    { url: 'https://huggingface.co/blog/feed.xml', name: 'Hugging Face' },
-    { url: 'https://www.theverge.com/rss/ai-artificial-intelligence/index.xml', name: 'The Verge AI' },
-    { url: 'https://techcrunch.com/category/artificial-intelligence/feed/', name: 'TechCrunch AI' },
-    { url: 'https://www.technologyreview.com/feed/', name: 'MIT Tech Review' },
-    { url: 'https://simonwillison.net/atom/everything/', name: 'Simon Willison' },
-  ];
-  function addAiNews() {
-    const c = cfg();
-    const existingUrls = new Set((c.sources || []).map((s) => s.url));
-    const additions = AI_NEWS_SOURCES.filter((s) => !existingUrls.has(s.url)).map((s) => ({ id: s.url, url: s.url, name: s.name }));
-    if (!additions.length) { state.error = T('AI novinky už sú pridané.'); refresh(); return; }
-    configure({ sources: [...(c.sources || []), ...additions] }).then(() => { state.error = T`Pridaných ${additions.length} AI zdrojov.`; refresh(); }).catch(() => {});
   }
   async function disconnectInstagram() {
     if (state.busy || offline()) return;
@@ -299,7 +259,7 @@ export function createFeed({ h, api, kv, refresh, offline, user, settingsPanel, 
     const items = (doc?.items || []).filter((i) => (i.source === 'instagram' ? c.instagram : c.sources.some((s) => s.id === i.source)) && !(i.kind === 'story' && c.hiddenStories[i.user]));
     return h('section', { class: 'daily-feed', 'aria-label': T('Denný feed') },
       h('div', { class: 'feed-head' }, h('h2', {}, 'Feed'),
-        h('span', { class: 'feed-date' }, doc?.at ? T`Obnovené ${new Date(doc.at).toLocaleString(LOCALE)}` : 'RSS a Instagram'),
+        h('span', { class: 'feed-date' }, doc?.at ? T`Obnovené ${new Date(doc.at).toLocaleString(LOCALE)}` : T('RSS, YouTube, X a Instagram')),
         h('button', { class: 'ghost', disabled: state.busy || offline() || !open, onclick: update }, state.busy ? T('Načítavam…') : T('Obnoviť')),
         h('button', { class: 'ghost', onclick: settingsPanel }, T('Zdroje a filtre'))),
       state.error ? h('p', { class: 'err', role: 'status' }, state.error) : null,
@@ -313,13 +273,13 @@ export function createFeed({ h, api, kv, refresh, offline, user, settingsPanel, 
         : !open ? h('button', { class: 'primary', disabled: !!opening || offline(), onclick: openWindow }, opening ? T('Otváram…') : T`Otvoriť feed a správy na ${minutes()} min`)
         : !items.length ? h('div', { class: 'feed-empty' }, state.busy ? T('Načítavam dnešný feed…') : T('Zatiaľ žiadne položky. Zdroje pridáš v Nastaveniach → Feed.'))
           : h('div', { class: 'feed-list' }, items.map((item) => h('article', { class: 'feed-item', 'data-feed-id': item.id },
-            h('div', { class: 'feed-byline' }, h('span', { class: `feed-kind feed-kind-${item.kind === 'story' || item.kind === 'post' ? 'ig' : item.kind === 'youtube' ? 'yt' : 'rss'}` }, item.kind === 'story' || item.kind === 'post' ? 'I' : item.kind === 'youtube' ? 'Y' : 'R'), h('b', {}, item.author), h('span', { class: 'feed-kind-label' }, item.kind === 'story' ? 'Story' : item.kind === 'post' ? 'Instagram' : item.kind === 'youtube' ? 'YouTube' : 'RSS'),
+            h('div', { class: 'feed-byline' }, h('span', { class: `feed-kind feed-kind-${item.kind === 'story' || item.kind === 'post' ? 'ig' : item.kind === 'youtube' ? 'yt' : item.kind === 'x' ? 'x' : 'rss'}` }, item.kind === 'story' || item.kind === 'post' ? 'I' : item.kind === 'youtube' ? 'Y' : item.kind === 'x' ? 'X' : 'R'), h('b', {}, item.author), h('span', { class: 'feed-kind-label' }, item.kind === 'story' ? 'Story' : item.kind === 'post' ? 'Instagram' : item.kind === 'youtube' ? 'YouTube' : item.kind === 'x' ? 'X' : 'RSS'),
               h('time', { datetime: item.at ? new Date(item.at).toISOString() : undefined }, item.at ? new Date(item.at).toLocaleString(LOCALE, { day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit' }) : T('Bez dátumu'))),
             item.kind === 'story' || item.kind === 'post'
               ? h('button', { class: 'feed-title', 'aria-expanded': String(state.open === item.id), onclick: () => { state.open = state.open === item.id ? null : item.id; if (state.open && item.media?.length) download(item, 0); refresh(); } }, item.title || T('Príspevok'))
               : h('a', { class: 'feed-title', href: item.url, target: '_blank', rel: 'noopener noreferrer' }, item.title || item.url),
             item.text ? h('p', {}, item.text) : null,
-            state.open === item.id ? viewMedia(item) : null,
+            state.open === item.id || (item.kind === 'x' && item.media?.length) ? viewMedia(item) : null,
             h('div', { class: 'feed-actions' },
               item.kind === 'story' ? h('button', { class: 'ghost', onclick: () => hide(item) }, T`Skryť stories od @${item.author}`) : null,
               item.user ? h('button', { class: 'ghost danger', disabled: state.busy || offline() || doc?.instagramPaused, onclick: () => unfollow(item) }, T('Prestať sledovať')) : null,
@@ -381,23 +341,23 @@ export function createFeed({ h, api, kv, refresh, offline, user, settingsPanel, 
         h('button', { class: 'primary', disabled: state.busy || offline() || !window.desktop?.collect || state.doc?.instagramPaused, onclick: connectInstagram }, state.busy ? T('Pripájam…') : state.doc?.instagramConnected ? T('Znova prihlásiť feed') : T('Pripojiť Instagram')),
         state.doc?.instagramConnected ? h('button', { class: 'ghost', disabled: state.busy || offline(), onclick: disconnectInstagram }, T('Odpojiť')) : null),
       !window.desktop?.collect ? h('p', { class: 'hint' }, T('Instagram pripojíš v desktopovej appke Weft. Potom feed uvidíš aj tu.')) : null,
-      h('h3', {}, 'RSS a YouTube'),
+      h('h3', {}, T('RSS, YouTube a X')),
       c.sources.length ? c.sources.map((s) => h('div', { class: 'feed-source', 'data-feed-source': s.id }, h('span', {}, s.name || s.url), h('button', { class: 'ghost danger', onclick: () => configure({ sources: c.sources.filter((x) => x.id !== s.id) }) }, T('Odstrániť'))))
         : h('p', { class: 'hint' }, T('Zatiaľ žiadny zdroj.')),
       h('form', { class: 'feed-add', onsubmit: (e) => { e.preventDefault(); if (!state.addUrl.trim()) return; const s = { id: state.addUrl, url: state.addUrl.trim(), name: state.addName.trim() }; state.addUrl = ''; state.addName = ''; configure({ sources: [...c.sources, s] }); } },
-        h('input', { type: 'url', value: state.addUrl, required: true, placeholder: T('Adresa RSS alebo Atom'), 'aria-label': T('Adresa RSS alebo Atom'), 'data-root': '__feedUrl', oninput: (e) => { state.addUrl = e.target.value; } }),
+        h('input', { value: state.addUrl, required: true, placeholder: T('RSS, kanál YouTube alebo profil na X'), 'aria-label': T('Adresa zdroja'), 'data-root': '__feedUrl', oninput: (e) => { state.addUrl = e.target.value; } }),
         h('input', { value: state.addName, placeholder: T('Názov (nepovinné)'), 'aria-label': T('Názov zdroja'), 'data-root': '__feedName', oninput: (e) => { state.addName = e.target.value; } }),
         h('button', { class: 'primary', type: 'submit' }, T('Pridať zdroj'))),
-      h('p', { class: 'hint' }, T('Videá YouTube sú iba textové. Nový zdroj sa načíta v rámci denného limitu.')),
+      h('p', { class: 'hint' }, T('Napríklad youtube.com/@theo, odkaz na video z kanála, x.com/theo alebo adresa RSS. Videá YouTube sú iba textové; X sa číta bez prihlásenia. Obnoviť ich načíta znova najskôr po 10 minútach, Instagram raz denne.')),
       h('h3', {}, T('YouTube odbery (hromadný import)')),
-      h('p', { class: 'hint' }, T('Exportuj odbery: YouTube → Nastavenia → Odbery → Exportovať (OPML), alebo otvor https://www.youtube.com/subscription_manager?action_takeout=1 a ulož súbor. Potom vlož obsah alebo nahraj súbor:')),
-      h('textarea', { rows: 4, placeholder: T('Vlož sem obsah OPML súboru…'), 'aria-label': T('OPML obsah'), oninput: (e) => { state._opml = e.target.value; } }),
+      h('p', { class: 'hint' }, T('Na takeout.google.com vyber iba YouTube → odbery a z archívu vlož alebo nahraj súbor subscriptions.csv:')),
+      h('textarea', { rows: 4, placeholder: T('Vlož sem obsah subscriptions.csv…'), 'aria-label': T('Odbery YouTube'), oninput: (e) => { state._opml = e.target.value; } }),
       h('div', { class: 'row' },
         h('button', { class: 'ghost', disabled: state.busy || offline(), onclick: () => { if (state._opml) importOpml(state._opml); } }, T('Importovať z textu')),
         h('label', { class: 'ghost', style: 'cursor:pointer' }, T('Nahrať súbor'),
-          h('input', { type: 'file', accept: '.opml,.xml,.txt', style: 'display:none', onchange: (e) => { const f = e.target.files && e.target.files[0]; if (!f) return; const r = new FileReader(); r.onload = () => importOpml(r.result); r.readAsText(f); e.target.value = ''; } }))),
+          h('input', { type: 'file', accept: '.csv,.opml,.xml,.txt', style: 'display:none', onchange: (e) => { const f = e.target.files && e.target.files[0]; if (!f) return; const r = new FileReader(); r.onload = () => importOpml(r.result); r.readAsText(f); e.target.value = ''; } }))),
       h('h3', {}, T('AI novinky (modely a firmy)')),
-      h('p', { class: 'hint' }, T('Pridá predvolené zdroje: OpenAI, Anthropic, Google AI, Hugging Face, The Verge, TechCrunch, MIT Tech Review, Simon Willison.')),
+      h('p', { class: 'hint' }, T('Pridá predvolené zdroje: OpenAI, Google DeepMind, Google AI, Hugging Face, The Verge, TechCrunch, MIT Tech Review, Simon Willison, Ars Technica.')),
       h('button', { class: 'ghost', disabled: state.busy || offline(), onclick: addAiNews }, T('Pridať AI novinky')),
       h('h3', {}, T('Skryté stories')),
       hidden.length ? hidden.map(([id, name]) => h('div', { class: 'feed-source' }, h('span', {}, `@${name}`),

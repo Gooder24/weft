@@ -920,6 +920,7 @@ a.rnote.rlink { color: var(--link); text-decoration: none; }
 .feed-kind-ig { background: #fde2e8; color: #c13584; } /* brand */
 .feed-kind-yt { background: #fde2e2; color: #ff0000; } /* brand */
 .feed-kind-rss { background: #e2ecfd; color: #1a56db; } /* brand */
+.feed-kind-x { background: #e7e7e7; color: #000000; } /* brand */
 .feed-kind-label { font-size: 11px; padding: 1px 6px; border-radius: 999px; background: var(--card); border: 1px solid var(--line); }
 .feed-title { display: block; max-width: 100%; margin: 6px 0; padding: 0; border: 0; background: none; color: var(--text); font: inherit; font-size: var(--fs); text-align: left; cursor: pointer; text-decoration: none; overflow-wrap: anywhere; }
 .feed-title:hover { color: var(--link); text-decoration: underline; }

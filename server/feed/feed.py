@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Daily RSS/Atom and Instagram reading for Weft. No scheduled worker or seen events.
+"""Daily RSS/Atom, YouTube, X and Instagram reading for Weft. No scheduled worker or seen events.
 
 Reading windows open Feed and Weft's waiting messages together: `count` a day, `minutes` long (policy.json,
 Weft → Nastavenia → Správy; a change applies from the next day). Opening again while one runs, another window or
@@ -7,6 +7,9 @@ device and a restart return the same window; it never grows, and today's count n
 
 Instagram feed sessions are independent of message bridges; shared bridge credentials are never read.
 Only explicit POST /unfollow mutates Instagram; collection only performs GETs.
+A source is an RSS/Atom address, a YouTube channel (@handle, channel or video address; stored as the channel's feed)
+or an X profile (read without a login through FxTwitter's public API). Feed's refresh reads those at most every
+WEB_EVERY seconds and Instagram once a day; expired stories are never shown.
 """
 import base64
 import copy
@@ -45,6 +48,10 @@ COUNTS = range(1, 9)  # Karchi chooses 1–8 a day in Weft
 MINUTES = (5, 10, 15, 20, 30)
 WINDOW_TYPE = 'sk.karchi.window'  # account data mirror the message list reads through /sync
 MIRROR = threading.Lock()
+WEB_EVERY = int(os.environ.get('FEED_WEB_EVERY', '600'))
+X_API = os.environ.get('FEED_X_API', 'https://api.fxtwitter.com/2/profile/')
+YT_FEED = 'https://www.youtube.com/feeds/videos.xml?channel_id='
+X_MEDIA = ('pbs.twimg.com', 'video.twimg.com')
 DEFAULTS = {'sources': [], 'instagram': True, 'daily': True, 'limitOnce': True, 'hiddenStories': {}}
 
 
@@ -99,8 +106,10 @@ class PublicRedirect(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def public_bytes(url):
-    req = urllib.request.Request(safe_url(url), headers={'User-Agent': 'Weft feed/1.0', 'Accept': 'application/rss+xml, application/atom+xml, */*'})
+def public_bytes(url, cookie=None):
+    headers = {'User-Agent': 'Weft feed/1.0', 'Accept': 'application/rss+xml, application/atom+xml, */*'}
+    if cookie: headers['Cookie'] = cookie
+    req = urllib.request.Request(safe_url(url), headers=headers)
     with urllib.request.build_opener(PublicRedirect()).open(req, timeout=20) as r:
         data = r.read(MAX_BYTES + 1)
         if len(data) > MAX_BYTES: raise ValueError('Zdroj je priveľký (maximum 8 MB).')
@@ -154,9 +163,86 @@ def parse_feed(data, source):
     return out
 
 
+def x_handle(url):
+    """The account of an X profile address (x.com/<name>, twitter.com/<name>), else None."""
+    u = urllib.parse.urlsplit(url)
+    host = (u.hostname or '').lower().removeprefix('www.').removeprefix('mobile.')
+    parts = [p for p in u.path.split('/') if p]
+    if host not in ('x.com', 'twitter.com') or not parts or not re.fullmatch(r'[A-Za-z0-9_]{1,15}', parts[0]): return None
+    return None if parts[0].lower() in ('home', 'i', 'search', 'explore', 'notifications', 'messages', 'settings', 'intent', 'share', 'hashtag') else parts[0]
+
+
+def youtube_channel(url):
+    """The channel id behind a YouTube address (feed, /channel/, /@handle, a video), None for other sites."""
+    u = urllib.parse.urlsplit(url)
+    if (u.hostname or '').lower().removeprefix('www.').removeprefix('m.') not in ('youtube.com', 'youtu.be'): return None
+    m = re.match(r'/channel/(UC[\w-]{22})', u.path) or re.fullmatch(r'(UC[\w-]{22})', urllib.parse.parse_qs(u.query).get('channel_id', [''])[0])
+    if m: return m.group(1)
+    # Without SOCS YouTube sends EU visitors to its consent page instead of the channel.
+    page = public_bytes(url, cookie='SOCS=CAI').decode('utf8', 'replace')
+    for pattern in (r'"videoDetails":\{[^}]*?"channelId":"(UC[\w-]{22})"', r'<link rel="canonical" href="https://www\.youtube\.com/channel/(UC[\w-]{22})"',
+                    r'feeds/videos\.xml\?channel_id=(UC[\w-]{22})', r'"externalId":"(UC[\w-]{22})"'):
+        if m := re.search(pattern, page): return m.group(1)
+    raise ValueError('YouTube channel not found')
+
+
+def x_posts(handle):
+    data = json.loads(public_bytes(X_API + urllib.parse.quote(handle) + '/statuses'))
+    if not isinstance(data, dict) or data.get('code') != 200 or not isinstance(data.get('results'), list): raise ValueError('X profile not found')
+    return data['results']
+
+
+def x_items(source):
+    """An X profile's recent posts and reposts, and its replies within its own threads; replies to others are left out."""
+    handle = source['handle'].lower()
+    out = []
+    for p in x_posts(source['handle'])[:40]:
+        author = (p.get('author') or {}).get('screen_name') or source['handle']
+        to = (p.get('replying_to') or {}).get('screen_name')
+        if to and to.lower() != handle or not str(p.get('id', '')).isdecimal(): continue
+        quote = p.get('quote') or {}
+        notes = [f"Zdieľal @{source['handle']}" if author.lower() != handle else '',
+                 f"Cituje @{(quote.get('author') or {}).get('screen_name', '')}: {quote.get('text', '')}" if quote else '']
+        assets = []
+        for m in ((p.get('media') or {}).get('all') or [])[:4]:
+            if m.get('type') == 'photo':
+                url = re.sub(r'([?&]name=)orig\b', r'\1medium', m.get('url', ''))
+                kind = 'image'
+            else:
+                mp4 = [f for f in m.get('formats') or [] if f.get('container') == 'mp4' and f.get('bitrate')]
+                url, kind = (min(mp4, key=lambda f: abs(f['bitrate'] - 832000))['url'] if mp4 else m.get('url', '')), 'video'
+            if urllib.parse.urlsplit(url).scheme == 'https' and urllib.parse.urlsplit(url).hostname in X_MEDIA:
+                assets.append({'url': url, 'type': kind})
+        out.append({'id': f"x:{source['id']}:{p['id']}", 'kind': 'x', 'source': source['id'], 'author': '@' + author,
+                    'title': clean(p.get('text'))[:1000], 'text': '\n'.join(n for n in notes if n)[:2000],
+                    'url': web_url(p.get('url', '')) or f"https://x.com/{author}/status/{p['id']}",
+                    'at': int(p.get('created_timestamp') or 0) * 1000, 'media': assets})
+    return out
+
+
+def source_items(source):
+    return x_items(source) if source.get('kind') == 'x' else parse_feed(public_bytes(source['url']), source)
+
+
+def resolve_source(url, name):
+    """A pasted address as a stored source, checked that it answers: an X profile, a YouTube channel's feed, or
+    an RSS/Atom address as it is."""
+    if (urllib.parse.urlsplit(url).hostname or '').lower().removeprefix('www.').removeprefix('mobile.') in ('x.com', 'twitter.com') and not x_handle(url):
+        raise ValueError('not an X profile')
+    if handle := x_handle(url):
+        posts = x_posts(handle)
+        handle = next((p['author']['screen_name'] for p in posts if (p.get('author') or {}).get('screen_name', '').lower() == handle.lower()), handle)
+        return {'url': 'https://x.com/' + handle, 'name': name or '@' + handle, 'kind': 'x', 'handle': handle}
+    if channel := youtube_channel(url):
+        feed = YT_FEED + channel
+        title = next((i['author'] for i in parse_feed(public_bytes(feed), {'id': '', 'url': feed})), '')
+        return {'url': feed, 'name': name or title, 'kind': 'youtube'}
+    return {'url': url, 'name': name}
+
+
 class InvalidSources(ValueError):
     def __init__(self, indices):
-        super().__init__('Niektoré RSS adresy nie sú platné.')
+        super().__init__('Niektoré zdroje sa nedajú pridať. Skontroluj adresu RSS, kanála YouTube alebo profilu na X.')
         self.indices = indices
 
 
@@ -198,8 +284,15 @@ class Instagram:
             if len(raw) > MAX_BYTES: raise InstagramError('Instagram vrátil priveľkú odpoveď.')
             res = json.loads(raw)
         except urllib.error.HTTPError as err:
+            try: reason = str(json.loads(err.read(65536)).get('message') or '')[:80]
+            except (ValueError, OSError, AttributeError): reason = ''
+            print('instagram', path.split('?')[0], err.code, reason, flush=True)  # never the headers: they carry the session
             if err.code == 429: raise InstagramError('Instagram obmedzil požiadavky. Ďalší pokus bude zajtra.') from None
-            raise InstagramError('Instagram žiada obnovenie prihlásenia alebo odmietol požiadavku. Prihlás feed znova cez Zdroje a filtre → Znova prihlásiť feed.') from None
+            if reason == 'login_required':
+                raise InstagramError('Instagram odhlásil feed. Prihlás ho znova cez Zdroje a filtre → Znova prihlásiť feed.') from None
+            if reason in ('challenge_required', 'checkpoint_required'):
+                raise InstagramError('Instagram chce overiť prihlásenie. Dokonči to cez Zdroje a filtre → Znova prihlásiť feed.') from None
+            raise InstagramError(f'Instagram odmietol požiadavku (HTTP {err.code}). Ak to trvá, prihlás feed znova cez Zdroje a filtre.') from None
         except (ValueError, OSError):
             raise InstagramError('Instagram neodpovedal. Uložený feed ostal zachovaný.') from None
         if res.get('status') != 'ok' or res.get('challenge') or res.get('checkpoint_url'):
@@ -273,17 +366,30 @@ class Instagram:
             raise InstagramError('Instagram nepotvrdil zrušenie sledovania. Stav sa nezmenil.')
 
 
+def expired(item, at=None):
+    """A story past its 24 hours (Instagram's expiring_at, else taken_at + 24 h)."""
+    return item.get('kind') == 'story' and (item.get('expires') or item.get('at', 0) + 86400000) <= (now_ms() if at is None else at)
+
+
 def document():
     cfg = settings()
     doc = read('feed.json', {'day': '', 'items': [], 'users': [], 'errors': [], 'at': 0})
     locked = not window_active(reading_window())
     sources = {s['id'] for s in cfg['sources']}
-    available = [i for i in doc['items'] if (cfg['instagram'] if i.get('source') == 'instagram' else i.get('source') in sources)]
+    available = [i for i in doc['items'] if (cfg['instagram'] if i.get('source') == 'instagram' else i.get('source') in sources) and not expired(i)]
     hidden = lambda i: i['kind'] == 'story' and i.get('user') in cfg['hiddenStories']
     items = [] if locked else [i for i in available if not hidden(i)]
     # The authenticated owner retains hidden stories for reversible offline filters.
     hidden_items = [] if locked else [i for i in available if hidden(i)]
-    return {**doc, 'items': items, 'hiddenItems': hidden_items, 'settings': cfg, 'locked': bool(locked), 'busy': COLLECT.locked(), 'today': today()}
+    return {**doc, 'items': items, 'hiddenItems': hidden_items, 'settings': cfg, 'locked': bool(locked), 'busy': COLLECT.locked(), 'today': today(),
+            'due': any(due(cfg, read('attempt.json', {})))}
+
+
+def due(cfg, attempt):
+    """(web, instagram): whether a refresh would read the RSS/YouTube/X sources (every WEB_EVERY seconds) and
+    Instagram (once a day, and not within 5 minutes of a connect)."""
+    return (bool(cfg['sources']) and time.time() - attempt.get('webAt', 0) >= WEB_EVERY,
+            bool(cfg['instagram']) and attempt.get('day') != today() and time.time() - attempt.get('at', 0) >= 300)
 
 
 def tomorrow():
@@ -413,7 +519,8 @@ def connect_instagram(body):
 
 def clear_instagram_content():
     doc = read('feed.json', {'items': [], 'users': []})
-    doc.update(items=[i for i in doc['items'] if i.get('source') != 'instagram'], users=[], coverage={})
+    doc.update(items=[i for i in doc['items'] if i.get('source') != 'instagram'], users=[], coverage={},
+               fresh={k: v for k, v in (doc.get('fresh') or {}).items() if k != 'instagram'})
     doc['errors'] = [e for e in doc.get('errors', []) if e.get('source') != 'instagram']
     # Force a fresh daily collection after the Instagram connection changes, so stories/posts
     # are actually fetched instead of waiting for the next calendar day.
@@ -444,21 +551,34 @@ def collect():
         cfg = settings()
         prev = read('feed.json', {'items': [], 'users': []})
         attempt = read('attempt.json', {})
-        if (cfg['daily'] and attempt.get('day') == today()) or time.time() - attempt.get('at', 0) < 300: return document()
+        web, ig = due(cfg, attempt)
+        if not web and not ig: return document()
         # Persist before network access: failed attempts and concurrent windows never hammer Instagram.
-        write('attempt.json', {'day': today(), 'at': time.time()})
-        out, users, errors, coverage = [], [], [], {}
+        write('attempt.json', {**attempt, **({'webAt': started} if web else {}), **({'day': today(), 'at': started} if ig else {})})
+        fresh = dict(prev.get('fresh') or {})
+        kept = lambda source: [i for i in prev['items'] if i.get('source') == source and not expired(i)]
+        old_errors = lambda source: [e for e in prev.get('errors', []) if e.get('source') == source]
+        out, errors, users, coverage = [], [], prev.get('users', []), prev.get('coverage') or {}
         for source in cfg['sources']:
-            try: out += parse_feed(public_bytes(source['url']), source)
+            if not web:
+                out += kept(source['id']); errors += old_errors(source['id'])
+                continue
+            try:
+                out += source_items(source); fresh[source['id']] = now_ms()
             except Exception:
-                errors.append({'source': source['id'], 'message': 'RSS sa nenačítalo. Skontroluj adresu zdroja.'})
-                out += [i for i in prev['items'] if i.get('source') == source['id']]
-        if cfg['instagram']:
-            try: ig, users, coverage = Instagram().collect(cfg['hiddenStories']); out += ig
+                what = 'Profil na X' if source.get('kind') == 'x' else 'YouTube kanál' if source.get('kind') == 'youtube' else 'RSS'
+                errors.append({'source': source['id'], 'message': f"{what} {source.get('name') or source['url']} sa nenačítal{'o' if what == 'RSS' else ''}."})
+                out += kept(source['id'])
+        if cfg['instagram'] and not ig:
+            out += kept('instagram'); errors += old_errors('instagram')
+        elif cfg['instagram']:
+            try:
+                items, users, coverage = Instagram().collect(cfg['hiddenStories']); out += items; fresh['instagram'] = now_ms()
             except InstagramError as e:
-                errors.append({'source': 'instagram', 'message': str(e)})
-                out += [i for i in prev['items'] if i.get('source') == 'instagram']
-                users = prev.get('users', [])
+                last = fresh.get('instagram')
+                since = f" Naposledy sa načítal {dt.datetime.fromtimestamp(last / 1000).astimezone().strftime('%-d. %-m. o %H:%M')}." if last else ''
+                errors.append({'source': 'instagram', 'message': str(e) + since})
+                out += kept('instagram'); coverage = {}
         unique = {i['id']: i for i in out}
         with LOCK:
             removed = read('unfollowed.json', {})
@@ -467,7 +587,8 @@ def collect():
                 if removed.get(user['id'], 0) >= started: user['following'] = False
             known = {u['id'] for u in users}
             users += [u for u in latest.get('users', []) if u.get('following') is False and u['id'] not in known][-100:]
-            write('feed.json', {'day': today(), 'at': int(time.time() * 1000), 'items': sorted((i for i in unique.values() if removed.get(i.get('user'), 0) < started), key=lambda i: i.get('at', 0), reverse=True)[:1500], 'users': users, 'errors': errors, 'coverage': coverage})
+            # `at` is the last time anything was actually read, never a failed attempt.
+            write('feed.json', {'day': today(), 'at': max(fresh.values(), default=0), 'fresh': fresh, 'items': sorted((i for i in unique.values() if removed.get(i.get('user'), 0) < started), key=lambda i: i.get('at', 0), reverse=True)[:1500], 'users': users, 'errors': errors, 'coverage': coverage})
         return document()
     finally: COLLECT.release()
 
@@ -483,17 +604,22 @@ def update_settings(body):
         if 'sources' in body:
             if not isinstance(body['sources'], list): raise ValueError('RSS zdroje musia byť zoznam.')
             sources = []
-            invalid = list(range(30, len(body['sources'])))
-            for index, source in enumerate(body['sources'][:30]):
+            invalid = list(range(100, len(body['sources'])))
+            stored = {x['url']: x for x in cfg['sources']}
+            for index, source in enumerate(body['sources'][:100]):
                 try:
-                    if not isinstance(source, dict): raise ValueError('Neplatný RSS zdroj.')
-                    url = safe_url(str(source.get('url', '')).strip())
-                except (ValueError, OSError):
+                    if not isinstance(source, dict): raise ValueError('Neplatný zdroj.')
+                    url = str(source.get('url', '')).strip()
+                    url = url if '://' in url else 'https://' + url
+                    name = clean(source.get('name'))[:120]
+                    # A source already saved is not looked up again on every change of settings.
+                    found = stored.get(url) or resolve_source(safe_url(url), name)
+                except (ValueError, OSError, KeyError, ET.ParseError):
                     invalid.append(index)
                     continue
-                sid = hashlib.sha256(url.encode()).hexdigest()[:16]
+                sid = hashlib.sha256(found['url'].encode()).hexdigest()[:16]
                 if any(x['id'] == sid for x in sources): continue
-                sources.append({'id': sid, 'url': url, 'name': clean(source.get('name'))[:120]})
+                sources.append({**found, 'id': sid, 'name': found.get('name') or ''})
             if invalid: raise InvalidSources(invalid)
             cfg['sources'] = sources
         if 'hiddenStories' in body:
@@ -534,7 +660,9 @@ def media_file(item_id, index):
     if not has_access():
         raise ValueError('Okno na čítanie je zatvorené.')
     item = next((i for i in doc['items'] if i['id'] == item_id), None)
-    if not cfg['instagram'] or not item or (item['kind'] == 'story' and item.get('user') in cfg['hiddenStories']):
+    instagram = bool(item) and item.get('source') == 'instagram'
+    enabled = bool(item) and (cfg['instagram'] if instagram else any(s['id'] == item.get('source') for s in cfg['sources']))
+    if not enabled or expired(item) or (item['kind'] == 'story' and item.get('user') in cfg['hiddenStories']):
         raise ValueError('Médium nie je v dnešnom feede.')
     assets = item.get('media') or []
     if index < 0 or index >= len(assets): raise ValueError('Neplatné médium.')
@@ -542,7 +670,7 @@ def media_file(item_id, index):
     url = asset['url']
     parsed = urllib.parse.urlsplit(url)
     host = parsed.hostname or ''
-    if parsed.scheme != 'https' or not (host.endswith('.cdninstagram.com') or host.endswith('.fbcdn.net')):
+    if parsed.scheme != 'https' or not (host in X_MEDIA if not instagram else host.endswith('.cdninstagram.com') or host.endswith('.fbcdn.net')):
         raise ValueError('Neplatná adresa média.')
     digest = hashlib.sha256(url.encode()).hexdigest()
     folder = os.path.join(DATA, 'media')
@@ -552,7 +680,7 @@ def media_file(item_id, index):
     if os.path.isfile(filename):
         info = read('media-types.json', {})
         with open(filename, 'rb') as f: return f.read(), info.get(digest, kind)
-    if IG_PAUSED: raise ValueError('Instagram feed je pozastavený.')
+    if IG_PAUSED and instagram: raise ValueError('Instagram feed je pozastavený.')
     class NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, *args): return None
     with urllib.request.build_opener(NoRedirect()).open(url, timeout=25) as r:
