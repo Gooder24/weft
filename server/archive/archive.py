@@ -286,10 +286,13 @@ def message_files(c, ids):
     ids = list(ids)
     for i in range(0, len(ids), 500):
         chunk = ids[i:i + 500]
-        for rowid, msg, kind, mime, size, uri, path in c.execute(f"""SELECT rowid, message, kind, mime, bytes, original_uri, path
-                FROM message_media WHERE message IN ({",".join("?" * len(chunk))}) ORDER BY message, position""", chunk):
+        for rowid, msg, kind, mime, size, uri, path, w, h, dur in c.execute(f"""SELECT rowid, message, kind, mime, bytes, original_uri,
+                path, w, h, duration FROM message_media WHERE message IN ({",".join("?" * len(chunk))}) ORDER BY message, position""", chunk):
             if path or uri.startswith("mxc://") or DISCORD_CDN.fullmatch(uri):
-                out[msg].append({"id": rowid, "name": media_name(uri, path), "kind": kind, "mime": mime, "size": size})
+                # here: the file is on asus or the homeserver, so Weft may show it in place (a Discord one waits for a click)
+                out[msg].append({"id": rowid, "name": media_name(uri, path), "kind": kind, "mime": mime, "size": size,
+                                 "here": bool(path or uri.startswith("mxc://")), **({"w": w, "h": h} if w and h else {}),
+                                 **({"dur": dur} if dur else {})})
     return out
 
 
@@ -493,19 +496,26 @@ def store_file(z, member, folder):
 
 
 def probe(path, kind):
-    """(mime, w, h, duration ms) of a stored file; Nones where it cannot tell."""
+    """(mime, w, h, duration ms) of a stored file, w and h as it is shown (a phone's turned photo or video upright);
+    Nones where it cannot tell."""
     full = os.path.join(MEDIA, path)
     if kind == "image":
         try:
             from PIL import Image
             with Image.open(full) as im:
-                return Image.MIME.get(im.format, "image/jpeg"), *im.size, None
+                w, h = im.size
+                if im.getexif().get(0x0112) in (5, 6, 7, 8): w, h = h, w  # EXIF Orientation: turned a quarter
+                return Image.MIME.get(im.format, "image/jpeg"), w, h, None
         except Exception: pass
     if kind in ("video", "audio", "image"):
         try:
             out = json.loads(subprocess.run(["ffprobe", "-v", "error", "-print_format", "json", "-show_format", "-show_streams", full],
                                             capture_output=True, timeout=60).stdout or b"{}")
             video = next((s for s in out.get("streams", []) if s.get("codec_type") == "video"), {})
+            turn = [d.get("rotation") for d in video.get("side_data_list") or [] if "rotation" in d] or [(video.get("tags") or {}).get("rotate")]
+            try: turned = round(float(turn[0] or 0)) % 180 == 90
+            except (TypeError, ValueError): turned = False
+            if turned: video = {**video, "width": video.get("height"), "height": video.get("width")}
             dur = float((out.get("format") or {}).get("duration") or 0)
             names = (out.get("format") or {}).get("format_name", "")
             mime = {"video": "video/mp4", "audio": "audio/mp4"}.get(kind, "image/jpeg") if "mp4" in names else __import__("mimetypes").guess_type(full)[0]
@@ -1036,12 +1046,12 @@ thumb_slots = threading.Semaphore(1)  # Keep full-size decode buffers out of con
 THUMB = 320
 
 
-def square(img_bytes=None, path=None):
-    """A THUMB-px square JPEG of a picture (center crop)."""
+def square(img_bytes=None, path=None, scaled=0):
+    """A THUMB-px square JPEG of a picture (center crop); with `scaled`, the whole picture within that many px."""
     from PIL import Image, ImageOps
     import io
     with Image.open(path or io.BytesIO(img_bytes)) as im:
-        im.draft("RGB", (THUMB * 2, THUMB * 2))  # JPEG decodes at a fraction of its size: fast and small
+        im.draft("RGB", (max(THUMB, scaled) * 2,) * 2)  # JPEG decodes at a fraction of its size: fast and small
         # PNG/TIFF do not support JPEG's reduced-resolution decode. Never let one
         # large attachment exhaust the shared archive service; its original stays downloadable.
         if im.width * im.height > 4_000_000:
@@ -1049,7 +1059,8 @@ def square(img_bytes=None, path=None):
         im = ImageOps.exif_transpose(im)
         if im.mode not in ("RGB", "L"): im = im.convert("RGBA").convert("RGB") if im.mode != "P" else im.convert("RGB")
         out = io.BytesIO()
-        ImageOps.fit(im, (THUMB, THUMB), Image.Resampling.BILINEAR).save(out, "JPEG", quality=78)
+        if scaled: im.thumbnail((scaled, scaled), Image.Resampling.BILINEAR)
+        (im if scaled else ImageOps.fit(im, (THUMB, THUMB), Image.Resampling.BILINEAR)).save(out, "JPEG", quality=78)
         return out.getvalue()
 
 
@@ -1076,24 +1087,26 @@ def mxc_path(mxc, thumb=False):
             else f"/_matrix/client/v1/media/download/{q(server)}/{q(mid)}")
 
 
-def thumbnail(row, token):
-    """JPEG bytes of a media row's square thumbnail, made once and cached in ./thumbs."""
+def thumbnail(row, token, scaled=0):
+    """JPEG bytes of a media row's square thumbnail (with `scaled`: the whole picture within that many px, for a
+    message's bubble), made once and cached in ./thumbs."""
     path, kind, uri, thumb = row
-    name = os.path.join(THUMBS, hashlib.sha1(f"{path}|{uri}".encode()).hexdigest() + ".jpg")
+    name = os.path.join(THUMBS, hashlib.sha1(f"{path}|{uri}".encode()).hexdigest() + (f"-{scaled}" if scaled else "") + ".jpg")
     try:
         with open(name, "rb") as f: return f.read()
     except FileNotFoundError: pass
+    pic = lambda data=None, path=None: square(data, path, scaled)
     with thumb_slots:
         if path:
             full = os.path.join(MEDIA, path)
-            data = square(video_frame(full)) if kind == "video" else square(path=full)
+            data = pic(video_frame(full)) if kind == "video" else pic(path=full)
         elif kind == "image" or thumb:
-            data = square(hs_get(mxc_path(thumb or uri, thumb=True), token))
+            data = pic(hs_get(mxc_path(thumb or uri, thumb=True), token))
         else:  # a homeserver video without a thumbnail (WhatsApp): its first frame
             import tempfile
             with tempfile.NamedTemporaryFile(dir=THUMBS, prefix=".video-") as f:
                 f.write(hs_get(mxc_path(uri), token)); f.flush()
-                data = square(video_frame(f.name))
+                data = pic(video_frame(f.name))
     os.makedirs(THUMBS, mode=0o700, exist_ok=True)
     tmp = f"{name}.{threading.get_ident()}"
     with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "wb") as f: f.write(data)
@@ -1143,6 +1156,22 @@ def warm_thumbs(log=print):
         except Exception as e: bad += 1; log(f"thumbs: {path}: {e}")
         if i % 500 == 499: log(f"thumbs: {i + 1}/{len(rows)}")
     log(f"thumbs: {len(rows)} files, {bad} without a thumbnail")
+
+
+def fix_sizes(log=print):
+    """`archive.py sizes`: stored photos and videos whose width and height were read before probe() knew a phone's
+    turned ones, set upright, so Weft's bubble has the picture's own shape. Changes only w and h."""
+    c = db()
+    rows = c.execute("SELECT rowid, path, kind, w, h FROM message_media WHERE kind IN ('image','video') AND path IS NOT NULL AND w IS NOT NULL").fetchall()
+    fixed = 0
+    for rowid, path, kind, w, h in rows:
+        _, nw, nh, _ = probe(path, kind)
+        if nw and nh and (nw, nh) == (h, w) and w != h:
+            c.execute("UPDATE message_media SET w=?, h=? WHERE rowid=?", (nw, nh, rowid))
+            c.commit()  # one at a time: the running archive keeps writing meanwhile
+            fixed += 1
+    c.close()
+    log(f"sizes: {len(rows)} files, {fixed} turned upright")
 
 
 # ---------------------------------------------------------------- HTTP for Weft
@@ -1265,7 +1294,8 @@ class Api(BaseHTTPRequestHandler):
         self.send(200, body)
 
     def media_file(self, ident, args):
-        """GET /_archive/media/{id}?w=320: the square thumbnail; without w the original."""
+        """GET /_archive/media/{id}?w=320: the square thumbnail; ?w=480&fit=scale the whole picture within 480 px (a
+        message's bubble); without w the original."""
         c = db()
         try: row = c.execute("SELECT path, kind, original_uri, thumb, mime FROM message_media WHERE rowid=?", (ident,)).fetchone()
         finally: c.close()
@@ -1273,7 +1303,10 @@ class Api(BaseHTTPRequestHandler):
         path, kind, uri, thumb, mime = row
         try:
             if not path and DISCORD_CDN.fullmatch(uri): path = fetch_discord_file(ident, uri)
-            if args.get("w"): return self.send_bytes(thumbnail((path, kind, uri, thumb), Api.hs_token), "image/jpeg")
+            if args.get("w"):
+                if kind == "file" and mime.startswith("video/"): kind = "video"  # a video kept as a file still has a frame
+                scaled = 480 if args.get("fit") == "scale" else 0
+                return self.send_bytes(thumbnail((path, kind, uri, thumb), Api.hs_token, scaled), "image/jpeg")
             if path: return self.send_file(os.path.join(MEDIA, path), mime, media_name(uri, path))
             return self.send_bytes(hs_get(mxc_path(uri), Api.hs_token), mime)
         except FileNotFoundError: return self.send(404, {"error": "file is gone"})
@@ -1551,6 +1584,7 @@ if __name__ == "__main__":
     elif cmd == "instagram": import_instagram(args)
     elif cmd == "instagram-media": import_instagram_media(args)
     elif cmd == "thumbs": warm_thumbs()
+    elif cmd == "sizes": fix_sizes()
     elif cmd == "export": export(args[0])
     elif cmd == "local": local()
     elif cmd == "unlink" and args: print("unlinked" if unlink_chat(db(), args[0]) else "no such linked chat")

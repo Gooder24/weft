@@ -3244,9 +3244,9 @@ function mediaRetry(key) {
 const mediaRedraw = new Set(); // keys still loading that a plain media() call is waiting for
 const mediaSpots = new Map(); // key -> [[placeholder element, url => element in its place]]
 /** Blob url of a Matrix file (thumbnail when `size` is set); '' until it is loaded. `avatar`: a profile picture,
- *  kept on this computer (see avatarSeen). */
+ *  kept on this computer (see avatarSeen). An old message's photo or video in the archive comes as `archive:<id>`. */
 function media(mxc, size = 0, redraw = true, avatar = false) {
-  if (!mxc?.startsWith('mxc://')) return '';
+  if (!mxc?.startsWith('mxc://') && !ARCHIVE_URL.test(mxc || '')) return '';
   const key = `${mxc}|${size}`;
   if (avatar) avatarSeen(key);
   mediaRetry(key);
@@ -3309,10 +3309,7 @@ function pumpMedia() {
       mediaCache.delete(key);
       mediaArrived(key, null);
     };
-    const [server, id] = mxc.slice(6).split('/');
-    const path = size
-      ? `/_matrix/client/v1/media/thumbnail/${q(server)}/${q(id)}?width=${size}&height=${size}&method=${size <= 96 ? 'crop' : 'scale'}`
-      : `/_matrix/client/v1/media/download/${q(server)}/${q(id)}`;
+    const path = mediaPath(mxc, size);
     // Offline only what sw.js kept is shown; the rest is asked for again after reconnecting.
     const got = S.offline ? (globalThis.caches?.match(path) || Promise.resolve()).then((res) => res || Promise.reject(new Error('offline')))
       : fetch(path, { headers: { Authorization: `Bearer ${S.token}` } });
@@ -5398,8 +5395,17 @@ function bubbleBody(r, m, ev) {
   if (files.length) text = text.split('\n').filter((line) => !files.some((f) => [`[${ARCHIVE_KINDS[f.kind] || T('Súbor')}] ${f.name}`, `[${ARCHIVE_KINDS[f.kind] || T('Súbor')}]`].includes(line.trim()))).join('\n').trim();
   // Mentions come as pills in formatted_body; the body may name them otherwise (Instagram: @username).
   const said = !files.length && c.format === 'org.matrix.custom.html' && typeof c.formatted_body === 'string' ? mentionParts(c.formatted_body) : null;
+  // Its photos and videos show as the homeserver's do; the viewer pages through them with the chat's other ones.
+  const pictures = ev.pending ? [] : archiveMedia(ev);
   return [text ? h('div', { class: 'mtext' }, c.msgtype === 'm.emote' ? `* ${memberName(r, ev.sender)} ` : null, said ? mentionText(said, findIn(ev)) : linkified(text, findIn(ev))) : null,
-    files.map((f) => h('button', { class: 'mfile', onclick: () => archiveDownload(f) }, icon('file'), `${f.name}${sizeNote(f.size)}`)),
+    files.map((f) => {
+      const it = pictures.find((x) => x.file === f);
+      if (!it) return h('button', { class: 'mfile', onclick: () => archiveDownload(f) }, icon('file'), `${f.name}${sizeNote(f.size)}`);
+      const video = it.content.msgtype === 'm.video';
+      return h('button', { class: `mimg${video ? ' video' : ''}`, style: size(it.content.info), title: f.name, onclick: () => openViewer(r, it.event_id) },
+        mediaInPlace(it.content.url, f.mime === 'image/gif' ? 0 : 480, (url) => h('img', { src: url, alt: video ? '' : f.name }), () => h('span', { class: 'mwait' })),
+        video ? h('span', { class: 'play' }, icon('play', 48)) : null);
+    }),
     linkCards(r, ev, c, text)];
 }
 
@@ -5607,20 +5613,28 @@ async function archiveDownload(f) {
 }
 
 async function download(mxc, name) {
-  const [server, id] = mxc.slice(6).split('/');
-  const res = await fetch(`/_matrix/client/v1/media/download/${q(server)}/${q(id)}`, { headers: { Authorization: `Bearer ${S.token}` } }).catch(() => null);
+  const res = await fetch(mediaPath(mxc), { headers: { Authorization: `Bearer ${S.token}` } }).catch(() => null);
   if (!res?.ok) return alert(T('Súbor sa nepodarilo stiahnuť.'));
   const a = h('a', { href: URL.createObjectURL(await res.blob()), download: name || 'subor' });
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 60e3);
 }
 
+const ARCHIVE_URL = /^archive:\d+$/;
+/** Where a file (a thumbnail of `size` px, 0: the whole file) is asked for: the homeserver, or the archive. */
+function mediaPath(url, size = 0) {
+  if (ARCHIVE_URL.test(url)) return `/_archive/media/${url.slice(8)}${!size ? '' : size <= 96 ? '?w=320' : '?w=480&fit=scale'}`;
+  const [server, id] = url.slice(6).split('/');
+  return size
+    ? `/_matrix/client/v1/media/thumbnail/${q(server)}/${q(id)}?width=${size}&height=${size}&method=${size <= 96 ? 'crop' : 'scale'}`
+    : `/_matrix/client/v1/media/download/${q(server)}/${q(id)}`;
+}
+
 /** Blob url of a whole Matrix file, fetched now rather than in the background queue. */
 function mediaFile(mxc) {
   const key = `${mxc}|0`;
   if (mediaCache.get(key)) return Promise.resolve(mediaCache.get(key));
-  const [server, id] = mxc.slice(6).split('/');
-  return fetch(`/_matrix/client/v1/media/download/${q(server)}/${q(id)}`, { headers: { Authorization: `Bearer ${S.token}` } })
+  return fetch(mediaPath(mxc), { headers: { Authorization: `Bearer ${S.token}` } })
     .then((res) => (res.ok ? res.blob() : null))
     .then((blob) => { if (!blob) return ''; const url = URL.createObjectURL(blob); mediaCache.set(key, url); return url; })
     .catch(() => '');
@@ -5994,11 +6008,32 @@ function oggCrc(bytes) {
 
 // ------------------------------------------------------------------ photo viewer
 
-/** The chat's pictures and videos, oldest first: what the viewer pages through. A shared post's photos each count. */
+/** The chat's pictures and videos, oldest first: what the viewer pages through. A shared post's photos each count,
+ *  and so do an old message's from the archive. */
 function galleryOf(r) {
   const m = roomModel(r);
-  return m.messages.filter((ev) => !ev.pending && !isRedacted(m, ev) && (ev.type === 'm.sticker' || ['m.image', 'm.video'].includes(contentOf(m, ev).msgtype)))
-    .flatMap((ev) => { const items = carouselOf(ev, contentOf(m, ev)); return items.length ? items : [ev]; });
+  return m.messages.filter((ev) => !ev.pending && !isRedacted(m, ev)).flatMap((ev) => {
+    if (ev.archiveFiles) return archiveMedia(ev);
+    const c = contentOf(m, ev);
+    if (ev.type !== 'm.sticker' && !['m.image', 'm.video'].includes(c.msgtype)) return [];
+    const items = carouselOf(ev, c);
+    return items.length ? items : [ev];
+  });
+}
+/** An old message's photos and videos the archive keeps (an export, a bridge's older pages), as the viewer's picture
+ *  events `<message id>#a<n>` with the content a homeserver message would have; `file` is the archive's row. Only a
+ *  file on asus or the homeserver: a Discord one not downloaded yet waits for a click (its first fetch asks Discord). */
+function archiveMedia(ev) {
+  return (ev.archiveFiles || []).flatMap((f, n) => {
+    const mime = String(f?.mime || '');
+    // A voice message may be an .mp4 too: only a plain file goes by its type.
+    const kind = f?.kind === 'image' || f?.kind === 'video' ? f.kind : f?.kind === 'file' ? (/^(image|video)\//.exec(mime) || [])[1] : null;
+    // Pictures a browser cannot draw (HEIC, SVG) stay files.
+    if (f?.here !== true || !kind || /hei[cf]|svg/.test(mime)) return [];
+    const info = { mimetype: mime, size: f.size, ...(f.w && f.h ? { w: f.w, h: f.h } : {}), ...(f.dur ? { duration: f.dur } : {}) };
+    return [{ event_id: `${ev.event_id}#a${n}`, sender: ev.sender, origin_server_ts: ev.origin_server_ts, file: f,
+      content: { msgtype: kind === 'video' ? 'm.video' : 'm.image', url: `archive:${f.id}`, body: f.name, info } }];
+  });
 }
 /** A shared Instagram post with several photos or videos (the bridge lists them in com.beeper.meta.carousel), as
  *  the viewer's picture events `<event id>#<n>` in the post's order; their content is the item itself. */
