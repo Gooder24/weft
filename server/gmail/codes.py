@@ -51,12 +51,14 @@ CANDIDATE = re.compile(
     re.I,
 )
 # A parcel's pickup code: what follows these words is the code, though the mail is all about a parcel. Packeta prints
-# its six-digit Z-BOX code one digit per line or cell; more digits after them than that means no code. The code is
-# case-sensitive and has a digit, so a word after the label ("alebo", "ALEBO") never is one.
+# its six-digit Z-BOX code one digit per line or cell; another lone digit after them means no code. The code is a whole
+# token, case-sensitive and with a digit, so a word ("alebo", "ALEBO") or a date after the label never is one. It is
+# only looked for when the mail has no other code.
+_DIGIT = r"[0-9](?=\s|$)"
 PICKUP = re.compile(
     r"(?i:k[oó]d\s+pr[eo]\s+(?:otvorenie|otevření)\s+schránky|heslo\s+pr[eo]\s+(?:vydanie|vydání)\s+(?:zásielky|zásilky)"
     r"|vyzdvihnúť\s+pomocou\s+mobilnej\s+aplikácie\s+alebo\s+kódu)\s*(?:je\s*)?:?\s*"
-    r"(?P<code>\d{4,8}(?!\s*\d)|\d(?:\s+\d){5}(?!\s*\d)|(?=[A-Z0-9]*\d)[A-Z0-9]{4,8}(?![\w-]))"
+    rf"(?P<code>{_DIGIT}(?:\s+{_DIGIT}){{5}}(?!\s+{_DIGIT})|(?=[A-Z0-9]*[0-9])[A-Z0-9]{{4,8}}(?![\w-]))"
 )
 # A number right after these is a phone number to call, whatever the mail is about.
 PHONE = re.compile(r"\bcall\b|\bzavolaj\w*|\bvolajte\b|\bphone\b|\btelef\w*|\btel\b|\bhotline\b|\blink[au]\b|\bmobil\w*", re.I)
@@ -96,8 +98,6 @@ def _plausible(code: str, before: str = "") -> bool:
 def find_code(subject: str, text: str) -> str | None:
     subject = plain(subject or "")
     body = plain(text or "")[:6000]
-    if pickup := PICKUP.search(body):
-        return re.sub(r"\s", "", pickup.group("code"))
     subject_says = bool(KEYWORD.search(subject)) and not NOT_OTP.search(subject)
     best = None
     for where, source in ((0, subject), (1, body)):
@@ -135,6 +135,8 @@ def find_code(subject: str, text: str) -> str | None:
             )
             if best is None or score > best[0]:
                 best = (score, code)
+    if best is None and (pickup := PICKUP.search(body)):
+        return re.sub(r"\s", "", pickup.group("code"))
     return best[1] if best else None
 
 
