@@ -705,10 +705,15 @@ def accepts_gzip(header):
 
 
 def etag_matches(values, tag):
-    """If-None-Match (all its field lines; a list, weak tags, or *) names the weak tag W/"<opaque>"."""
+    """If-None-Match (all its field lines; a list, weak tags, or *) names the weak tag W/"<opaque>". A field that is
+    not a lone * or a list of quoted tags is ignored, as if it were not sent."""
     joined = ",".join(values or [])
     if joined.strip() == "*": return True
+    if not ETAG_LIST.fullmatch(joined): return False
     return tag.removeprefix("W/") in re.findall(r'(?:W/)?("[^"]*")', joined)
+
+
+ETAG_LIST = re.compile(r'[\s,]*(?:W/)?"[^"\x00-\x1f]*"(?:\s*,[\s,]*(?:W/)?"[^"\x00-\x1f]*")*[\s,]*')
 
 
 def export(folder, c=None):
@@ -1421,7 +1426,7 @@ class Api(BaseHTTPRequestHandler):
             c = db()
             try: raw, gz, sha = chats_body(c)
             finally: c.close()
-            zipped = accepts_gzip(self.headers.get("Accept-Encoding"))
+            zipped = accepts_gzip(",".join(self.headers.get_all("Accept-Encoding") or []))
             tag = f'W/"{sha}"'  # weak: the gzip and plain lists are the same list, also when Caddy unzips it
             if etag_matches(self.headers.get_all("If-None-Match"), tag):  # Weft already has this list: nothing to parse again
                 self.send_response(304)
