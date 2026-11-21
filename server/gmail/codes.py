@@ -53,7 +53,7 @@ CANDIDATE = re.compile(
 # A parcel's pickup code: what follows these words is the code, though the mail is all about a parcel. Packeta prints
 # its six-digit Z-BOX code one digit per line or cell; another lone digit after them means no code. The code is a whole
 # token, case-sensitive and with a digit, so a word ("alebo", "ALEBO") or a date after the label never is one. It is
-# only looked for when the mail has no other code, and a code the mail says no longer holds is none.
+# only looked for when the mail has no other code.
 _DIGIT = r"[0-9](?=\s|$)"
 PICKUP = re.compile(
     r"(?i:k[oó]d\s+pr[eo]\s+(?:otvorenie|otevření)\s+schránky|heslo\s+pr[eo]\s+(?:vydanie|vydání)\s+(?:zásielky|zásilky)"
@@ -135,10 +135,8 @@ def find_code(subject: str, text: str) -> str | None:
             )
             if best is None or score > best[0]:
                 best = (score, code)
-    if best is None:
-        for pickup in PICKUP.finditer(body):
-            if not re.search(r"neplat|expir|zrušen|invalid", body[pickup.end():pickup.end() + 40], re.I):
-                return re.sub(r"\s", "", pickup.group("code"))
+    if best is None and (pickup := PICKUP.search(body)):
+        return re.sub(r"\s", "", pickup.group("code"))
     return best[1] if best else None
 
 
