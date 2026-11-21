@@ -142,17 +142,34 @@ function persistDrafts() {
   const saved = new Map(S.drafts);
   // An edit temporarily borrows the composer; keep the unsent text that will come back after it.
   if (S.editing) saved.set(S.editing.room, S.editing.draft);
+  const kept = [...saved].filter(([, text]) => text.trim());
+  const picks = kept.map(([key]) => [key, key === S.editing?.room ? S.editing.picks : picked.get(key)]).filter(([, list]) => list?.length);
   try {
-    localStorage.setItem(`ep_drafts:${S.userId}`, JSON.stringify([...saved].filter(([, text]) => text.trim())));
+    localStorage.setItem(`ep_drafts:${S.userId}`, JSON.stringify(kept));
+    localStorage.setItem(`ep_picks:${S.userId}`, JSON.stringify(picks));
   } catch { /* Storage unavailable: the in-memory draft still stays usable in this window. */ }
+}
+/** The picked names of the drafts storedDrafts gives back (persistDrafts keeps them beside the text). */
+function storedPicks(user) {
+  try {
+    const items = JSON.parse(localStorage.getItem(`ep_picks:${user}`) || "[]");
+    return new Map((Array.isArray(items) ? items : []).filter((x) => Array.isArray(x) && typeof x[0] === "string" && Array.isArray(x[1]))
+      .map(([key, list]) => [key, list.filter((x) => Number.isInteger(x?.at) && typeof x.key === "string" && typeof x.id === "string")]));
+  } catch { return new Map(); }
+}
+function loadDrafts(user) {
+  S.drafts = storedDrafts(user);
+  picked.clear();
+  for (const [key, list] of storedPicks(user)) if (list.length && S.drafts.has(key)) picked.set(key, list);
 }
 function setDraft(key, text) { shiftPicks(key, S.drafts.get(key) || '', text); S.drafts.set(key, text); persistDrafts(); }
 function deleteDraft(key) { picked.delete(key); S.drafts.delete(key); persistDrafts(); }
 
 /** Draft key → [{ at, key, id }]: an "@Name" picked from the list (or kept from an edited message) at `at` in the
- *  draft, for a name two people of the chat share; a name only one person has is found by mentionsIn on its own.
- *  Only this window knows them: after a reload such a name goes out as plain text, never to a guessed person. */
+ *  draft; there it is that person (mentionsIn), also beside a longer name or one two people share. Kept with the draft
+ *  in this browser, so a reload keeps who they were. */
 const picked = new Map();
+for (const [key, list] of storedPicks(localStorage.getItem("ep_user"))) if (list.length && S.drafts.has(key)) picked.set(key, list);
 /** The draft changed from `before` to `after`: picks after the change move with it, picks inside it are gone. */
 function shiftPicks(key, before, after) {
   const list = picked.get(key);
@@ -161,7 +178,17 @@ function shiftPicks(key, before, after) {
   while (p < before.length && p < after.length && before[p] === after[p]) p++;
   let q = 0;
   while (q < before.length - p && q < after.length - p && before[before.length - 1 - q] === after[after.length - 1 - q]) q++;
-  const end = before.length - q;
+  // Typing "@" before "@Ana" could be either "@" (a run of equal characters): the change may stand anywhere it slides
+  // to the left; take the place that cuts the fewest picks, the rightmost of those as before.
+  const cut = before.length - p - q, put = after.length - p - q;
+  const cuts = (at) => list.filter((x) => (x.at < at && x.at + x.key.length > at) || (at + cut > x.at && at < x.at + x.key.length && !(x.at >= at && x.at + x.key.length <= at + cut))).length;
+  let best = p;
+  for (let at = p; at > 0 && (cut ? before[at - 1] === before[at - 1 + cut] : put ? before[at - 1] === after[at - 1 + put] : false);) {
+    at--;
+    if (cuts(at) < cuts(best)) best = at;
+  }
+  p = best;
+  const end = p + cut;
   const kept = list.filter((x) => x.at + x.key.length <= p || x.at >= end).map((x) => (x.at >= end ? { ...x, at: x.at + after.length - before.length } : x));
   if (kept.length) picked.set(key, kept); else picked.delete(key);
 }
@@ -240,7 +267,7 @@ async function boot() {
       if (run !== bootRun) return;
       // The kept copy was someone else's (never, unless the session changed under it): start over without it.
       if (S.fromSnapshot && S.userId !== me) { saveSession(S.token, me); await forgetSnapshot(); return location.reload(); }
-      if (S.userId !== me) { S.drafts = storedDrafts(me); S.editing = null; }
+      if (S.userId !== me) { loadDrafts(me); S.editing = null; }
       S.userId = me;
       break;
     } catch (err) {
@@ -280,7 +307,7 @@ async function boot() {
 }
 
 function saveSession(token, user) {
-  if (S.userId !== user) { S.drafts = storedDrafts(user); S.editing = null; }
+  if (S.userId !== user) { loadDrafts(user); S.editing = null; }
   S.token = token;
   S.userId = user;
   localStorage.setItem('ep_token', token);
@@ -686,7 +713,7 @@ function putInBox(r, it) {
   const before = now.trimEnd() ? `${now.trimEnd()}\n` : '';
   if (it.body) {
     setDraft(r.id, before + it.body);
-    if (it.picks?.length) picked.set(r.id, [...(picked.get(r.id) || []), ...it.picks.map((x) => ({ ...x, at: x.at + before.length }))]);
+    if (it.picks?.length) { picked.set(r.id, [...(picked.get(r.id) || []), ...it.picks.map((x) => ({ ...x, at: x.at + before.length }))]); persistDrafts(); }
   }
   if (it.relay) boxFrom.set(r.id, T`Odpoveď z chatu ${it.relay.title || 'chat'}, pripravil Weft · pošli, uprav alebo odober`);
   S.focusComposer = true;
@@ -2901,6 +2928,7 @@ function useMention(r, id) {
   const text = draft.slice(0, from) + name + gap + rest;
   setDraft(r.id, text);
   picked.set(r.id, [...(picked.get(r.id) || []), { at: from, key: name.toLowerCase(), id }]);
+  persistDrafts();
   S.mention = null;
   S.focusComposer = true;
   S.caret = from + name.length + gap.length;
@@ -6989,7 +7017,7 @@ function endEdit() {
   S.editing = null;
   if (e.draft) setDraft(e.room, e.draft);
   else deleteDraft(e.room);
-  if (e.picks) picked.set(e.room, e.picks); // the draft's own picks come back with it
+  if (e.picks) { picked.set(e.room, e.picks); persistDrafts(); } // the draft's own picks come back with it
   const box = document.querySelector(`[data-root="${CSS.escape(e.room)}"]`);
   if (box) box.value = e.draft;
   S.focusComposer = true;
@@ -12400,7 +12428,11 @@ function render() {
   const again = root.querySelector(`[data-root="${CSS.escape(S.overlay ? '__overlay' : typing?.root || '')}"]`);
   if (again) {
     again.focus({ preventScroll: true });
-    if (typing?.root === again.dataset.root) try { again.setSelectionRange(typing.at, typing.end); } catch { /* not a text field */ }
+    // The message box was asked for (a picked name, an edit): its caret now, not at some later render.
+    const asked = S.focusComposer && again.matches(".ccompose textarea, .compose textarea");
+    if (asked && S.caret != null) again.setSelectionRange(S.caret, S.caret);
+    else if (typing?.root === again.dataset.root) try { again.setSelectionRange(typing.at, typing.end); } catch { /* not a text field */ }
+    if (asked) { S.focusComposer = false; S.caret = null; }
   } else if (same && schoolFocus && !S.overlay && !S.panel) {
     const target = schoolFocus.back ? root.querySelector('.detail .back')
       : root.querySelector(`[data-edu-action="${CSS.escape(schoolFocus.action)}"]`);
