@@ -3,7 +3,7 @@ import { T } from './i18n.js';
 import { autoAccents, eventAccent, isHex, titleKey } from './kalendarix-colors.js';
 
 // Calendar core for Weft: the same calendars.json Kalendarix keeps (docs/calendars-json.md in
-// github.com/Gooder24/kalendarix-archive) and the same reading of it, so an event shows on the same days in
+// github.com/Gooder24/kalendarix) and the same reading of it, so an event shows on the same days in
 // both. Ported from Kalendarix 2 src/core (dates, recurrence, instances); no DOM here, app.js draws.
 
 export const MS_MINUTE = 60e3;
