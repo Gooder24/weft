@@ -126,11 +126,11 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
 - Mentions (like Beeper): „@“ in a Messenger, Instagram, WhatsApp or Discord chat lists its people; a picked or fully
   typed „@Name“ goes out as a Matrix mention (`formatted_body` matrix.to link + `m.mentions`), which the mautrix
   bridges turn into the network's own. A picked name stays that person (two of the same name, text typed after it,
-  a reload: picks are kept with the draft in localStorage ). Drafts, replies, edits, send-later and
+  a reload: picks are kept with the draft in localStorage `ep_picks:<user>`). Drafts, replies, edits, send-later and
   the merged chat's network switch keep it; incoming mentions show as pills (`mentionsIn`, `textMessage`, `readMentions` in app.js). The list shows each Messenger and
   Instagram person's @username and a name for ghosts Meta never named (archive `GET /_archive/rooms/{room}/people`: the
   bridge's database, else the export's sender at the same millisecond), never an internal id. Checks:
-  `overenie/mentions/run.sh`, `overenie/mentions-ui/` (`run.sh` before/after screenshots, `people_test.py`).
+  `overenie/mentions/run.sh`, `overenie/mentions-ui/` (`run.sh` before/after screenshots, `people_test.py`, `picks.cjs`).
 - A shared Instagram post or reel comes as its picture until Weft asks the bridge for it once in sight
   (`resolve_media`); a post with several photos or videos then lists them all in `com.beeper.meta.carousel`
   (`server/bridges/instagram-carousel.patch`, asus build/meta branch `weft-ig-carousel` on `weft-archive-ig`). The bubble
