@@ -51,10 +51,12 @@ CANDIDATE = re.compile(
     re.I,
 )
 # A parcel's pickup code: what follows these words is the code, though the mail is all about a parcel. Packeta prints
-# its Z-BOX code one digit per cell (plain() joins them). The code is case-sensitive, so a word after them never is one.
+# its six-digit Z-BOX code one digit per line or cell; more digits after them than that means no code. The code is
+# case-sensitive and has a digit, so a word after the label ("alebo", "ALEBO") never is one.
 PICKUP = re.compile(
-    r"(?i:k[oó]d pr[eo] (?:otvorenie|otevření) schránky|heslo pr[eo] (?:vydanie|vydání) (?:zásielky|zásilky))\s*(?:je\s*)?:?\s*"
-    r"(?P<code>[A-Z0-9]{4,8})(?!\w)"
+    r"(?i:k[oó]d\s+pr[eo]\s+(?:otvorenie|otevření)\s+schránky|heslo\s+pr[eo]\s+(?:vydanie|vydání)\s+(?:zásielky|zásilky)"
+    r"|vyzdvihnúť\s+pomocou\s+mobilnej\s+aplikácie\s+alebo\s+kódu)\s*(?:je\s*)?:?\s*"
+    r"(?P<code>\d{4,8}(?!\s*\d)|\d(?:\s+\d){5}(?!\s*\d)|(?=[A-Z0-9]*\d)[A-Z0-9]{4,8}(?![\w-]))"
 )
 # A number right after these is a phone number to call, whatever the mail is about.
 PHONE = re.compile(r"\bcall\b|\bzavolaj\w*|\bvolajte\b|\bphone\b|\btelef\w*|\btel\b|\bhotline\b|\blink[au]\b|\bmobil\w*", re.I)
@@ -63,7 +65,6 @@ NEAR = 80  # how far before a code its keyword may be (characters)
 
 def plain(text: str) -> str:
     """Mail text without HTML, links and runs of blank space."""
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = re.sub(r"(?is)<(script|style)\b.*?</\1>", " ", text)
     # The quoted earlier mail of a reply (Gmail's and others' HTML): it is cut off up to its end.
     while True:  # innermost first, so a nested quote goes whole and text between two quotes stays
@@ -75,9 +76,7 @@ def plain(text: str) -> str:
     text = re.sub(r"(?m)^\s*>.*$", " ", text)  # quoted lines of an earlier mail in a reply
     text = re.sub(r"\bhttps?://\S+|\bwww\.\S+|\S+@\S+\.\w+", " ", text)
     text = re.sub(r"[ \t ​]+", " ", text)
-    text = re.sub(r"\n\s*\n+", "\n", text).strip()
-    # A code printed one digit per line or table cell (Packeta's Z-BOX code) becomes one number on its line.
-    return re.sub(r"(?m)^ ?\d ?(?:\n ?\d ?){3,7}$(?!\n ?\d ?$)", lambda m: re.sub(r"\D", "", m.group()), text)
+    return re.sub(r"\n\s*\n+", "\n", text).strip()
 
 
 def _plausible(code: str, before: str = "") -> bool:
@@ -98,7 +97,7 @@ def find_code(subject: str, text: str) -> str | None:
     subject = plain(subject or "")
     body = plain(text or "")[:6000]
     if pickup := PICKUP.search(body):
-        return pickup.group("code")
+        return re.sub(r"\s", "", pickup.group("code"))
     subject_says = bool(KEYWORD.search(subject)) and not NOT_OTP.search(subject)
     best = None
     for where, source in ((0, subject), (1, body)):
