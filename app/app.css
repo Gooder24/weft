@@ -735,6 +735,10 @@ a.rnote.rlink { color: var(--link); text-decoration: none; }
 .gifcell img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .gifsource { flex: none; padding: 4px 12px 8px; text-align: right; font-size: var(--fs); color: var(--muted); }
 .cmd.gif { max-width: 720px; height: 70vh; }
+/* Preposlať: the shared post's address, the only place it shows, with a way to copy it. */
+.fwdlink { flex: none; display: flex; align-items: center; gap: 8px; padding: 8px 18px; border-bottom: var(--bw) solid var(--line); color: var(--muted); font-size: var(--fs); }
+.fwdlink span { flex: 1; min-width: 0; overflow-wrap: anywhere; user-select: text; }
+.fwdlink button { flex: none; }
 
 /* Commands typed at the start of a message, offered while the first word is typed. */
 /* What floats over the message box ("/", ":" and "@"), framed like the box and the menus. */

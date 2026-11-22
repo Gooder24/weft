@@ -12,7 +12,7 @@ import { STASH, GONE_MS, applyStash, stashHas, stashOf } from './stash.js';
 
 import { createFeed } from './feed.js';
 import { createUpdates } from './updates.js';
-import { linksIn, trimLink, LINK_RE, fromBridge, card as linkCard, createLinkReader, readsItself, HELD } from './links.js';
+import { linksIn, trimLink, LINK_RE, fromBridge, card as linkCard, createLinkReader, readsItself, HELD, classify } from './links.js';
 
 document.documentElement.lang = LANG;
 
@@ -2090,6 +2090,18 @@ async function saveRing(ring) {
 /** One-line summary of a message for the inbox and the reply quote. */
 /** What a shared post's caption says besides its address (the bridge puts the address into the body). */
 const sharedWords = (body) => String(body || '').replace(/\[[^\]]*\]\([^)]*\)/g, '').replace(/<?https?:\/\/\S+/g, '').replace(/^> ?/gm, '').trim();
+/** The address of a post, reel or story shared from Instagram or Facebook, as one would send it on: Instagram's
+ *  tracking parameters (?id=…&is_sponsored=…, ?igsh=…) dropped. '' for any other message. */
+function shareLink(c) {
+  if (typeof c?.external_url !== 'string') return '';
+  try {
+    const u = new URL(c.external_url);
+    if (!/^https?:$/.test(u.protocol)) return '';
+    return classify(u.href)[0] === 'instagram' ? `${u.origin}${u.pathname}` : u.href;
+  } catch { return ''; }
+}
+/** A shared reel or story (also a Facebook video): the video says it all, so no card of its page goes under it. */
+const sharedVideo = (c) => ['reel', 'video', 'story'].includes(classify(shareLink(c))[1]);
 
 function messageSummary(m, ev) {
   if (isRedacted(m, ev)) return T('Správa bola odstránená');
@@ -3162,6 +3174,41 @@ async function saveRelay(change) {
   await putAccount(RELAY, { items: change(list) });
   render();
 }
+/** Chats to pick for something to go to, the latest first, filtered by the words typed. */
+function chatPicks(query, skip = []) {
+  const words = norm(query).split(/\s+/).filter(Boolean);
+  return [...S.rooms.values()].filter((x) => isChat(x) && !x.archiveOnly && !skip.includes(x.id) && roomTitle(x))
+    .sort((a, b) => (roomModel(b).messages.at(-1)?.origin_server_ts || 0) - (roomModel(a).messages.at(-1)?.origin_server_ts || 0))
+    .filter((x) => words.every((w) => norm(`${roomTitle(x)} ${appOf(x.app)?.name || ''}`).includes(w))).slice(0, 40);
+}
+const chatPickRow = (o, x, i) => resultRow(o, null, i, [avatar(roomAvatar(x), roomTitle(x), 28),
+  h('div', { class: 'rmeta' }, h('b', {}, highlighted(roomTitle(x), o.query)), h('small', {}, appOf(x.app)?.name || 'Matrix')),
+  appOf(x.app) ? h('img', { class: 'rnet', src: appOf(x.app).icon, alt: '' }) : null]);
+
+/** Preposlať: a shared post's address goes into the picked chat's message box, after what is there, and Karchi
+ *  sends it himself. Only here and in the message's menu does its address show. */
+const openForward = (link) => openOverlay('forward', { link });
+function forwardPickView(o) {
+  const list = chatPicks(o.query);
+  o.flat = list.map((x) => () => forwardTo(o.link, x.id));
+  if (o.index >= o.flat.length) o.index = 0;
+  return [
+    cmdInput(o, T('Preposlať do… (meno)')),
+    h('div', { class: 'fwdlink' }, h('span', {}, o.link), h('button', { class: 'ghost', onclick: () => copyLink(o.link) }, T('Kopírovať'))),
+    h('div', { class: 'results' }, list.length ? list.map((x, i) => chatPickRow(o, x, i)) : h('div', { class: 'empty' }, T('Taký chat sa nenašiel.'))),
+  ];
+}
+function forwardTo(link, id) {
+  S.overlay = null;
+  const now = S.drafts.get(id) || '';
+  if (!now.includes(link)) setDraft(id, now.trim() ? `${now.trimEnd()} ${link}` : link);
+  S.focusComposer = true;
+  select(id);
+}
+async function copyLink(link) {
+  try { await navigator.clipboard.writeText(link); } catch { prompt(T('Odkaz:'), link); }
+}
+
 /** "Keď odpíše, ukázať…": waits from Karchi's message `ev` (or his last one in the chat) and asks which chat gets it. */
 function openRelay(r, ev = null) {
   if (!r || r.archiveOnly) return;
@@ -3174,10 +3221,7 @@ function openRelay(r, ev = null) {
 }
 function relayPickView(o) {
   const from = S.rooms.get(o.room);
-  const words = norm(o.query).split(/\s+/).filter(Boolean);
-  const pool = [...S.rooms.values()].filter((x) => isChat(x) && !x.archiveOnly && !o.rooms.includes(x.id) && roomTitle(x))
-    .sort((a, b) => (roomModel(b).messages.at(-1)?.origin_server_ts || 0) - (roomModel(a).messages.at(-1)?.origin_server_ts || 0));
-  const list = pool.filter((x) => words.every((w) => norm(`${roomTitle(x)} ${appOf(x.app)?.name || ''}`).includes(w))).slice(0, 40);
+  const list = chatPicks(o.query, o.rooms);
   o.flat = list.map((x) => () => { S.overlay = null; startRelay(o, x.id); });
   if (o.index >= o.flat.length) o.index = 0;
   const name = from ? roomTitle(from) : 'chat';
@@ -3187,11 +3231,7 @@ function relayPickView(o) {
       type: 'button', class: `chip${o[key] ? ' on' : ''}`, 'aria-pressed': String(!!o[key]), title: keys,
       onclick: () => { relayToggle(o, key); document.querySelector('.cmd .cmdinput')?.focus(); },
     }, key === 'draft' ? T('Len koncept') : T('Ukázať meno a fotku')))),
-    h('div', { class: 'results' }, list.length
-      ? list.map((x, i) => resultRow(o, null, i, [avatar(roomAvatar(x), roomTitle(x), 28),
-        h('div', { class: 'rmeta' }, h('b', {}, highlighted(roomTitle(x), o.query)), h('small', {}, appOf(x.app)?.name || 'Matrix')),
-        appOf(x.app) ? h('img', { class: 'rnet', src: appOf(x.app).icon, alt: '' }) : null]))
-      : h('div', { class: 'empty' }, T('Taký chat sa nenašiel.'))),
+    h('div', { class: 'results' }, list.length ? list.map((x, i) => chatPickRow(o, x, i)) : h('div', { class: 'empty' }, T('Taký chat sa nenašiel.'))),
   ];
 }
 /** The picker's two choices: by default the picture is sent at once and hides the other side's name and photo. */
@@ -5371,10 +5411,11 @@ function bubbleBody(r, m, ev) {
   };
   const several = ev.pending ? [] : carouselOf(ev, c);
   const view = ev.pending ? null : () => openViewer(r, (several.find((it) => it.content.url === c.url) || several[0])?.event_id || ev.event_id);
-  // A post or reel shared from Instagram or Facebook comes as its media with the post's address and caption: the
-  // media, then the post's card. The address itself is not repeated; only words beside it stay as the caption.
-  const shared = typeof c.external_url === 'string' ? linkCards(r, ev, c, c.external_url) : null;
-  if (shared && caption) {
+  // A post shared from Instagram or Facebook comes as its media with the post's address and caption: the media, then
+  // the post's card. A reel or story is its video alone; its address shows only when Karchi forwards it (Preposlať).
+  // The address itself is not repeated; only words beside it stay as the caption.
+  const shared = typeof c.external_url === 'string' && !sharedVideo(c) ? linkCards(r, ev, c, c.external_url) : null;
+  if (typeof c.external_url === 'string' && caption) {
     const words = sharedWords(c.body);
     caption = words ? h('div', { class: 'caption' }, linkified(words)) : null;
   }
@@ -6171,6 +6212,7 @@ function viewerView(o) {
     avatar(who.avatar, who.name, 32, 'mav'),
     h('div', { class: 'vwho' }, h('b', {}, who.name), h('small', {}, `${dayLabel(ts)} ${timeLabel(ts)}`)),
     list.length > 1 ? h('span', { class: 'vcount', title: src.done ? '' : T('Staršie obrázky sa ešte načítavajú') }, T`${i + 1} z ${list.length}${src.done ? '' : '+'}`) : null,
+    shareLink(c) ? h('button', { class: 'vbtn', title: T('Preposlať…'), onclick: () => openForward(shareLink(c)) }, icon('forward')) : null,
     h('button', { class: 'vbtn', title: T('Stiahnuť (Ctrl+S)'), onclick: () => viewerDownload(o) }, icon('download')),
     h('button', { class: 'vbtn', title: T('Zavrieť (Esc)'), onclick: close }, icon('close'))),
   h('div', { class: 'vstage' }, stage),
@@ -6765,7 +6807,9 @@ function bubbleView(r, m, ev, grouped, group, sug = null) {
     'data-event': ev.event_id,
     oncontextmenu: (e) => {
       // Someone else's name or picture in a group: the menu offers a nickname for them.
-      if (mine ? !ev.archived && !ev.pending && !e.target.closest('a, img, video') : !ev.archived && e.target.closest('.mname, .mav')) openMsgMenu(e, r, ev);
+      // A shared post or reel: anywhere on it, for Preposlať and its address.
+      if (!ev.archived && !ev.pending && !gone && shareLink(contentOf(m, ev))) openMsgMenu(e, r, ev);
+      else if (mine ? !ev.archived && !ev.pending && !e.target.closest('a, img, video') : !ev.archived && e.target.closest('.mname, .mav')) openMsgMenu(e, r, ev);
     },
     // Touch screens have no hover: a tap on the message shows its bar.
     onclick: (e) => { if (matchMedia('(hover: none)').matches && !e.target.closest('a, button')) { S.actsFor = S.actsFor === ev.event_id ? null : ev.event_id; render(); } },
@@ -6928,6 +6972,7 @@ function msgActs(r, m, ev, mine) {
       class: 'qreply', title: T('Odpovedať (Ctrl+R)'),
       onclick: () => { writeIn(r); S.replyTo = { room: r.id, event: ev.event_id }; S.focusComposer = true; render(); },
     }, icon('undo')),
+    shareLink(contentOf(m, ev)) ? h('button', { class: 'qmenu', title: T('Preposlať…'), onclick: () => openForward(shareLink(contentOf(m, ev))) }, icon('forward')) : null,
     mine ? h('button', { class: 'qmenu', title: canEdit(r, m, ev) || canDelete(r, m, ev) ? T('Upraviť, odstrániť, počkať na odpoveď') : T('Počkať na odpoveď'), onclick: (e) => openMsgMenu(e, r, ev) }, icon('more-horizontal')) : null);
 }
 
@@ -7097,6 +7142,8 @@ function msgMenuView(o) {
     [canEdit(r, m, ev) ? item(icon('pencil'), T('Upraviť'), lastEditable(r) === ev ? '↑' : null, () => startEdit(r, ev)) : null,
       ev.sender === S.userId && !r.archiveOnly ? item(icon('forward'), T('Keď odpíše, ukázať kamošovi…'), null, () => openRelay(r, ev)) : null,
       ev.sender !== S.userId && !isBot(ev.sender) && !dmPartner(r) ? item(icon('label'), T`Prezývka pre ${memberName(r, ev.sender)}…`, null, () => openNickFor([ev.sender], networkName(r, ev.sender))) : null],
+    // A shared post or reel: the one place besides Preposlať where its address shows.
+    ((link) => (link ? [item(icon('forward'), T('Preposlať…'), null, () => openForward(link)), item(icon('link'), T('Kopírovať odkaz'), null, () => copyLink(link))] : []))(isRedacted(m, ev) ? '' : shareLink(contentOf(m, ev))),
     // The one thing that reaches other people and cannot be undone: last, apart, in the error colour.
     [canDelete(r, m, ev) ? item(icon('trash'), T('Odstrániť pre všetkých'), null, () => deleteMessage(r, ev), true) : null],
   ]);
@@ -9576,9 +9623,9 @@ function overlayView() {
   const live = o.kind === 'search' && document.querySelector('#app > .veil.search');
   if (live?._o === o) { if (!o.base || !sameSig(o.base.sig, searchSig())) searchRedrawSoon(o); return live; }
   const body = o.kind === 'search' ? searchView(o) : o.kind === 'new' ? newChatView(o) : o.kind === 'remind' ? remindView(o) : o.kind === 'stashask' ? stashAskView(o)
-    : o.kind === 'gif' ? gifView(o) : o.kind === 'emoji' ? emojiView(o) : o.kind === 'later' ? laterView(o) : o.kind === 'tools' ? toolsView(o) : o.kind === 'merge' ? mergePickView(o) : o.kind === 'relay' ? relayPickView(o) : o.kind === 'nick' ? nickView(o)
+    : o.kind === 'gif' ? gifView(o) : o.kind === 'emoji' ? emojiView(o) : o.kind === 'later' ? laterView(o) : o.kind === 'tools' ? toolsView(o) : o.kind === 'merge' ? mergePickView(o) : o.kind === 'relay' ? relayPickView(o) : o.kind === 'forward' ? forwardPickView(o) : o.kind === 'nick' ? nickView(o)
     : [h('div', { class: 'rsec' }, T('Klávesové skratky')), h('div', { class: 'results keys' }, SHORTCUTS.map(([k, label]) => h('div', { class: 'krow' }, h('kbd', {}, k), label)))];
-  const veil = h('div', { class: `veil${o.kind === 'search' || o.kind === 'tools' || o.kind === 'merge' || o.kind === 'relay' ? ' search' : ''}`, onclick: (e) => onVeil(e) && close() }, h('div', { class: `cmd ${o.kind}`, onclick: (e) => e.stopPropagation() },
+  const veil = h('div', { class: `veil${o.kind === 'search' || o.kind === 'tools' || o.kind === 'merge' || o.kind === 'relay' || o.kind === 'forward' ? ' search' : ''}`, onclick: (e) => onVeil(e) && close() }, h('div', { class: `cmd ${o.kind}`, onclick: (e) => e.stopPropagation() },
     h('button', { class: 'pclose', title: T('Zavrieť'), onclick: close }, icon('close')), body));
   if (o.kind === 'search') {
     veil._o = o;

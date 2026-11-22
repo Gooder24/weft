@@ -142,6 +142,9 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   (`server/bridges/instagram-carousel.patch`, asus build/meta branch `weft-ig-carousel` on `weft-archive-ig`). The bubble
   shows each small under the large one and the viewer pages through them; the bridge's fill-in edit never waits for a
   reading window. Posts resolved before 2026-11-20 keep one photo. Check: `overenie/ig-carousel/ui.cjs`.
+  A shared reel or story is its video alone, without the page's card or address; Preposlať (the hover bar, a right
+  click on it, the viewer) shows the address without Instagram's tracking parameters and puts it into a picked chat's
+  message box, unsent; „Kopírovať odkaz“ copies it. Check: `overenie/reels/ui.cjs`.
 - `server/feed/feed.py` serves explicit daily reading on asus (unit `matrix-spike-feed`, localhost
   29328 behind `/_feed/`). Calendar occupies the unused message area and fits the full week/day without scrolling. Inbox, an open
   conversation and calendar share one workspace, without Calendar/Messages tabs. Feed opens through its
