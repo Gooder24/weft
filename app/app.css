@@ -7,6 +7,7 @@
 :root {
   --font: 'Departure Mono Pixel', 'Departure Mono', ui-monospace, monospace, "Noto Color Emoji", "Apple Color Emoji", "Segoe UI Emoji";
   --fs: 11px; /* text; Departure Mono is sharp at multiples of its 11 px grid */
+  --font-read: system-ui, -apple-system, 'Segoe UI', Roboto, 'Noto Sans', 'Helvetica Neue', Arial, sans-serif; /* what others wrote in Feed: posts, titles, articles */
   --fs-2: 22px; /* titles */
   --lh: 14px; /* wrapped lines; at 11 px the carons of capitals touch the line above */
   --radius: 10px;
@@ -983,24 +984,8 @@ a.rnote.rlink { color: var(--link); text-decoration: none; }
 .feed-date { color: var(--muted); font-size: var(--fs); flex: 1; }
 .feed-note { color: var(--muted); font-size: var(--fs); margin: 6px 0; }
 .feed-empty { color: var(--muted); padding: 20px 0; }
-.feed-list { margin-top: 12px; }
-.feed-item { padding: 14px 0 16px; border-bottom: 1px solid var(--line); }
-.feed-byline { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font-size: var(--fs); color: var(--muted); }
-.feed-byline b { color: var(--text); font-weight: 600; }
-.feed-byline time { margin-left: auto; }
-.feed-kind { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 6px; font-size: 12px; line-height: 1; flex: none; }
-.feed-kind-ig { background: #fde2e8; color: #c13584; } /* brand */
-.feed-kind-yt { background: #fde2e2; color: #ff0000; } /* brand */
-.feed-kind-rss { background: #e2ecfd; color: #1a56db; } /* brand */
-.feed-kind-x { background: #e7e7e7; color: #000000; } /* brand */
-.feed-kind-label { font-size: 11px; padding: 1px 6px; border-radius: 999px; background: var(--card); border: 1px solid var(--line); }
-.feed-title { display: block; max-width: 100%; margin: 6px 0; padding: 0; border: 0; background: none; color: var(--text); font: inherit; font-size: var(--fs); text-align: left; cursor: pointer; text-decoration: none; overflow-wrap: anywhere; }
-.feed-title:hover { color: var(--link); text-decoration: underline; }
-.feed-item p { max-width: 75ch; font-size: var(--fs); white-space: pre-wrap; overflow-wrap: anywhere; }
 .feed-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .feed-actions .ghost { font-size: var(--fs); padding: 5px 8px; }
-.feed-media { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 10px; padding: 12px 0; }
-.feed-media img, .feed-media video { max-width: 100%; width: auto; max-height: 560px; border-radius: var(--radius); object-fit: contain; background: var(--card); }
 .feed-source { display: flex; align-items: center; gap: 10px; font-size: var(--fs); margin: 6px 0; }
 .feed-source span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .feed-add { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 0; }
@@ -1008,6 +993,73 @@ a.rnote.rlink { color: var(--link); text-decoration: none; }
 .feed-add input:not([type]) { flex: 1 1 140px; min-width: 0; }
 .feed-add button { flex: none; }
 .feed-finish { margin-top: 16px; }
+/* Feed: a category row, then square tiles in time order under a heading per day; Enter opens one item whole. */
+.feed-window { padding: 2px 8px; border: var(--bw) solid var(--line); border-radius: var(--radius-s); color: var(--notice); font-size: var(--fs); }
+.feed-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 12px 0 8px; }
+.feed-filters button { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border: var(--bw) solid var(--line); border-radius: var(--radius); background: var(--panel); color: var(--text); font: inherit; font-size: var(--fs); cursor: pointer; }
+.feed-filters button:hover { border-color: var(--line-strong); }
+.feed-filters button.on { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+.feed-filters .n { color: var(--muted); }
+.feed-filters .on .n { color: inherit; }
+.feed-filters .n.warn { color: var(--warning); font-weight: 600; }
+.feed-filters .on .n.warn { color: inherit; }
+.feed-keys { margin-left: auto; color: var(--muted); font-size: var(--fs); }
+.feed-logo { display: inline-block; flex: none; width: 16px; height: 16px; background: center / contain no-repeat; }
+.feed-logo-x { background: var(--text); -webkit-mask: url(/x.svg) center / contain no-repeat; mask: url(/x.svg) center / contain no-repeat; }
+.feed-filters .on .feed-logo-x { background: var(--accent-text); }
+.feed-logo-youtube { background-image: url(/youtube.svg); }
+.feed-logo-instagram { background-image: url(/instagram.png); }
+.feed-logo-rss { background-image: url(/rss.svg); }
+.feed-ig-state { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 0 0 10px; padding: 8px 11px; border: var(--bw) solid var(--line-strong); border-radius: var(--radius); background: var(--panel); font-size: var(--fs); }
+.feed-muted { color: var(--muted); }
+.feed-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 11px; }
+.feed-tile { aspect-ratio: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; overflow: hidden; padding: 11px; border: var(--bw) solid var(--line); border-radius: var(--radius); background: var(--panel); cursor: pointer; }
+.feed-tile:hover { border-color: var(--line-strong); }
+.feed-tile:focus-visible, .feed-tile.sel:focus-within, .feed-tile:focus { border-color: var(--accent); outline: none; }
+.feed-tile-head { display: flex; align-items: center; gap: 6px; min-width: 0; flex: none; font-size: var(--fs); }
+.feed-tile-head b { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 600; }
+.feed-handle { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--muted); }
+.feed-tile-head time { margin-left: auto; padding-left: 6px; flex: none; color: var(--muted); }
+.feed-chip { flex: none; padding: 0 6px; border: 1px solid var(--line-strong); border-radius: var(--radius-s); color: var(--muted); }
+.feed-avatar { flex: none; display: block; width: 22px; height: 22px; border-radius: var(--radius-s); object-fit: cover; background: var(--soft); }
+.feed-avatar-s { width: 16px; height: 16px; }
+.feed-ph { display: block; background: var(--soft); }
+.feed-via { display: flex; align-items: center; gap: 4px; flex: none; color: var(--muted); font-size: var(--fs); }
+.feed-via svg { width: 14px; height: 14px; }
+.feed-text { margin: 0; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: var(--lines, 14); font-family: var(--font-read); font-size: 14px; line-height: 20px; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+.feed-text.feed-muted { color: var(--muted); }
+.feed-text-title { font-weight: 600; }
+.feed-text-big { font-size: 22px; line-height: 28px; font-weight: 600; }
+.feed-tile .feed-text { flex: 0 1 auto; min-height: 0; }
+.feed-pics { flex: 1 1 0; min-height: 60px; display: grid; gap: 4px; }
+.feed-pics.n2, .feed-pics.n3, .feed-pics.n4 { grid-template-columns: 1fr 1fr; grid-auto-rows: minmax(0, 1fr); }
+.feed-pics.n3 > :first-child { grid-row: span 2; }
+.feed-pic { position: relative; display: block; min-width: 0; min-height: 0; overflow: hidden; border-radius: var(--radius-s); background: var(--soft); }
+.feed-img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.feed-play { position: absolute; inset: 0; margin: auto; display: grid; place-items: center; width: 48px; height: 48px; border-radius: var(--radius); background: var(--page); color: var(--text); }
+.feed-quote { flex: 0 1 auto; min-height: 0; display: flex; gap: 8px; overflow: hidden; padding: 8px; border: var(--bw) solid var(--line); border-radius: var(--radius-s); background: var(--soft); }
+.feed-quote-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.feed-quote .feed-text { --lines: 5; font-size: 13px; line-height: 18px; color: var(--muted); }
+.feed-quote-thumb { flex: none; width: 44px; height: 44px; }
+.feed-yt-thumb { flex: none; display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: var(--radius-s); background: var(--soft); }
+.feed-tile-instagram .feed-pics { min-height: 0; }
+.feed-read { max-width: 680px; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; padding: 16px; border: var(--bw) solid var(--line); border-radius: var(--radius-l); background: var(--panel); outline: none; }
+.feed-read-nav { display: flex; align-items: center; gap: 8px; font-size: var(--fs); }
+.feed-read-nav button { display: inline-flex; align-items: center; gap: 4px; }
+.feed-read-nav svg { width: 16px; height: 16px; }
+.feed-read-close { margin-left: auto; }
+.feed-read .feed-text { display: block; -webkit-line-clamp: unset; font-size: 17px; line-height: 25px; }
+.feed-read .feed-text-big { font-size: 22px; line-height: 28px; }
+.feed-read .feed-quote .feed-text { font-size: 15px; line-height: 22px; color: var(--text); }
+.feed-read .feed-text a { color: var(--link); overflow-wrap: anywhere; }
+.feed-read-pics { display: flex; flex-direction: column; gap: 8px; }
+.feed-read-pics:empty { display: none; }
+.feed-read-img { display: block; width: 100%; max-height: 70vh; object-fit: contain; border-radius: var(--radius); background: var(--page); }
+.feed-read-img.feed-ph { aspect-ratio: 16 / 9; }
+.feed-read-video { aspect-ratio: 16 / 9; width: 100%; padding: 0; border: 0; cursor: pointer; }
+.feed-counts { display: flex; flex-wrap: wrap; gap: 14px; color: var(--muted); font-size: var(--fs); }
+.feed-actions a.button { display: inline-flex; align-items: center; gap: 6px; text-decoration: none; }
+.feed-actions svg { width: 16px; height: 16px; }
 /* Kalendarix reference: a full workspace, compact pixel type and calendar-colour fills. */
 /* The list keeps room for a name at every width (at 11 px a character is 7 px). */
 .shell { display: grid; grid-template-columns: clamp(250px, 24vw, 320px) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
@@ -1029,7 +1081,7 @@ a.rnote.rlink { color: var(--link); text-decoration: none; }
 .home .calev small { font: inherit; opacity: 1; flex-shrink: 0; }
 .home .calev.managed, .home .calchip.managed { opacity: 1; }
 .home .calhours span { font-size: 11px; }
-.daily-feed { padding-top: 0; max-width: 1000px; margin: 0 auto; }
+.daily-feed { padding-top: 0; margin: 0 auto; }
 @media (max-width: 700px) {
   .shell,   .home { padding: 0; }
   .home-calendar { height: auto; overflow-x: auto; }
@@ -1048,7 +1100,7 @@ a.rnote.rlink { color: var(--link); text-decoration: none; }
 .feed-launch { flex: none; min-height: 38px; display: flex; align-items: center; gap: 12px; padding: 2px 10px; border-top: 1px solid var(--line-strong); }
 .feed-launch button { font-size: var(--fs); }
 .feed-launch kbd { margin-left: 0; }
-.feed-drawer { position: absolute; z-index: 3; inset: auto 0 38px; max-height: 70%; overflow-y: auto; padding: 16px 24px; border-top: 1px solid var(--line-strong); background: var(--card); box-shadow: none; }
+.feed-drawer { position: absolute; z-index: 3; inset: 0 0 38px; overflow-y: auto; padding: 16px 24px; border-top: 1px solid var(--line-strong); background: var(--card); box-shadow: none; }
 .calendar .calgrid { overflow: hidden; }
 .calbody { background-image: linear-gradient(to bottom, var(--line) 1px, transparent 1px); }
 .home .calname { height: 26px; }
@@ -1065,6 +1117,9 @@ a.rnote.rlink { color: var(--link); text-decoration: none; }
   .home .calhead .caltitle { flex-basis: auto; }
   .home .calhead button { padding: 4px; font-size: 9px; }
   .feed-drawer { padding: 10px; }
+  .feed-grid { grid-template-columns: 1fr; }
+  .feed-tile.textual { aspect-ratio: auto; }
+  .feed-keys { display: none; }
 }
 
 /* The calendar fills the workspace when no conversation is open; an open one takes it over (beside the feed only). */

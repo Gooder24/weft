@@ -182,6 +182,11 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   profiles (`x.com/<name>`, read without a login through FxTwitter's public API `api.fxtwitter.com/2/profile/<name>/statuses`).
   Refresh reads them at most every 10 minutes and Instagram once a day; „Obnovené“ is the last successful read and
   expired stories are never shown. Check: `overenie/feed-sources/check.py` (offline, fakes every source).
+  Feed is one grid of square tiles, newest first, filtered by Všetko/X/YouTube/Instagram/Novinky (keys 1–5, kept per
+  user), each with its network's logo; Enter opens one item whole in a reader (←/→ next, Esc back). X posts are drawn
+  from FxTwitter's data in a reading font (text, repost, quoted post, photos, video posters, counts), not embedded or
+  screenshotted; pictures load once in sight through `/_feed/media`. Instagram's tab stays with „!“ and a sign-in row
+  when its session is gone. Check: `overenie/feed-layout/run.sh` (on asus).
   Instagram feed uses its own session (`feed/data/instagram-session.json`, mode 600); it never reads
   the message bridge's credentials. Connect/disconnect in Feed → Zdroje a filtre using the desktop login
   window. Connecting clears the previous IG cache and today's collection limit, not the reading window; disconnecting clears

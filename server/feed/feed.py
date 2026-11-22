@@ -156,11 +156,17 @@ def parse_feed(data, source):
         link = web_url(urllib.parse.urljoin(source['url'], link or e.findtext('link') or ''))
         if not link: continue
         uid = e.findtext('guid') or e.findtext('id') or link
+        youtube = 'youtube.com/' in link or 'youtu.be/' in link
+        # YouTube's Atom keeps the thumbnail and description in media:group.
+        thumb = (e.find('group/thumbnail') if youtube else None)
+        thumb = thumb.get('url', '') if thumb is not None else ''
+        media = [{'url': thumb, 'type': 'image', 'role': 'thumb'}] if (urllib.parse.urlsplit(thumb).hostname or '').endswith('.ytimg.com') else []
         out.append({'id': 'rss:' + hashlib.sha256((source['id'] + uid).encode()).hexdigest()[:24],
-                    'kind': 'youtube' if 'youtube.com/' in link or 'youtu.be/' in link else 'rss',
+                    'kind': 'youtube' if youtube else 'rss',
                     'source': source['id'], 'author': name, 'title': clean(e.findtext('title'))[:1000],
-                    'text': clean(e.findtext('description') or e.findtext('summary') or e.findtext('content'))[:2000],
-                    'url': link, 'at': timestamp(e.findtext('pubDate') or e.findtext('published') or e.findtext('updated') or e.findtext('date'))})
+                    'text': clean(e.findtext('description') or e.findtext('summary') or e.findtext('content') or e.findtext('group/description'))[:2000],
+                    'url': link, 'at': timestamp(e.findtext('pubDate') or e.findtext('published') or e.findtext('updated') or e.findtext('date')),
+                    'short': '/shorts/' in link, 'media': media})
     return out
 
 
@@ -199,29 +205,50 @@ def x_posts(handle, tries=3):
     raise ValueError('X profile not found')
 
 
+def x_media(post, role, assets):
+    """Appends a post's photos and videos (a video with its poster frame) to `assets`, all on X's media hosts."""
+    ok = lambda url: urllib.parse.urlsplit(url).scheme == 'https' and urllib.parse.urlsplit(url).hostname in X_MEDIA
+    for m in ((post.get('media') or {}).get('all') or [])[:4]:
+        if m.get('type') == 'photo':
+            url = re.sub(r'([?&]name=)orig\b', r'\1small', m.get('url', ''))  # 680 px: a tile's width, about 60 KB
+            if ok(url): assets.append({'url': url, 'type': 'image', 'role': role, 'w': m.get('width'), 'h': m.get('height')})
+            continue
+        mp4 = [f for f in m.get('formats') or [] if f.get('container') == 'mp4' and f.get('bitrate')]
+        url = min(mp4, key=lambda f: abs(f['bitrate'] - 832000))['url'] if mp4 else m.get('url', '')
+        poster = m.get('thumbnail_url', '')
+        if not ok(url): continue
+        if ok(poster): assets.append({'url': poster, 'type': 'image', 'role': role + '-poster'})
+        assets.append({'url': url, 'type': 'video', 'role': role, 'w': m.get('width'), 'h': m.get('height'),
+                       'poster': len(assets) - 1 if ok(poster) else None})
+
+
 def x_items(source):
-    """An X profile's recent posts and reposts, and its replies within its own threads; replies to others are left out."""
+    """An X profile's recent posts and reposts, and its replies within its own threads; replies to others are left out.
+    `media` holds every picture the card shows, each with its `role`: avatar, media (the post's own, a video with its
+    poster), quote-avatar and quote (the quoted post's)."""
     handle = source['handle'].lower()
     out = []
     for p in x_posts(source['handle'])[:40]:
-        author = (p.get('author') or {}).get('screen_name') or source['handle']
+        user = p.get('author') or {}
+        author = user.get('screen_name') or source['handle']
         to = (p.get('replying_to') or {}).get('screen_name')
         if to and to.lower() != handle or not str(p.get('id', '')).isdecimal(): continue
-        quote = p.get('quote') or {}
-        notes = [f"Zdieľal @{source['handle']}" if author.lower() != handle else '',
-                 f"Cituje @{(quote.get('author') or {}).get('screen_name', '')}: {quote.get('text', '')}" if quote else '']
         assets = []
-        for m in ((p.get('media') or {}).get('all') or [])[:4]:
-            if m.get('type') == 'photo':
-                url = re.sub(r'([?&]name=)orig\b', r'\1medium', m.get('url', ''))
-                kind = 'image'
-            else:
-                mp4 = [f for f in m.get('formats') or [] if f.get('container') == 'mp4' and f.get('bitrate')]
-                url, kind = (min(mp4, key=lambda f: abs(f['bitrate'] - 832000))['url'] if mp4 else m.get('url', '')), 'video'
-            if urllib.parse.urlsplit(url).scheme == 'https' and urllib.parse.urlsplit(url).hostname in X_MEDIA:
-                assets.append({'url': url, 'type': kind})
+        if (urllib.parse.urlsplit(user.get('avatar_url') or '').hostname or '') in X_MEDIA:
+            assets.append({'url': user['avatar_url'], 'type': 'image', 'role': 'avatar'})
+        x_media(p, 'media', assets)
+        quote = p.get('quote') or {}
+        if quote:
+            q = quote.get('author') or {}
+            if (urllib.parse.urlsplit(q.get('avatar_url') or '').hostname or '') in X_MEDIA:
+                assets.append({'url': q['avatar_url'], 'type': 'image', 'role': 'quote-avatar'})
+            x_media(quote, 'quote', assets)
+            quote = {'handle': q.get('screen_name', ''), 'name': clean(q.get('name'))[:100], 'text': clean(quote.get('text'))[:2000],
+                     'url': web_url(quote.get('url', '')), 'at': int(quote.get('created_timestamp') or 0) * 1000}
         out.append({'id': f"x:{source['id']}:{p['id']}", 'kind': 'x', 'source': source['id'], 'author': '@' + author,
-                    'title': clean(p.get('text'))[:1000], 'text': '\n'.join(n for n in notes if n)[:2000],
+                    'name': clean(user.get('name'))[:100], 'title': clean(p.get('text'))[:4000], 'text': '',
+                    'via': source['handle'] if author.lower() != handle else '', 'quote': quote or None,
+                    'counts': {k: p.get(k) for k in ('replies', 'reposts', 'likes', 'views') if isinstance(p.get(k), int)},
                     'url': web_url(p.get('url', '')) or f"https://x.com/{author}/status/{p['id']}",
                     'at': int(p.get('created_timestamp') or 0) * 1000, 'media': assets})
     return out
@@ -677,7 +704,9 @@ def media_file(item_id, index):
     url = asset['url']
     parsed = urllib.parse.urlsplit(url)
     host = parsed.hostname or ''
-    if parsed.scheme != 'https' or not (host in X_MEDIA if not instagram else host.endswith('.cdninstagram.com') or host.endswith('.fbcdn.net')):
+    allowed = (host.endswith('.cdninstagram.com') or host.endswith('.fbcdn.net') if instagram
+               else host.endswith('.ytimg.com') if item['kind'] == 'youtube' else host in X_MEDIA)
+    if parsed.scheme != 'https' or not allowed:
         raise ValueError('Neplatná adresa média.')
     digest = hashlib.sha256(url.encode()).hexdigest()
     folder = os.path.join(DATA, 'media')
