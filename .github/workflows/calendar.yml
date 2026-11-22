@@ -1,0 +1,41 @@
+name: calendar
+
+on:
+  pull_request:
+    paths: [server/calendar/**, .github/workflows/calendar.yml]
+  push:
+    branches: [main]
+    paths: [server/calendar/**, .github/workflows/calendar.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    # Karchi's own pushes and PRs run on asus (github/asus-runner.sh in Karchi-skills.md);
+    # a pull request from a fork runs on GitHub's machines.
+    runs-on: ${{ github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || 'asus' }}
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: test
+        ports: ["127.0.0.1::5432"]
+        options: --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 15
+    defaults:
+      run:
+        working-directory: server/calendar
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: server/calendar/package-lock.json
+      - run: npm ci
+      - name: Typecheck (strict)
+        run: npx tsc
+      - name: Tests, the Postgres part included
+        env:
+          TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:${{ job.services.postgres.ports[5432] }}/postgres
+        run: node --test

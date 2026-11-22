@@ -110,7 +110,7 @@ MAX_FILE_BYTES = 25 * 1024 * 1024
 WEEKDAYS = ["pondelok", "utorok", "streda", "štvrtok", "piatok", "sobota", "nedeľa"]
 # Content key on everything the bridge posts, so its own events are never sent back to EduPage.
 MARK = "sk.karchi.edupage"
-# Tests go into Weft's calendar (server/calendar/kalendar.py) under this calendar name.
+# Tests go into Weft's calendar (server/calendar/kalendar.ts) under this calendar name.
 CALENDAR_URL = os.environ.get("CALENDAR_URL", "http://127.0.0.1:29327")
 TESTS_CALENDAR = "Testy"
 TIMETABLE_CALENDAR = "lifeos-edupage"

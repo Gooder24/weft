@@ -10048,7 +10048,7 @@ function homeView() {
 }
 
 // ------------------------------------------------------------------ calendar
-// Weft's own calendars, kept on asus (server/calendar/kalendar.py) in Kalendarix's calendars.json layout; Settings
+// Weft's own calendars, kept on asus (server/calendar/kalendar.ts) in Kalendarix's calendars.json layout; Settings
 // adds and deletes them, no Kalendarix needed. Ctrl+D opens it on the view chosen in Settings (a week unless changed). Offline the
 // last copy shows and edits wait in ep_cal_out, the way messages do. Events of a sync program (the EduPage
 // timetable) are shown and not edited.
@@ -10133,7 +10133,7 @@ function setCalDoc(res, keep = true) {
   calRemindCheck();
 }
 
-/** The same change kalendar.py makes, done here first. */
+/** The same change kalendar.ts (core.ts applyOps) makes, done here first. */
 function calApply(doc, op) {
   cal.seq++;
   if (op.op === 'addcal') {

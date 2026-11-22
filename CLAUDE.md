@@ -81,8 +81,10 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   Gmail Promotions and Social categories to Trash every five minutes on asus, including old mail.
   Policy: `gmail/state/cleanup-policy.json`; private audit/status alongside it. Never empty Trash or
   expunge; connecting a new account does not enable cleanup. This runs without x270 and does not import mail into rooms.
-- `server/calendar/kalendar.py` is Weft's calendar (asus `~/matrix-spike/calendar/`, unit `matrix-spike-calendar`,
-  127.0.0.1:29327 behind Caddy's `/_calendar/`): Kalendarix's `calendars.json` layout, kept on asus on its own (Weft needs no Kalendarix; the first change or timetable round starts an empty file). The merge code in `server/calendar/x270/` is tested but its timer is not installed:
+- `server/calendar/kalendar.ts` is Weft's calendar, TypeScript on Node (`core.ts` merge and edits, `store.ts` Postgres:
+  database `weft` on asus's local socket, peer login; `node kalendar.ts export` writes it out as calendars.json again;
+  checks `npm test` there, `TEST_DATABASE_URL` for the Postgres part) (asus `~/matrix-spike/calendar/`, unit `matrix-spike-calendar`,
+  127.0.0.1:29327 behind Caddy's `/_calendar/`): Kalendarix's `calendars.json` layout, kept on asus on its own (Weft needs no Kalendarix; the first change or timetable round starts an empty document). The merge code in `server/calendar/x270/` is tested but its timer is not installed:
   ongoing two-way sync is still pending. The timetable calendar `lifeos-edupage` (uids `…@lifeos`) is not Karchi's to edit: the service mirrors it every 2 minutes from Kalendarix EduPage's backend on dell (`TIMETABLE_URL`, github.com/Gooder24/kalendarix-edupage, the same source x270's Kalendarix reads), substitutions („Suplovanie:“ with the substitute), cancelled („Odpadlo:“, not drawn: Karchi, 2026-11-23) and moved lessons included, and in a merge asus's copy of it wins; an open Weft rechecks `/_calendar/doc?have=<version>` every 2 minutes. Checks: `overenie/timetable/` (`mirror_test.py`, `notice_test.py`, `ui.cjs`). The shared workspace shows the message list and calendar at startup, and retains the calendar beside an open conversation (stacked in narrow windows); Ctrl+D focuses it (`app/calendar.js` +
   the calendar section of app.js); checks: `overenie/kalendar/run.sh`. Its editor does what Kalendarix's does: repetition
   (weekdays, nth/last weekday of the month, count or end date), reminder, category and second colour, and changing or

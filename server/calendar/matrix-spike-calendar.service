@@ -1,13 +1,13 @@
 [Unit]
-Description=matrix-spike: Weft's calendar (master copy of Kalendarix's calendars.json, /_calendar/)
+Description=matrix-spike: Weft's calendar (master copy of Kalendarix's calendars.json in Postgres, /_calendar/)
 After=matrix-spike-homeserver.service
 
 [Service]
 WorkingDirectory=%h/matrix-spike/calendar
-ExecStart=/usr/bin/python3 -I -u %h/matrix-spike/calendar/kalendar.py
+ExecStart=%h/.local/bin/node %h/matrix-spike/calendar/kalendar.ts
 Restart=always
 RestartSec=5
-MemoryMax=64M
+MemoryMax=160M
 
 [Install]
 WantedBy=default.target
