@@ -212,6 +212,10 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   `overenie/shared-links/` (`cards.mjs`, `resolver_test.py`, `ui.cjs`, `live.txt`).
 - `server/sendlater/` is the send-later service (source of truth here, deployed to asus `~/matrix-spike/sendlater/`,
   unit `matrix-spike-sendlater`): it sends the messages Weft keeps in account data `sk.karchi.sendlater` when due.
+- Voice messages play from the keyboard too: Space or K on the player, ← → 5 s, Ctrl+S downloads, and Ctrl+Shift+Space
+  anywhere plays or pauses the one in hand (else the open chat's first unheard; heard ones are kept per device in
+  localStorage `ep_voice_heard`). The one in hand keeps playing in other chats under a bar above the inbox (pause,
+  speed, download, ×) and in the system's media controls (`navigator.mediaSession`). Check: `overenie/hlasovky/run.sh`.
 - GIFs (`/gif`, the GIF button) come from KLIPY with one key for the whole server, asus
   `~/matrix-spike/app/gifs.json` `{"klipy": "<key>"}` (not in git; a test key allows 100 requests an hour; a
   production key, asked for on partner.klipy.com, has no limit and no published price). KLIPY's terms want the browser to call it and load its media

@@ -525,6 +525,21 @@ kbd { margin-left: auto; font-family: inherit; font-size: var(--fs); color: var(
 .vtime { flex: none; min-width: 30px; text-align: right; font-size: var(--fs); font-variant-numeric: tabular-nums; opacity: .75; white-space: nowrap; }
 .vrate { flex: none; min-width: 36px; padding: 2px 6px; border: 0; border-radius: var(--radius); background: var(--card); color: var(--text); font-size: var(--fs); font-weight: 700; cursor: pointer; }
 .msg.mine .vrate { background: var(--accent-text); color: var(--accent); }
+.vtrack:focus-visible { outline: var(--bw) solid currentColor; outline-offset: 2px; border-radius: var(--radius-s); }
+/* Someone's voice message not heard yet on this device (WhatsApp's mic, Telegram's dot). */
+.vnew { flex: none; width: 6px; height: 6px; margin-left: -5px; border-radius: 50%; background: var(--link); }
+/* The voice message in hand, above the inbox in every chat (Telegram's bar): play, who and where, time, speed,
+   download, close. */
+.nowplay { flex: none; display: flex; align-items: center; gap: 6px; margin: 6px 8px 0; padding: 6px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--soft); }
+.nowplay .vplay { width: 28px; height: 28px; }
+.npwho { flex: 1; min-width: 0; display: flex; flex-direction: column; padding: 0; border: 0; background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.npwho b, .npwho small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.npwho small { color: var(--muted); }
+.npwho:hover b { text-decoration: underline; }
+.nowplay .vtime { min-width: 0; }
+.nowplay .vrate { min-width: 0; }
+.npbtn { flex: none; display: grid; place-items: center; padding: 2px; border: 0; border-radius: var(--radius-s); background: none; color: var(--muted); cursor: pointer; }
+.npbtn:hover { background: var(--hover); color: var(--text); }
 /* Hover bar over the top edge of a message: quick reactions and reply. It floats inside the message's
    own width, so showing it moves nothing and never makes the chat scroll sideways. */
 .mrow { position: relative; }

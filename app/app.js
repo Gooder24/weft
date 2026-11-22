@@ -5103,7 +5103,7 @@ function openNewChat() {
 // Ctrl+K search, Ctrl+Shift+K or Ctrl+N new chat, Ctrl+E archive, Ctrl+Shift+U read/unread,
 // Ctrl+L remind, Ctrl+U next unread, Ctrl+R reply, Ctrl+Shift+A voice message, Ctrl+Shift+S unread/all, Ctrl+, settings,
 // Ctrl+Shift+F daily feed, Ctrl+G grades (Tab switches its view), Ctrl+M people map, Ctrl+D calendar, Ctrl+J any tool by name, Ctrl+/ all shortcuts, Esc steps back,
-// Ctrl+P the chat's photos and videos.
+// Ctrl+P the chat's photos and videos, Ctrl+Shift+Space plays or pauses a voice message.
 document.addEventListener('keydown', (e) => {
   if (S.view !== 'main') return;
   const mod = (e.ctrlKey || e.metaKey) && !e.altKey;
@@ -5118,6 +5118,8 @@ document.addEventListener('keydown', (e) => {
   if (S.overlay?.kind === 'image' && viewerKey(e)) return;
   // Ctrl+S: the message box to the stash, or an empty box takes from it. Never the browser's „save page“.
   if (mod && !e.shiftKey && key === 's') return run(() => { if (S.overlay?.kind === 'stashask') S.overlay.flat?.[0](); else if (!S.overlay && !S.panel && !e.isComposing) stashShortcut(); });
+  // Ctrl+Shift+Space: the voice message in hand plays or pauses, else the open chat's first unheard one starts.
+  if (mod && e.shiftKey && e.code === 'Space') return run(voiceShortcut);
   // While a voice message records, Enter sends it and Esc throws it away.
   if (rec && !S.overlay && !S.panel && (key === 'enter' || key === 'escape')) return run(() => stopRecording(key === 'enter'));
   // A Gmail code in the corner: Enter copies it while nothing else has the keyboard.
@@ -5162,8 +5164,8 @@ document.addEventListener('keydown', (e) => {
   else if (key === 'escape' && activeCode()) run(() => dismissCode(activeCode()));
   else if (key === 'escape' && S.selected) run(() => select(null));
   else if (key === 'escape' && S.box !== 'inbox') run(() => setBox('inbox'));
-  else if (!typing && !mod && !e.altKey && e.key.length === 1 && S.rooms.has(S.selected)) {
-    // Typing anywhere goes into the open chat's message box.
+  else if (!typing && !mod && !e.altKey && e.key.length === 1 && S.rooms.has(S.selected) && !(e.key === ' ' && document.activeElement?.matches('button, [role=slider]'))) {
+    // Typing anywhere goes into the open chat's message box; Space on a focused button presses it.
     document.querySelector('.ccompose textarea')?.focus();
   }
 });
@@ -5310,7 +5312,7 @@ function mainView() {
   const home = !message || S.surface === 'feed';
   return [
     h('div', { class: `shell${message ? ' has-sel' : ''}` },
-      h('div', { class: 'side' }, sideHead(), workspaceStatus(), h('div', { class: 'sidelist', 'data-scroll': 'side', onscroll: sideScrolled }, sideItems())),
+      h('div', { class: 'side' }, sideHead(), workspaceStatus(), nowPlaying(), h('div', { class: 'sidelist', 'data-scroll': 'side', onscroll: sideScrolled }, sideItems())),
       h('div', { class: `workarea${message && home ? ' has-chat' : ''}` },
         // Keyed by the open chat: another chat starts from a fresh pane (its own scroll), the same one is patched.
         message ? h('section', { class: 'workspace-message', 'aria-label': T('Otvorená správa'), 'data-key': `open:${open?.key || S.selected}` }, message) : null,
@@ -5717,13 +5719,28 @@ function mediaFile(mxc) {
 
 const RATES = [1, 1.5, 2];
 const voiceRate = () => { const x = Number(localStorage.getItem('ep_voice_rate')); return RATES.includes(x) ? x : 1; };
-/** One player for every voice message. It lives outside the page, which is rebuilt on every render,
- *  so playback goes on while messages arrive. `event` is the message it holds, playing or paused. */
-const voice = { el: new Audio(), room: null, event: null, seekTo: null };
+/** One player for every voice message. It lives outside the page, which is rebuilt on every render, so playback goes
+ *  on while messages arrive and in other chats (the bar above the inbox pauses it there). `event` is the message it
+ *  holds, playing or paused; `ev` and `c` are that message and its content. */
+const voice = { el: new Audio(), room: null, event: null, ev: null, c: null, seekTo: null };
 voice.el.defaultPlaybackRate = voiceRate(); // a new src starts at this rate
-/** Whether the voice message's chat is the open one: in a merged chat any of its networks, whichever the box writes to. */
-const voiceChatOpen = () => !!voice.room && (voice.room === S.selected || !!groupOf(S.selected)?.rooms?.includes(voice.room));
 const mmss = (sec) => (Number.isFinite(sec) && sec >= 0 ? `${Math.floor(sec / 60)}:${pad(Math.floor(sec % 60))}` : '');
+
+// Voice messages Karchi has started, on this device: someone else's unheard one carries a dot (as in WhatsApp and
+// Telegram) and Ctrl+Shift+Space starts there. Messages from before this was kept count as heard.
+const HEARD_KEY = 'ep_voice_heard';
+const heard = (() => {
+  try { const x = JSON.parse(localStorage.getItem(HEARD_KEY)); if (Number.isFinite(x?.since)) return { since: x.since, ids: new Set(x.ids) }; } catch { /* first run */ }
+  const fresh = { since: Date.now(), ids: [] };
+  localStorage.setItem(HEARD_KEY, JSON.stringify(fresh));
+  return { since: fresh.since, ids: new Set() };
+})();
+const unheard = (ev) => ev.sender !== S.userId && !ev.archived && ev.origin_server_ts > heard.since && !heard.ids.has(ev.event_id);
+function markHeard(id) {
+  if (!id || heard.ids.has(id)) return;
+  heard.ids.add(id);
+  localStorage.setItem(HEARD_KEY, JSON.stringify({ since: heard.since, ids: [...heard.ids].slice(-500) }));
+}
 
 const BARS = 28;
 /** `raw` levels squeezed into BARS bars of 0..1, the loudest one full. */
@@ -5768,21 +5785,35 @@ function measureAudio(c) {
   return null;
 }
 
-/** A voice message as in Messenger: play, its waveform as the track (drag to move), the time left, speed. */
+/** Where the player is in the voice message `id`: seconds played and its whole length (0 while unknown). */
+function voicePos(id, duration) {
+  const on = voice.event === id;
+  const total = on && Number.isFinite(voice.el.duration) ? voice.el.duration : duration;
+  return { on, total, at: on && total ? Math.min(total, voice.el.currentTime) : 0 };
+}
+const voiceTimeText = (at, total) => (total ? T`${mmss(at)} z ${mmss(total)}` : '');
+
+/** A voice message as in Messenger: play, its waveform as the track (drag to move), the time left, speed. Keys on
+ *  it: Space or K plays and pauses, ← → move 5 s, Home and End, Ctrl+S downloads (voiceKey). */
 function voiceView(r, ev, c) {
   const { duration, wave } = audioInfo(c);
-  const on = voice.event === ev.event_id;
-  const total = on && Number.isFinite(voice.el.duration) ? voice.el.duration : duration;
-  const played = on && total ? Math.min(1, voice.el.currentTime / total) : 0;
+  const { on, total, at } = voicePos(ev.event_id, duration);
   const bars = (cls) => h('div', { class: cls }, wave.map((v) => h('i', { style: { height: `${Math.round(18 + v * 82)}%` } })));
-  const track = h('div', { class: 'vtrack', title: T('Posunúť'), onpointerdown: (e) => seekVoice(e, r, ev, c) },
-    wave ? [bars('vbars'), bars('vbars vdone')] : [h('div', { class: 'vline' }), h('div', { class: 'vline vdone' })]);
-  track.lastChild.style.clipPath = `inset(0 ${100 - played * 100}% 0 0)`;
+  const track = h('div', {
+    class: 'vtrack', title: T('Posunúť (← →)'), tabindex: 0, role: 'slider', 'aria-label': T`Hlasovka: ${memberName(r, ev.sender)}`,
+    'aria-valuemin': 0, 'aria-valuemax': Math.round(total || 0), 'aria-valuenow': Math.round(at), 'aria-valuetext': voiceTimeText(at, total),
+    onpointerdown: (e) => seekVoice(e, r, ev, c),
+  }, wave ? [bars('vbars'), bars('vbars vdone')] : [h('div', { class: 'vline' }), h('div', { class: 'vline vdone' })]);
+  track.lastChild.style.clipPath = `inset(0 ${100 - (total ? at / total : 0) * 100}% 0 0)`;
   const playing = on && !voice.el.paused;
-  return h('div', { class: `voice${on ? ' on' : ''}`, 'data-voice': ev.event_id },
-    h('button', { class: 'vplay', title: playing ? T('Pozastaviť') : T('Prehrať'), onclick: () => toggleVoice(r, ev, c) }, icon(playing ? 'pause' : 'play')),
+  return h('div', { class: `voice${on ? ' on' : ''}`, 'data-voice': ev.event_id, onkeydown: (e) => voiceKey(e, r, ev, c) },
+    h('button', {
+      class: 'vplay', title: playing ? T('Pozastaviť (Space)') : T('Prehrať (Space)'),
+      'aria-label': playing ? T('Pozastaviť hlasovku') : T`Prehrať hlasovku, ${mmss(total)}`, onclick: () => toggleVoice(r, ev, c),
+    }, icon(playing ? 'pause' : 'play')),
     track,
-    h('span', { class: 'vtime' }, mmss(on && total ? total - voice.el.currentTime : total)),
+    h('span', { class: 'vtime' }, mmss(on && total ? total - at : total)),
+    unheard(ev) ? h('span', { class: 'vnew', title: T('Ešte si ju nepočul') }) : null,
     h('button', { class: 'vrate', title: T('Rýchlosť hlasoviek (zapamätá sa)'), onclick: cycleRate }, `${num(voiceRate())}×`));
 }
 
@@ -5796,7 +5827,7 @@ async function toggleVoice(r, ev, c, at = null) {
     return a.play().catch(() => {});
   }
   a.pause();
-  Object.assign(voice, { room: r.id, event: ev.event_id, seekTo: at });
+  Object.assign(voice, { room: r.id, event: ev.event_id, ev, c, seekTo: at });
   a.removeAttribute('src');
   render();
   const url = await mediaFile(c.url);
@@ -5806,7 +5837,74 @@ async function toggleVoice(r, ev, c, at = null) {
   a.play().catch(() => {});
 }
 
+/** Plays or pauses the voice message in hand (the bar above the inbox, Ctrl+Shift+Space, the media keys). */
+function toggleHeld() {
+  const a = voice.el;
+  if (!voice.event || !a.getAttribute('src')) return;
+  if (a.paused) a.play().catch(() => {}); else a.pause();
+}
+/** Puts the voice message away: the bar above the inbox goes too. */
+function stopVoice() {
+  voice.el.pause();
+  voice.el.removeAttribute('src');
+  voice.el.load();
+  Object.assign(voice, { room: null, event: null, ev: null, c: null, seekTo: null });
+  voiceSession();
+  render();
+}
+function seekVoiceBy(sec) {
+  const a = voice.el;
+  if (voice.event && Number.isFinite(a.duration)) a.currentTime = Math.max(0, Math.min(a.duration, a.currentTime + sec));
+}
+
+/** Ctrl+Shift+Space: plays or pauses the voice message in hand; with none, starts the open chat's first one Karchi
+ *  has not heard, else its newest, and brings it into sight. */
+function voiceShortcut() {
+  if (voice.event) return toggleHeld();
+  const r = S.rooms.get(S.selected);
+  if (!r || !isChat(r)) return;
+  const t = timelineOf(r);
+  const list = t.msgs.filter((ev) => isVoice(t, ev));
+  const pick = list.find(unheard) || list.at(-1);
+  if (!pick) return;
+  const pr = t.roomOf(pick);
+  toggleVoice(pr, pick, contentOf(roomModel(pr), pick));
+  requestAnimationFrame(() => document.querySelector(`.voice[data-voice="${CSS.escape(pick.event_id)}"]`)?.scrollIntoView({ block: 'nearest' }));
+}
+function isVoice(t, ev) {
+  const m = roomModel(t.roomOf(ev));
+  return !ev.pending && !isRedacted(m, ev) && contentOf(m, ev).msgtype === 'm.audio';
+}
+/** The voice message before (-1) or after (1) the one in hand in its chat: ended ones go on to the next, as in Messenger. */
+function stepVoice(dir) {
+  const vr = S.rooms.get(voice.room);
+  const t = vr && voice.event ? timelineOf(vr) : null; // a merged chat goes on through all of its networks
+  const i = t ? t.msgs.findIndex((ev) => ev.event_id === voice.event) : -1;
+  const next = i < 0 ? null : dir > 0 ? t.msgs.slice(i + 1).find((ev) => isVoice(t, ev)) : t.msgs.slice(0, i).findLast((ev) => isVoice(t, ev));
+  if (!next) return false;
+  const r = t.roomOf(next);
+  toggleVoice(r, next, contentOf(roomModel(r), next));
+  return true;
+}
+
+/** Keys on a voice message and on the bar above the inbox. Native button keys stay (Enter, Space on its buttons); the
+ *  page's „typing goes into the message box“ never takes them. */
+function voiceKey(e, r, ev, c) {
+  const key = e.key.toLowerCase();
+  const mod = e.ctrlKey || e.metaKey;
+  const own = (fn) => { e.preventDefault(); e.stopPropagation(); fn(); };
+  if (mod && !e.shiftKey && !e.altKey && key === 's') return own(() => downloadVoice(r, ev, c));
+  if (mod || e.altKey) return;
+  const onButton = !!e.target.closest('button');
+  if (key === ' ' && onButton) return e.stopPropagation(); // the button's own click, not a letter for the message box
+  if (key === ' ' || key === 'k' || (key === 'enter' && !onButton)) return own(() => toggleVoice(r, ev, c));
+  const held = voice.event === ev.event_id && Number.isFinite(voice.el.duration);
+  if (key === 'arrowleft' || key === 'arrowright') return own(() => (held ? seekVoiceBy(key === 'arrowleft' ? -5 : 5) : toggleVoice(r, ev, c)));
+  if (key === 'home' || key === 'end') return own(() => { if (held) voice.el.currentTime = key === 'home' ? 0 : Math.max(0, voice.el.duration - 0.05); });
+}
+
 function seekVoice(e, r, ev, c) {
+  if (e.button !== 0) return; // a right click opens the menu, it does not play
   const track = e.currentTarget;
   const at = (x) => { const box = track.getBoundingClientRect(); return Math.min(1, Math.max(0, (x - box.left) / box.width)); };
   toggleVoice(r, ev, c, at(e.clientX));
@@ -5825,33 +5923,87 @@ function cycleRate() {
   render(); // every voice message shows the speed, playing or not
 }
 
+const AUDIO_EXT = { 'audio/ogg': 'ogg', 'audio/opus': 'opus', 'audio/mp4': 'm4a', 'audio/x-m4a': 'm4a', 'audio/aac': 'aac', 'audio/mpeg': 'mp3', 'audio/webm': 'webm', 'audio/wav': 'wav', 'audio/x-wav': 'wav', 'audio/amr': 'amr' };
+/** Saves a voice message as „Hlasovka <who> <date time>.<ext>“, the extension from its type, else its name. */
+function downloadVoice(r, ev, c) {
+  if (!c.url) return;
+  const ext = AUDIO_EXT[String(c.info?.mimetype || '').split(';')[0].trim()] || /\.(\w{2,4})$/.exec(c.filename || c.body || '')?.[1] || 'ogg';
+  const d = new Date(ev.origin_server_ts);
+  const when = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}.${pad(d.getMinutes())}`;
+  download(c.url, `${T('Hlasovka')} ${memberName(r, ev.sender)} ${when}.${ext}`.replace(/[\\/:*?"<>|]+/g, ' '));
+}
+
+/** The voice message in hand, playing or paused, above the inbox wherever Karchi is (as Telegram's bar): who and
+ *  where, which opens it in its chat, the time left, speed, download, and × to put it away. */
+function nowPlaying() {
+  const r = voice.event && S.rooms.get(voice.room);
+  if (!r || !voice.ev) return null;
+  const { ev, c } = voice;
+  const playing = !voice.el.paused;
+  const { total, at } = voicePos(ev.event_id, audioInfo(c).duration);
+  return h('div', { class: 'nowplay', role: 'group', 'aria-label': T('Hlasovka'), onkeydown: (e) => voiceKey(e, r, ev, c) },
+    h('button', { class: 'vplay', title: playing ? T('Pozastaviť (Ctrl+Shift+Space)') : T('Prehrať (Ctrl+Shift+Space)'), 'aria-label': playing ? T('Pozastaviť hlasovku') : T('Prehrať hlasovku'), onclick: toggleHeld }, icon(playing ? 'pause' : 'play')),
+    h('button', { class: 'npwho', title: T('Ukázať v chate'), onclick: () => { select(keyOfRoom(r.id)); jumpTo(r, ev.event_id); } },
+      h('b', {}, memberName(r, ev.sender)), roomTitle(r) !== memberName(r, ev.sender) ? h('small', {}, roomTitle(r)) : null),
+    h('span', { class: 'vtime' }, mmss(total ? total - at : total)),
+    h('button', { class: 'vrate', title: T('Rýchlosť hlasoviek (zapamätá sa)'), onclick: cycleRate }, `${num(voiceRate())}×`),
+    h('button', { class: 'npbtn', title: T('Stiahnuť (Ctrl+S)'), 'aria-label': T('Stiahnuť hlasovku'), onclick: () => downloadVoice(r, ev, c) }, icon('download')),
+    h('button', { class: 'npbtn', title: T('Zavrieť'), 'aria-label': T('Zavrieť hlasovku'), onclick: stopVoice }, icon('close')));
+}
+
 /** Moves the progress of the voice message on screen without rebuilding the page. */
 function paintVoice() {
-  const el = voice.event && document.querySelector(`.voice[data-voice="${CSS.escape(voice.event)}"]`);
-  if (!el) return;
   const a = voice.el;
-  const done = Number.isFinite(a.duration) && a.duration ? Math.min(1, a.currentTime / a.duration) : 0;
-  el.querySelector('.vdone').style.clipPath = `inset(0 ${100 - done * 100}% 0 0)`;
-  if (Number.isFinite(a.duration)) el.querySelector('.vtime').textContent = mmss(a.duration - a.currentTime);
+  if (!voice.event || !Number.isFinite(a.duration)) return;
+  const el = document.querySelector(`.voice[data-voice="${CSS.escape(voice.event)}"]`);
+  const done = a.duration ? Math.min(1, a.currentTime / a.duration) : 0;
+  const left = mmss(a.duration - a.currentTime);
+  if (el) {
+    el.querySelector('.vdone').style.clipPath = `inset(0 ${100 - done * 100}% 0 0)`;
+    el.querySelector('.vtime').textContent = left;
+    const track = el.querySelector('.vtrack');
+    track.setAttribute('aria-valuenow', Math.round(a.currentTime));
+    track.setAttribute('aria-valuetext', voiceTimeText(a.currentTime, a.duration));
+  }
+  const bar = document.querySelector('.nowplay .vtime');
+  if (bar) bar.textContent = left;
 }
+
+/** The voice message for the system's media controls (the keyboard's play, next and previous keys, the panel's player). */
+function voiceSession() {
+  const ms = navigator.mediaSession;
+  if (!ms) return;
+  const r = voice.event && S.rooms.get(voice.room);
+  if (!r || !voice.ev) { ms.metadata = null; ms.playbackState = 'none'; return; }
+  const title = T`Hlasovka: ${memberName(r, voice.ev.sender)}`;
+  if (ms.metadata?.title !== title) ms.metadata = new MediaMetadata({ title, artist: roomTitle(r), album: 'Weft', artwork: [{ src: '/icon.svg', sizes: 'any', type: 'image/svg+xml' }] });
+  ms.playbackState = voice.el.paused ? 'paused' : 'playing';
+  const a = voice.el;
+  if (Number.isFinite(a.duration) && a.duration > 0) try { ms.setPositionState({ duration: a.duration, playbackRate: a.playbackRate, position: Math.min(a.currentTime, a.duration) }); } catch { /* an old browser */ }
+}
+if (navigator.mediaSession) {
+  const handle = (action, fn) => { try { navigator.mediaSession.setActionHandler(action, fn); } catch { /* not in this browser */ } };
+  handle('play', () => voice.el.play().catch(() => {}));
+  handle('pause', () => voice.el.pause());
+  handle('stop', stopVoice);
+  handle('seekbackward', (d) => seekVoiceBy(-(d.seekOffset || 5)));
+  handle('seekforward', (d) => seekVoiceBy(d.seekOffset || 5));
+  handle('seekto', (d) => { if (Number.isFinite(voice.el.duration)) voice.el.currentTime = d.seekTime; });
+  handle('previoustrack', () => { if (voice.el.currentTime > 3 || !stepVoice(-1)) voice.el.currentTime = 0; });
+  handle('nexttrack', () => stepVoice(1));
+}
+
 voice.el.addEventListener('timeupdate', paintVoice);
-for (const type of ['play', 'pause', 'ratechange', 'durationchange']) voice.el.addEventListener(type, renderSoon);
+for (const type of ['play', 'pause', 'ratechange', 'durationchange']) voice.el.addEventListener(type, () => { voiceSession(); renderSoon(); });
+voice.el.addEventListener('play', () => markHeard(voice.event));
+voice.el.addEventListener('seeked', voiceSession);
 voice.el.addEventListener('loadedmetadata', () => {
   if (voice.seekTo != null && Number.isFinite(voice.el.duration)) voice.el.currentTime = voice.seekTo * voice.el.duration;
   voice.seekTo = null;
 });
 voice.el.addEventListener('error', () => { if (voice.el.getAttribute('src')) { voice.event = null; renderSoon(); alert(T('Túto hlasovku prehliadač neprehrá.')); } });
-// The next voice message in the chat follows, as in Messenger.
-voice.el.addEventListener('ended', () => {
-  const open = voiceChatOpen() && S.rooms.get(S.selected);
-  const t = open ? timelineOf(open) : null; // a merged chat goes on through all of its networks
-  const i = t ? t.msgs.findIndex((ev) => ev.event_id === voice.event) : -1;
-  const audio = (ev) => { const m = roomModel(t.roomOf(ev)); return !ev.pending && !isRedacted(m, ev) && contentOf(m, ev).msgtype === 'm.audio'; };
-  const next = i < 0 ? null : t.msgs.slice(i + 1).find(audio);
-  if (next) { const r = t.roomOf(next); return toggleVoice(r, next, contentOf(roomModel(r), next)); }
-  voice.event = null;
-  renderSoon();
-});
+// The next voice message in its chat follows, as in Messenger; after the last one the bar goes.
+voice.el.addEventListener('ended', () => { if (!stepVoice(1)) stopVoice(); });
 
 // ------------------------------------------------------------------ recording voice messages
 
@@ -5875,6 +6027,7 @@ async function toggleRecording() {
     return alert(T('Mikrofón nie je dostupný.'));
   }
   if (rec || S.selected !== r.id) return stream.getTracks().forEach((t) => t.stop()); // pressed twice, or another chat meanwhile
+  voice.el.pause(); // a voice message does not talk into the new one
   // Chromium records only WebM; it is rewrapped as Ogg when sent, the one voice format every bridge takes.
   const mimeType = ['audio/ogg;codecs=opus', 'audio/webm;codecs=opus'].find((t) => MediaRecorder.isTypeSupported(t));
   const recorder = new MediaRecorder(stream, { mimeType, audioBitsPerSecond: 32000 });
@@ -6810,6 +6963,7 @@ function bubbleView(r, m, ev, grouped, group, sug = null) {
       // A shared post or reel: anywhere on it, for Preposlať and its address.
       if (!ev.archived && !ev.pending && !gone && shareLink(contentOf(m, ev))) openMsgMenu(e, r, ev);
       else if (mine ? !ev.archived && !ev.pending && !e.target.closest('a, img, video') : !ev.archived && e.target.closest('.mname, .mav')) openMsgMenu(e, r, ev);
+      else if (e.target.closest('.voice')) openMsgMenu(e, r, ev); // a voice message's menu downloads it
     },
     // Touch screens have no hover: a tap on the message shows its bar.
     onclick: (e) => { if (matchMedia('(hover: none)').matches && !e.target.closest('a, button')) { S.actsFor = S.actsFor === ev.event_id ? null : ev.event_id; render(); } },
@@ -6973,6 +7127,7 @@ function msgActs(r, m, ev, mine) {
       onclick: () => { writeIn(r); S.replyTo = { room: r.id, event: ev.event_id }; S.focusComposer = true; render(); },
     }, icon('undo')),
     shareLink(contentOf(m, ev)) ? h('button', { class: 'qmenu', title: T('Preposlať…'), onclick: () => openForward(shareLink(contentOf(m, ev))) }, icon('forward')) : null,
+    contentOf(m, ev).msgtype === 'm.audio' && contentOf(m, ev).url ? h('button', { class: 'qmenu', title: T('Stiahnuť hlasovku'), onclick: () => downloadVoice(r, ev, contentOf(m, ev)) }, icon('download')) : null,
     mine ? h('button', { class: 'qmenu', title: canEdit(r, m, ev) || canDelete(r, m, ev) ? T('Upraviť, odstrániť, počkať na odpoveď') : T('Počkať na odpoveď'), onclick: (e) => openMsgMenu(e, r, ev) }, icon('more-horizontal')) : null);
 }
 
@@ -7138,9 +7293,11 @@ function msgMenuView(o) {
   const ev = m?.byId.get(o.event);
   if (!ev) return null;
   const item = (glyph, label, key, fn, danger) => ctxItem(glyph, label, key, () => { S.overlay = null; render(); fn(); }, danger);
+  const c = contentOf(m, ev);
   return ctxMenu(o, [
+    [c.msgtype === 'm.audio' && c.url ? item(icon('download'), T('Stiahnuť hlasovku'), 'Ctrl+S', () => downloadVoice(r, ev, c)) : null],
     [canEdit(r, m, ev) ? item(icon('pencil'), T('Upraviť'), lastEditable(r) === ev ? '↑' : null, () => startEdit(r, ev)) : null,
-      ev.sender === S.userId && !r.archiveOnly ? item(icon('forward'), T('Keď odpíše, ukázať kamošovi…'), null, () => openRelay(r, ev)) : null,
+      ev.sender === S.userId && !r.archiveOnly && !ev.archived ? item(icon('forward'), T('Keď odpíše, ukázať kamošovi…'), null, () => openRelay(r, ev)) : null,
       ev.sender !== S.userId && !isBot(ev.sender) && !dmPartner(r) ? item(icon('label'), T`Prezývka pre ${memberName(r, ev.sender)}…`, null, () => openNickFor([ev.sender], networkName(r, ev.sender))) : null],
     // A shared post or reel: the one place besides Preposlať where its address shows.
     ((link) => (link ? [item(icon('forward'), T('Preposlať…'), null, () => openForward(link)), item(icon('link'), T('Kopírovať odkaz'), null, () => copyLink(link))] : []))(isRedacted(m, ev) ? '' : shareLink(contentOf(m, ev))),
@@ -9515,6 +9672,7 @@ const SHORTCUTS = [
   ['Ctrl+E', T('Archivovať / vrátiť')], ['Ctrl+Shift+E', T('Archivovať všetky prečítané')], ['Ctrl+Shift+U', T('Prečítané / neprečítané')],
   ['Ctrl+L', T('Pripomenúť neskôr')], ['Ctrl+R', T('Odpovedať na poslednú správu')], ['Ctrl+Enter', T('Odoslať a archivovať')],
   ['Ctrl+Shift+A', T('Nahrať hlasovku (Enter odošle, Esc zahodí)')],
+  ['Ctrl+Shift+Space', T('Hlasovka: prehrať / pozastaviť (v chate prvú nevypočutú)')], ['← →', T('Na hlasovke: o 5 s späť a dopredu (Space prehrá, Ctrl+S stiahne)')],
   ['↑', T('Upraviť svoju poslednú správu (v prázdnom poli)')], ['Shift+Enter', T('Nový riadok')], ['Ctrl+Shift+S', T('Len neprečítané / všetky')], ['Ctrl+S', T('Odložiť koncept (spýta sa, kedy pripomenúť; Ctrl+S znova = bez pripomienky); v prázdnom poli vziať odložený')], ['Ctrl+G', T('Známky (Tab prepína)')], ['Ctrl+M', T('Ľudia: mapa, koho odkiaľ poznáš')], ['Ctrl+D', T('Kalendár (D T M Z zobrazenie, ← → posun, N nová)')],
   ['Ctrl+,', T('Nastavenia')], ['Esc', T('Zavrieť, zrušiť odpoveď, zavrieť chat')],
   ['Ctrl+V', T('Vložiť obrázok do správy')], ['← →, koliesko', T('Obrázky: predošlý a ďalší')], ['Ctrl+koliesko', T('Obrázky: priblížiť (aj dvojklik, + − 0)')],
@@ -9557,6 +9715,7 @@ function toolList() {
     [T('Odpovedať na poslednú správu'), 'reply odpoved', 'Ctrl+R', replyToLast, !!r],
     [T('Upraviť svoju poslednú správu'), 'edit opravit', '↑', () => { const [lr, ev] = r ? lastEditableIn(r) : []; if (ev) startEdit(lr, ev); render(); }, !!r],
     [T('Nahrať hlasovku'), 'voice hlasova sprava audio nahravka mikrofon', 'Ctrl+Shift+A', toggleRecording, !!r],
+    [T('Prehrať / pozastaviť hlasovku'), 'voice hlasovka prehrat pustit pozastavit audio play pause', 'Ctrl+Shift+Space', voiceShortcut, !!voice.event || !!r],
     [T('Odoslať neskôr'), 'send later sendlater naplanovat', 'Ctrl+Shift+Enter', () => openLater(r), !!r],
     [T('Keď odpíše, ukázať odpoveď kamošovi…'), 'relay screenshot preposlat odpoved kamos cakam odpise obrazok', '', () => openRelay(r), !!r],
     [T('Poslať GIF'), 'gif klipy obrazok', '/gif', () => openGifs(r), !!r],
@@ -12592,8 +12751,6 @@ function render() {
   else if (same && S.shownKey !== key && spot) spotWant = { ...spot, key, tries: 0 };
   S.shownThread = S.selected;
   S.shownKey = key;
-  // A voice message stops with its chat: nothing keeps talking where it cannot be paused.
-  if (voice.room && !voiceChatOpen() && !voice.el.paused) voice.el.pause();
   if (S.overlay?.kind !== 'image') viewerVideo = null;
   let content;
   document.title = 'Weft';
