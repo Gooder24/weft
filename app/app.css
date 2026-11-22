@@ -592,6 +592,17 @@ kbd.num { margin: 0; min-width: 22px; text-align: center; padding: 2px 0; border
 .icon.outside svg { color: var(--link); }
 .chip.go { margin-left: auto; background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
 .chip.go:disabled { opacity: .5; cursor: default; }
+/* Ctrl+N's new WhatsApp group: the people picked, then its name and the button that makes it. */
+.grpform { flex: none; display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-top: var(--bw) solid var(--line); }
+.grpname { flex: 1; min-width: 0; border: var(--bw) solid var(--line); border-radius: var(--radius-s); padding: 6px 10px; background: var(--page); color: var(--text); font: inherit; font-size: var(--fs); }
+.grpname:focus { outline: none; border-color: var(--link); }
+.grpform .chip.go { margin-left: 0; }
+.grpcheck { flex: none; display: flex; color: var(--link); }
+.res.on .grpcheck { color: var(--accent-text); }
+.icon.grpicon { background: var(--soft); }
+.icon.grpicon svg { color: var(--link); }
+.rnote.grperr { color: var(--error); }
+.rnote.grperr:empty { display: none; }
 .rnote { display: block; padding: 8px 12px; font-size: var(--fs); line-height: var(--lh); color: var(--text); }
 .rnote.dim { color: var(--muted); }
 a.rnote.rlink { color: var(--link); text-decoration: none; }

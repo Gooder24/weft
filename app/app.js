@@ -5026,6 +5026,10 @@ function closeOverlay(back = false) {
     remoteDrop(o);
     if (back) { o.remote = null; o.index = 0; render(); return; }
   }
+  if (o?.kind === 'new' && o.group && back) {
+    if (o.group.state !== 'creating') { Object.assign(o, { group: null, query: '', index: 0 }); render(); }
+    return; // Esc while the group is being made waits for its answer
+  }
   // Ctrl+K's overlay goes as it came, the window under it stays; the cursor returns where it was.
   const veil = o?.kind === 'search' && !S.panel && document.querySelector('#app > .veil.search');
   if (veil) {
@@ -8336,6 +8340,7 @@ function cmdInput(o, placeholder) {
     onkeydown: (e) => {
       const opt = o.kind === 'relay' && e.altKey && !e.ctrlKey && relayOpts.find(([, keys]) => e.code === `Key${keys.at(-1)}`);
       if (opt) { e.preventDefault(); return relayToggle(o, opt[0]); }
+      if (o.kind === 'new' && o.group && e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.isComposing) { e.preventDefault(); return createGroup(o); }
       const rem = o.kind === 'new' && o.remote;
       if (rem && e.key === 'Tab') {
         e.preventDefault();
@@ -8508,7 +8513,7 @@ function remoteAsk(app, text) {
     return t.length < 2 ? { error: T('Napíš aspoň dve písmená.') } : { kind: 'search', value: t, user: '' };
   }
   if (app === 'whatsapp') {
-    const n = t.replace(/^https?:\/\/(?:api\.)?wa\.me\//i, '+').replace(/[\s\-().\/]/g, '');
+    const n = t.replace(/^(?:https?:\/\/)?(?:api\.)?wa\.me\//i, '+').replace(/[\s\-().\/]/g, '');
     const m = n.match(/^(?:\+|00)(\d{8,15})$/);
     return m ? { kind: 'id', value: m[1] } : { error: T('WhatsApp nájde človeka iba podľa celého čísla s predvoľbou krajiny, napr. +421 900 123 456.') };
   }
@@ -8663,6 +8668,174 @@ function remoteView(o) {
   ];
 }
 
+// ------------------------------------------------------------------ new WhatsApp group
+
+/* Ctrl+N → „Nová skupina na WhatsAppe“: people of Karchi's WhatsApp chats and contacts or a full number, a name, and
+ * the bridge's POST /v3/create_group/group (mautrix-whatsapp v26.10: a name of up to 100 characters, at least one
+ * other member; Weft asks for a name, as WhatsApp's own app does). WhatsApp tells every member at once, so the
+ * group is made only after Karchi confirms it. Someone whose privacy refuses being added gets the group's
+ * invitation in their own chat only when Karchi says so. */
+const GROUP_NAME_MAX = 100;
+const waApp = () => LINKS.find((a) => a.id === 'whatsapp');
+const waLogin = () => (S.links.whatsapp || []).find((l) => ['CONNECTED', 'CONNECTING', 'BACKFILLING'].includes(l.state?.state_event || 'CONNECTED'));
+
+function openGroup(o) {
+  remoteDrop(o);
+  Object.assign(o, { remote: null, group: { name: '', picked: [], state: 'idle', error: '', checking: '' }, query: '', index: 0 });
+  render();
+}
+function openNewGroup() {
+  openNewChat();
+  openGroup(S.overlay);
+}
+
+/** WhatsApp people Karchi can add: those of his WhatsApp chats, then the bridge's contacts. `id` is what the bridge
+ *  takes (a ghost's Matrix id or a WhatsApp user id), `key` the person as ghostKey names them. */
+function groupPeople(o) {
+  const out = [];
+  const seen = new Set();
+  for (const e of entries(true, true)) {
+    if (e.kind !== 'room' || e.app !== 'whatsapp') continue;
+    const p = dmPartner(e.room);
+    const key = p && ghostKey(p[0]);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push({ id: p[0], key, name: memberName(e.room, p[0]), avatar: p[1].avatar, sortTs: e.sortTs });
+  }
+  for (const c of o.contacts || []) {
+    const key = `whatsapp:${c.id}`;
+    if (c.app !== 'whatsapp' || seen.has(key)) continue;
+    seen.add(key);
+    out.push({ id: c.id, key, name: c.name || c.id, avatar: c.avatar_url, sortTs: 0 });
+  }
+  return out;
+}
+
+const groupFocus = () => document.querySelector('.cmd.new .cmdinput')?.focus();
+function groupToggle(o, x) {
+  const g = o.group;
+  g.picked = g.picked.some((p) => p.key === x.key) ? g.picked.filter((p) => p.key !== x.key) : [...g.picked, x];
+  Object.assign(o, { query: '', index: 0 });
+  g.error = '';
+  render();
+  groupFocus();
+}
+
+/** A full number typed in: WhatsApp says whether it has it (one GET), and then it is added like a contact. */
+async function groupNumber(o, number) {
+  const g = o.group;
+  const login = waLogin();
+  if (g.checking) return;
+  if (!login) { g.error = T('WhatsApp nie je pripojený.'); return render(); }
+  Object.assign(g, { checking: number, error: '' });
+  render();
+  try {
+    const c = await call('GET', `/resolve_identifier/${q(number)}?user_id=${q(S.userId)}&login_id=${q(login.id)}`, undefined, waApp().base, AbortSignal.timeout(REMOTE_TIMEOUT));
+    if (typeof c?.id !== 'string') throw new Error('');
+    if (S.overlay !== o || o.group !== g) return;
+    g.checking = '';
+    const x = { id: c.id, key: `whatsapp:${c.id}`, name: c.name || `+${number}`, avatar: c.avatar_url, sortTs: 0 };
+    if (g.picked.some((p) => p.key === x.key)) { Object.assign(o, { query: '', index: 0 }); render(); return void groupFocus(); } // already in: adding never removes
+    groupToggle(o, x);
+  } catch {
+    if (S.overlay !== o || o.group !== g) return;
+    Object.assign(g, { checking: '', error: T`WhatsApp číslo +${number} nepozná (alebo práve neodpovedá).` });
+    render();
+  }
+}
+
+async function createGroup(o) {
+  const g = o.group;
+  if (!g || g.state === 'creating') return;
+  const login = waLogin();
+  const name = g.name.trim();
+  const bytes = new TextEncoder().encode(name).length; // the bridge counts bytes: a letter with a diacritic is two
+  g.error = !login ? T('WhatsApp nie je pripojený.') : !g.picked.length ? T('Pridaj aspoň jedného človeka.') : !name ? T('Napíš názov skupiny.')
+    : bytes > GROUP_NAME_MAX ? T`Názov je pre WhatsApp pridlhý: ${bytes} zo ${GROUP_NAME_MAX} (písmeno s diakritikou sa ráta za dve, emoji za štyri).` : '';
+  if (g.error) { render(); return void (!login || !g.picked.length ? groupFocus() : document.querySelector('.cmd.new .grpname')?.focus()); }
+  if (!confirm(T`Vytvoriť skupinu „${name}“ na WhatsAppe s ľuďmi: ${g.picked.map((p) => p.name).join(', ')}? WhatsApp im to hneď oznámi.`)) return;
+  g.state = 'creating';
+  render();
+  try {
+    const data = await call('POST', `/create_group/group?user_id=${q(S.userId)}&login_id=${q(login.id)}`,
+      { name: { name }, participants: g.picked.map((p) => p.id) }, waApp().base);
+    if (!data.mxid) throw new Error(T('most nevrátil chat skupiny'));
+    if (S.overlay === o) S.overlay = null;
+    S.focusComposer = true;
+    select(data.mxid);
+    render();
+    const failed = Object.entries(data.failed_participants || {});
+    if (failed.length) await groupInvites(failed, g.picked);
+  } catch (err) {
+    g.state = 'idle';
+    g.error = T`Skupinu sa nepodarilo vytvoriť: ${err.message || T('neznáma chyba')}`;
+    if (S.overlay === o) render(); else alert(g.error); // closed by a click beside it meanwhile
+  }
+}
+
+/** Members WhatsApp did not add (their privacy settings): the bridge gives each an invitation to the group, which
+ *  goes to that person's own chat only once Karchi agrees. */
+async function groupInvites(failed, picked) {
+  const nameOf = ([id, f]) => picked.find((p) => p.id === id || p.id === f.user_mxid || (f.user_mxid && p.key === ghostKey(f.user_mxid)))?.name || id;
+  const can = failed.filter(([, f]) => f.invite_content && f.dm_room_mxid);
+  const all = failed.map(nameOf).join(', ');
+  if (!can.length) return alert(T`WhatsApp do skupiny nepridal: ${all}. Pozvi ich odkazom na skupinu vo WhatsAppe.`);
+  if (!confirm(T`WhatsApp do skupiny nepridal: ${all} (nedovoľuje to ich súkromie). Poslať pozvánku do skupiny do chatu s: ${can.map(nameOf).join(', ')}?`)) return;
+  for (const one of can) {
+    const [, f] = one;
+    try {
+      await call('PUT', `/rooms/${q(f.dm_room_mxid)}/send/${f.invite_event_type || 'm.room.message'}/${txnId()}`, f.invite_content);
+    } catch (err) {
+      alert(T`Pozvánku pre ${nameOf(one)} sa nepodarilo poslať: ${err.message}`);
+    }
+  }
+}
+
+function groupView(o) {
+  const g = o.group;
+  const query = norm(o.query).trim();
+  const picked = new Set(g.picked.map((p) => p.key));
+  const people = groupPeople(o)
+    .map((x) => ({ x, score: query ? nameScore(x.name, query) : 0 }))
+    .filter((p) => p.score >= 0)
+    .sort((a, b) => a.score - b.score || b.x.sortTs - a.x.sortTs)
+    .slice(0, 30)
+    .map((p) => p.x);
+  const ask = remoteAsk('whatsapp', o.query);
+  const number = ask.kind === 'id' ? ask.value : '';
+  o.flat = [...(number ? [() => groupNumber(o, number)] : []), ...people.map((x) => () => groupToggle(o, x))];
+  if (o.index >= o.flat.length) o.index = 0;
+  const shift = number ? 1 : 0;
+  const busy = g.state === 'creating';
+  const app = waApp();
+  return [
+    cmdInput(o, T('Meno alebo číslo s predvoľbou')),
+    g.picked.length ? h('div', { class: 'chips' }, g.picked.map((p) => h('button', {
+      class: 'chip on', 'data-key': p.key, title: T('Odobrať zo skupiny'), disabled: busy, onclick: () => groupToggle(o, p),
+    }, `${p.name} ×`))) : null,
+    h('div', { class: 'results' },
+      number ? resultRow(o, null, 0, [
+        h('div', { class: 'avwrap' }, h('div', { class: 'icon grpicon' }, icon('plus')), h('img', { class: 'badge', src: app.icon, alt: '' })),
+        h('div', { class: 'rmeta' }, h('b', {}, T`Pridať +${number}`),
+          h('small', {}, g.checking === number ? T('Overujem na WhatsAppe…') : T('WhatsApp najprv overí, či toto číslo má'))),
+      ]) : null,
+      people.length ? [h('div', { class: 'rsec' }, T('Ľudia na WhatsAppe')), people.map((x, i) => resultRow(o, x, i + shift, [
+        h('div', { class: 'avwrap' }, avatar(x.avatar, x.name, 40), h('img', { class: 'badge', src: app.icon, alt: '' })),
+        h('div', { class: 'rmeta' }, h('b', {}, highlighted(x.name, o.query)), h('small', {}, picked.has(x.key) ? T('V skupine · Enter odoberie') : T('Enter pridá'))),
+        picked.has(x.key) ? h('span', { class: 'grpcheck' }, icon('check')) : null,
+      ]))] : number ? null : h('div', { class: 'empty' }, T('Nikoho takého na WhatsAppe nepoznám. Napíš celé číslo s predvoľbou.'))),
+    h('div', { class: 'grpform' },
+      h('input', {
+        class: 'grpname', 'data-root': '__overlay-groupname', placeholder: T('Názov skupiny'), maxlength: GROUP_NAME_MAX, value: g.name, disabled: busy,
+        oninput: (e) => { g.name = e.target.value; if (g.error) { g.error = ''; render(); } },
+        onkeydown: (e) => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); createGroup(o); } },
+      }),
+      h('button', { class: 'chip go', disabled: busy, onclick: () => createGroup(o) }, busy ? T('Vytváram…') : T('Vytvoriť skupinu'))),
+    h('div', { class: 'rnote grperr' }, g.error), // always there, so clearing it never redraws the name field
+    h('div', { class: 'rnote dim' }, T('Enter pridá alebo odoberie človeka, Ctrl+Enter vytvorí skupinu, Esc sa vráti k tvojim kontaktom.')),
+  ];
+}
+
 let chatOpening = null; // the chat being opened: a second Enter or click while the bridge answers opens nothing more
 async function startChat(x) {
   // Picked for an old chat's "Hľadať inak" (writeOther): the old history goes with the chosen one's chat.
@@ -8696,6 +8869,7 @@ async function startChat(x) {
 
 function newChatView(o) {
   if (o.remote) return remoteView(o);
+  if (o.group) return groupView(o);
   const query = norm(o.query).trim();
   const people = contactList(o)
     .map((x) => ({ x, score: query ? nameScore(x.name, query) : 0 }))
@@ -8708,15 +8882,34 @@ function newChatView(o) {
   const mailApps = [...new Set(mailAccounts().map((l) => l.app))];
   // The last row leaves Weft's own people for one network's search (ArrowUp from the top reaches it).
   const outside = () => openRemote(o, o.link && S.rooms.get(o.link)?.archiveTo?.app);
-  o.flat = [...(mail ? [() => openMail(mailTo)] : []), ...people.map(({ x }) => () => startChat(x)), outside];
+  // WhatsApp: a new group, and a full number typed here asks WhatsApp for it at once (the network mode, one Enter).
+  const wa = !!S.links.whatsapp?.length && !hiddenApps().has('whatsapp');
+  const waAsk = remoteAsk('whatsapp', o.query);
+  const number = wa && waAsk.kind === 'id' ? waAsk.value : '';
+  const group = wa && !o.link && (!query || nameScore('nova skupina whatsapp group', query) >= 0);
+  const top = [
+    ...(number ? [() => { openRemote(o, 'whatsapp'); remoteSearch(o); }] : []),
+    ...(mail ? [() => openMail(mailTo)] : []),
+    ...(group ? [() => openGroup(o)] : []),
+  ];
+  o.flat = [...top, ...people.map(({ x }) => () => startChat(x)), outside];
   if (o.index >= o.flat.length) o.index = 0;
-  const shift = mail ? 1 : 0;
+  const shift = top.length;
+  const waIcon = LINKS.find((a) => a.id === 'whatsapp').icon;
   return [
     cmdInput(o, o.link ? T`Kto je ${S.rooms.get(o.link)?.bridgeName || 'to'}? Jeho stará história pôjde s ním` : T('Komu chceš napísať?')),
     h('div', { class: 'results' },
-      mail ? resultRow(o, null, 0, [
+      number ? resultRow(o, null, 0, [
+        h('div', { class: 'avwrap' }, h('div', { class: 'icon grpicon' }, icon('search')), h('img', { class: 'badge', src: waIcon, alt: '' })),
+        h('div', { class: 'rmeta' }, h('b', {}, T`Napísať na WhatsApp +${number}`), h('small', {}, T('WhatsApp najprv overí, či toto číslo má'))),
+      ]) : null,
+      mail ? resultRow(o, null, number ? 1 : 0, [
         h('div', { class: 'avwrap' }, h('div', { class: 'icon mailicon' }, icon('mail')), h('img', { class: 'badge', src: (mailFrom()?.app || mailApps[0]).icon, alt: '' })),
         h('div', { class: 'rmeta' }, h('b', {}, mailTo ? T`Nový mail pre ${mailTo}` : T('Nový mail')), h('small', {}, mailApps.map((a) => a.name).join(' alebo '))),
+      ]) : null,
+      group ? resultRow(o, null, shift - 1, [
+        h('div', { class: 'avwrap' }, h('div', { class: 'icon grpicon' }, icon('users')), h('img', { class: 'badge', src: waIcon, alt: '' })),
+        h('div', { class: 'rmeta' }, h('b', {}, T('Nová skupina na WhatsAppe')), h('small', {}, T('Vyber ľudí a názov · WhatsApp im to hneď oznámi'))),
       ]) : null,
       people.length ? [h('div', { class: 'rsec' }, query ? T('Ľudia') : T('Nedávni')), people.map(({ x }, i) => resultRow(o, x, i + shift, [
         h('div', { class: 'avwrap' }, avatar(x.avatar, x.name, 40), APPS.find((a) => a.id === x.app) ? h('img', { class: 'badge', src: APPS.find((a) => a.id === x.app).icon, alt: '' }) : null),
@@ -9296,6 +9489,7 @@ function toolList() {
     [T('Hľadať chaty, ľudí a správy'), 'search find vyhladavanie najst', 'Ctrl+K', () => openSearch()],
     [T('Nová správa'), 'new message napisat novy chat konverzacia', 'Ctrl+N', openNewChat],
     [T('Nový mail'), 'gmail outlook email napisat novy mail posta', null, () => openMail()],
+    ...(S.links.whatsapp?.length && !hidden.has('whatsapp') ? [[T('Nová skupina na WhatsAppe'), 'whatsapp nova skupina group vytvorit', null, openNewGroup]] : []),
     [T('Známky'), 'edupage znamky hodnotenie skola grades', 'Ctrl+G', show('grades')],
     [T('Ľudia: mapa, koho odkiaľ poznáš'), 'people mapa priatelia kamarati kamosi friends vetvy druzina', 'Ctrl+M', show('people')],
     [T('Kalendár'), 'kalendar calendar kalendarix udalosti rozvrh tyzden mesiac', 'Ctrl+D', toggleCalendar],
@@ -12424,8 +12618,9 @@ function render() {
   // An EduPage message opened from search: its underlined words come into view once.
   const found = S.focusEvent && S.focusScrolled !== S.focusEvent && root.querySelector('.detail mark.found');
   if (found) { found.scrollIntoView({ block: 'center' }); S.focusScrolled = S.focusEvent; }
-  // An open overlay takes the keyboard; otherwise the field that had it keeps it.
-  const again = root.querySelector(`[data-root="${CSS.escape(S.overlay ? '__overlay' : typing?.root || '')}"]`);
+  // An open overlay takes the keyboard (its second field, `__overlay-…`, keeps it); otherwise the field that had it keeps it.
+  const overlayRoot = S.overlay && (typing?.root?.startsWith('__overlay-') && root.querySelector(`[data-root="${CSS.escape(typing.root)}"]`) ? typing.root : '__overlay');
+  const again = root.querySelector(`[data-root="${CSS.escape(overlayRoot || typing?.root || '')}"]`);
   if (again) {
     again.focus({ preventScroll: true });
     // The message box was asked for (a picked name, an edit): its caret now, not at some later render.

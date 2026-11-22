@@ -123,6 +123,12 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   over the whole archive and every network of a merged chat (archive `GET /_archive/stats?room=…`, which first copies
   the rooms' newest messages from the homeserver); in a group it is Karchi's own chat with that person. Its name opens
   the profile. Check: `overenie/profil-karta/run.sh` (`stats_test.py`, `ui.cjs`).
+- New chats (Ctrl+N): Weft's own people first; a full number typed there goes to WhatsApp at once, and „Hľadať mimo
+  kontaktov“ asks one network (Messenger and Instagram by name, WhatsApp by number, Teams in the directory). „Nová
+  skupina na WhatsAppe“ (also Ctrl+J) makes a group through the bridge's `POST /v3/create_group/group` after Karchi
+  confirms; whom WhatsApp would not add gets the bridge's invitation in their chat only on a second yes. Following
+  on Instagram and friend requests on Facebook or Discord stay in those apps (no bridge API, a ban risk). Check:
+  `overenie/whatsapp-skupina/run.sh` (the bridge faked).
 - Mentions (like Beeper): „@“ in a Messenger, Instagram, WhatsApp or Discord chat lists its people; a picked or fully
   typed „@Name“ goes out as a Matrix mention (`formatted_body` matrix.to link + `m.mentions`), which the mautrix
   bridges turn into the network's own. A picked name stays that person (two of the same name, text typed after it,
