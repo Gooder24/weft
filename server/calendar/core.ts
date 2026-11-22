@@ -301,9 +301,10 @@ export type Lesson = {
 
 export const timetableOwned = (e: Json): boolean => isObj(e) && typeof e.uid === "string" && e.uid.endsWith(TIMETABLE_OURS);
 
-/** Kalendarix stores Date.toISOString(): UTC, whole seconds, ".000Z". */
+/** Kalendarix stores Date.toISOString(): UTC, whole seconds, ".000Z". A time without an offset, and a bare date
+ * (its midnight), are local time, as they always were. */
 export function utcMs(iso: string): string {
-  const t = new Date(iso);
+  const t = new Date(/^\d{4}-\d\d-\d\d$/.test(iso) ? `${iso}T00:00:00` : iso);
   if (!/^\d{4}-\d\d-\d\d/.test(iso) || Number.isNaN(t.getTime())) throw new Error(`not a time: ${iso}`);
   return t.toISOString().slice(0, 19) + ".000Z";
 }

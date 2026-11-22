@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
 import postgres from "postgres";
-import { applyOps, merge, OpError, putTimetable, version, type Lesson, type Obj } from "./core.ts";
+import { applyOps, merge, OpError, putTimetable, utcMs, version, type Lesson, type Obj } from "./core.ts";
 
 const cal = (id: string, events: Obj[], extra: Obj = {}): Obj => ({ id, name: id, ...extra, events });
 const doc = (...calendars: Obj[]): Obj => ({ version: 1, calendars });
@@ -74,6 +74,19 @@ test("the timetable: days the backend sent are replaced, an older day it no long
     ["2026-11-20-1@lifeos", "Odpadlo: Fyzika", "2026-11-20T07:00:00.000Z"],
   ]);
   assert.equal(putTimetable(d, [lesson("2026-11-20-1@lifeos", "Odpadlo: Fyzika")], "2026-11-22"), false);
+});
+
+test("a bare date or a time without an offset is local time", () => {
+  const tz = process.env.TZ;
+  process.env.TZ = "Europe/Bratislava";
+  try {
+    assert.equal(utcMs("2026-11-23"), "2026-11-22T23:00:00.000Z");
+    assert.equal(utcMs("2026-07-01T08:00:00"), "2026-07-01T06:00:00.000Z");
+    assert.equal(utcMs("2026-11-23T08:00:00.123+01:00"), "2026-11-23T07:00:00.000Z");
+  } finally {
+    if (tz === undefined) delete process.env.TZ;
+    else process.env.TZ = tz;
+  }
 });
 
 // ------------------------------------------------------------------ against Postgres
