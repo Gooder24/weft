@@ -410,6 +410,8 @@ export function createFeed({ h, api, kv, refresh, offline, user, settingsPanel, 
     const item = shown.find((x) => x.id === (state.reader || state.sel));
     if (state.reader) {
       if (k === 'Escape') { closeReader(); return true; }
+      // Arrows on a focused video seek it.
+      if (e.target?.tagName === 'VIDEO') return false;
       if (k === 'ArrowRight' || k === 'j') { step(1); return true; }
       if (k === 'ArrowLeft' || k === 'k') { step(-1); return true; }
     }
@@ -466,7 +468,7 @@ export function createFeed({ h, api, kv, refresh, offline, user, settingsPanel, 
           igProblem && (f === 'all' || f === 'instagram') ? instagramRow(doc, igProblem) : null,
           otherErrors.map((err) => h('p', { class: 'feed-note', role: 'status' }, err.message)),
           current ? reader(current)
-            : !shown.length ? h('div', { class: 'feed-empty' }, state.busy ? T('Načítavam dnešný feed…') : f === 'all' ? T('Zatiaľ žiadne položky. Zdroje pridáš v Zdroje a filtre.') : T`Dnes nič z ${catName(f)}.`)
+            : !shown.length ? h('div', { class: 'feed-empty' }, state.busy ? T('Načítavam dnešný feed…') : f === 'all' ? T('Zatiaľ žiadne položky. Zdroje pridáš v Zdroje a filtre.') : T`V kategórii ${catName(f)} dnes nič nie je.`)
               : h('div', { class: 'feed-grid' }, grid),
         ],
       open ? h('button', { class: 'ghost feed-finish', onclick: finish }, T('Skončiť okno')) : null);

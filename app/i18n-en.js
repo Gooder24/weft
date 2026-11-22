@@ -900,7 +900,7 @@ export default {
   "Kláves {}": "Key {}",
   "1–5 kategória · šípky · Enter čítať · O originál": "1–5 category · arrows · Enter read · O original",
   "Zatiaľ žiadne položky. Zdroje pridáš v Zdroje a filtre.": "No items yet. Add sources in Sources and filters.",
-  "Dnes nič z {}.": "Nothing from {} today.",
+  "V kategórii {} dnes nič nie je.": "Nothing in {} today.",
   "RSS, YouTube a X": "RSS, YouTube and X",
   "RSS, YouTube, X a Instagram": "RSS, YouTube, X and Instagram",
   "Názov (nepovinné)": "Title (optional)",
