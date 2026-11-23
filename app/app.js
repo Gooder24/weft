@@ -12031,6 +12031,9 @@ async function loadDiscordServers() {
  *  fetches no channel history). Off: Weft only stops showing it. */
 async function setServerShown(g, on) {
   const off = { ...serversOff() };
+  // A busy checkbox is disabled and loses the keyboard; it gets it back once the bridge answered.
+  const had = document.activeElement?.dataset?.root === `dcserver:${g.id}`;
+  const back = () => { if (had && (!document.activeElement || document.activeElement === document.body)) document.querySelector(`[data-root="dcserver:${g.id}"]`)?.focus(); };
   if (on && g.bridging_mode === 'nothing') {
     S.serverBusy = g.id;
     render();
@@ -12041,13 +12044,14 @@ async function setServerShown(g, on) {
       return;
     } finally {
       S.serverBusy = null;
-      loadDiscordServers();
+      loadDiscordServers().then(back);
     }
   }
   if (on) delete off[g.id]; else off[g.id] = g.name;
   if (!on && S.rooms.get(S.selected)?.serverId === g.id) closeThread();
   await putAccount(DISCORD_SERVERS, { off }).catch(() => alert(T('Nastavenie sa neuložilo.')));
   render();
+  back();
 }
 
 function discordServers() {
@@ -12056,28 +12060,34 @@ function discordServers() {
   const list = Array.isArray(S.discordServers) ? [...S.discordServers].sort((a, b) => a.name.localeCompare(b.name, 'sk')) : [];
   const off = serversOff();
   return [
-    h('h3', {}, T('Servery na Discorde')),
+    h('h4', {}, T('Servery')),
     S.discordServers === null ? h('p', { class: 'hint' }, T('Most Discordu neodpovedá.')) : !Array.isArray(S.discordServers) ? h('p', { class: 'hint' }, T('Zisťujem…')) : null,
     list.length ? h('div', { class: 'calshown' }, list.map((g) => h('label', { class: 'bcheck', 'data-key': g.id },
-      h('input', { type: 'checkbox', checked: g.bridging_mode !== 'nothing' && !(g.id in off), disabled: S.serverBusy === g.id,
+      h('input', { type: 'checkbox', 'data-root': `dcserver:${g.id}`, checked: g.bridging_mode !== 'nothing' && !(g.id in off), disabled: S.serverBusy === g.id,
         onchange: (e) => setServerShown(g, e.currentTarget.checked) }),
       g.name, S.serverBusy === g.id ? h('small', {}, T(' · pripájam…')) : null))) : null,
     list.length ? h('p', { class: 'hint' }, T('Zapnutý server má vo Wefte svoje kanály a chodia z neho nové správy; staršie než zapnutie tu nebudú. Vypnutý sa neukazuje vo Wefte ani vo weft.')) : null,
   ];
 }
 
+/** An account row that opens its options below it (`S.acctOpen`), by click, Enter or Space; it keeps the keyboard. */
+function openableAcct(id, src, name, sub) {
+  const open = S.acctOpen === id;
+  return h('div', {
+    class: `acct click${open ? ' open' : ''}`, role: 'button', tabindex: 0, 'aria-expanded': String(open), 'data-key': `acct:${id}`, 'data-root': `acct:${id}`,
+    onclick: () => { S.acctOpen = open ? null : id; render(); },
+    onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.currentTarget.click(); } },
+  },
+    h('img', { class: 'appicon', src, alt: '' }),
+    h('span', {}, name, h('small', {}, sub)),
+    h('span', { class: 'chev' }, open ? '▾' : '▸'));
+}
+
 function accountSettings() {
   const login = S.logins[0];
   return [
     h('h3', {}, T('Pripojené účty')),
-    h('div', {
-      class: `acct click${S.acctOpen === 'edupage' ? ' open' : ''}`, role: 'button', tabindex: 0, 'aria-expanded': String(S.acctOpen === 'edupage'),
-      onclick: () => { S.acctOpen = S.acctOpen === 'edupage' ? null : 'edupage'; render(); },
-      onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.currentTarget.click(); } },
-    },
-      h('img', { class: 'appicon', src: '/edupage.png', alt: '' }),
-      h('span', {}, 'EduPage', h('small', {}, login ? login.name + (login.state?.message ? ` · ${login.state.message}` : '') : T('nepripojené'))),
-      h('span', { class: 'chev' }, S.acctOpen === 'edupage' ? '▾' : '▸')),
+    openableAcct('edupage', '/edupage.png', 'EduPage', login ? login.name + (login.state?.message ? ` · ${login.state.message}` : '') : T('nepripojené')),
     S.acctOpen === 'edupage' ? h('div', { class: 'acctopts' },
       h('button', { class: 'ghost', type: 'button', onclick: () => settingsTab('edupage') }, T('Oznamy a predmety…')),
       login ? h('button', { class: 'ghost danger', onclick: edupageLogout }, T('Odhlásiť EduPage')) : null) : null,
@@ -12086,6 +12096,14 @@ function accountSettings() {
       // Two logins of a one-account network (signed in again as somebody else): each gets its own row.
       if ((app.multi || logins?.length > 1) && logins?.length) return multiLinkRows(app, logins);
       const first = logins?.[0];
+      // Discord's row opens to its servers and its logout, like EduPage's.
+      if (app.id === 'discord' && first) return [
+        openableAcct('discord', app.icon, app.name, first.name + linkStatus(first)),
+        S.acctOpen === 'discord' ? h('div', { class: 'acctopts' },
+          discordServers(),
+          signedOut(first) ? h('button', { class: 'primary', type: 'button', onclick: () => signInAgain(app, first) }, T('Znova prihlásiť')) : null,
+          h('button', { class: 'ghost danger', type: 'button', onclick: () => unlink(app, first) }, T('Odhlásiť Discord'))) : null,
+      ];
       return h('div', { class: 'acct' }, h('img', { class: 'appicon', src: app.icon, alt: '' }),
         h('span', {}, app.name, h('small', {},
           logins === undefined ? T('zisťujem…') : logins === null ? T('most neodpovedá')
@@ -12094,7 +12112,8 @@ function accountSettings() {
           ? h('div', { class: 'row' }, signedOut(first) ? h('button', { class: 'primary', onclick: () => signInAgain(app, first) }, T('Znova prihlásiť')) : null, h('button', { class: 'ghost danger', onclick: () => unlink(app, first) }, T('Odhlásiť')))
           : h('button', { class: 'primary', onclick: () => startLink(app) }, T('Pripojiť')));
     }),
-    discordServers(),
+    // Two Discord logins get plain rows; their servers stay listed below them.
+    S.links.discord?.length > 1 ? discordServers() : null,
     callSettings(),
   ];
 }

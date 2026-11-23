@@ -199,8 +199,8 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   `server/bridges/discord-polls.patch` on v0.7.7 (MSC3381 start with counts in `sk.karchi.discord.poll`, kept current
   by edits, Karchi's vote sent to Discord). `server/bridges/build-discord-weft` builds the running bridge: polls,
   `discord-weft.patch` (friends for Ctrl+N) and `discord-weft-profile.patch`, in that order, with `-tags nocrypto`, into asus
-  `~/matrix-spike/bin/mautrix-discord` (the plain 0.7.7 is `mautrix-discord.bak-20261119-polls`). Check: `overenie/discord-ankety/run.sh`. Settings → Účty → Servery na
-  Discorde switches each server on or off himself: on bridges a server the bridge does not have yet (provisioning
+  `~/matrix-spike/bin/mautrix-discord` (the plain 0.7.7 is `mautrix-discord.bak-20261119-polls`). Check: `overenie/discord-ankety/run.sh`. Settings → Účty → Discord (its row
+  opens) switches each server on or off himself: on bridges a server the bridge does not have yet (provisioning
   `POST /v1/guilds/<id>`, all channels, no channel history), off only hides it in Weft and `weft`
   (`sk.karchi.discord.servers`; the bridge keeps it). Checks: `overenie/discord-servers/` (`run.sh`, `cli.py`).
 - `server/links/links.py` reads shared links (asus `~/matrix-spike/links/`, unit `matrix-spike-links`,
