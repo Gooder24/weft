@@ -250,7 +250,7 @@ const TESTS_NAME = "testy"; // the EduPage bridge finds the calendar it writes t
 
 /** Why a calendar may not be removed, or null: a program fills it and would fail or bring it back. */
 function undeletable(cal: Obj): string | null {
-  if (cal.id === TIMETABLE_CAL || list(cal.events).some((e) => isObj(e) && managed(e, cal.id as Json))) return "this calendar belongs to a sync program";
+  if (cal.id === TIMETABLE_CAL || cal.sourceUrl || list(cal.events).some((e) => isObj(e) && managed(e, cal.id as Json))) return "this calendar belongs to a sync program";
   if (text((cal.name || "") as Json).trim().toLowerCase() === TESTS_NAME) return "the EduPage bridge writes tests into this calendar";
   return null;
 }
@@ -268,6 +268,8 @@ export function applyOps(doc: Obj, ops: Json): Obj {
       if (typeof name !== "string" || !name.trim()) throw new OpError("a calendar needs a name");
       if (typeof color !== "string" || !/^#[0-9a-fA-F]{6}$/.test(color)) throw new OpError("color must be #rrggbb");
       if (cals.has(id)) continue;
+      const tests = (n: Json | undefined) => text((n || "") as Json).trim().toLowerCase() === TESTS_NAME;
+      if (tests(name) && [...cals.values()].some((c) => tests(c.name))) throw new OpError("there is a Testy calendar already: the EduPage bridge writes into one");
       // Kalendarix's fields for a calendar of one's own; the colour it shows is customColor.
       const fresh: Obj = { id, name: name.trim(), color, customColor: color, visible: true, events: [] };
       if (!Array.isArray(doc.calendars)) doc.calendars = [];

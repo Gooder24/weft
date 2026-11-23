@@ -72,6 +72,8 @@ test("calendars: added once, deleted with their events, except the ones a progra
   assert.throws(() => applyOps(d, [{ op: "delcal", cal: "t" }]), new OpError("the EduPage bridge writes tests into this calendar"));
   assert.throws(() => applyOps(d, [{ op: "addcal", cal: "n", name: " ", color: "#ffffff" }]), new OpError("a calendar needs a name"));
   assert.throws(() => applyOps(d, [{ op: "addcal", cal: "n", name: "N", color: "red" }]), new OpError("color must be #rrggbb"));
+  assert.throws(() => applyOps(d, [{ op: "addcal", cal: "t2", name: "TESTY", color: "#ffffff" }]), new OpError("there is a Testy calendar already: the EduPage bridge writes into one"));
+  assert.throws(() => applyOps(doc(cal("feed", [], { sourceUrl: "https://example.org/x.ics" })), [{ op: "delcal", cal: "feed" }]), new OpError("this calendar belongs to a sync program"), "a subscribed calendar stays, empty too");
   assert.deepEqual(applyOps(empty(), [{ op: "addcal", cal: "k", name: "Prvý", color: "#ffffff" }]).schema, 2);
 });
 
