@@ -2100,8 +2100,15 @@ function shareLink(c) {
     return classify(u.href)[0] === 'instagram' ? `${u.origin}${u.pathname}` : u.href;
   } catch { return ''; }
 }
-/** A shared reel or story (also a Facebook video): the video says it all, so no card of its page goes under it. */
-const sharedVideo = (c) => ['reel', 'video', 'story'].includes(classify(shareLink(c))[1]);
+/** A shared reel or story (also a Facebook video): the video says it all, so no card of its page goes under it.
+ *  Besides what classify knows: /<user>/reel/…, /reels/…, /stories/… and Facebook's /share/r/ and /share/v/. */
+function sharedVideo(c) {
+  const link = shareLink(c);
+  if (!link) return false;
+  const [platform, kind] = classify(link);
+  return ['reel', 'video', 'story'].includes(kind)
+    || (['instagram', 'facebook'].includes(platform) && /\/(reels?|stories)\/|^\/share\/(r|v|reel)\//.test(new URL(link).pathname));
+}
 
 function messageSummary(m, ev) {
   if (isRedacted(m, ev)) return T('Správa bola odstránená');
@@ -3177,7 +3184,8 @@ async function saveRelay(change) {
 /** Chats to pick for something to go to, the latest first, filtered by the words typed. */
 function chatPicks(query, skip = []) {
   const words = norm(query).split(/\s+/).filter(Boolean);
-  return [...S.rooms.values()].filter((x) => isChat(x) && !x.archiveOnly && !skip.includes(x.id) && roomTitle(x))
+  const off = serversOff();
+  return [...S.rooms.values()].filter((x) => isChat(x) && !x.archiveOnly && !skip.includes(x.id) && roomTitle(x) && !serverOff(x, off))
     .sort((a, b) => (roomModel(b).messages.at(-1)?.origin_server_ts || 0) - (roomModel(a).messages.at(-1)?.origin_server_ts || 0))
     .filter((x) => words.every((w) => norm(`${roomTitle(x)} ${appOf(x.app)?.name || ''}`).includes(w))).slice(0, 40);
 }
@@ -3200,6 +3208,12 @@ function forwardPickView(o) {
 }
 function forwardTo(link, id) {
   S.overlay = null;
+  endEdit(); // the link starts a new message, never joins one being edited
+  // A merged chat opens where its draft is: the link goes there, else to the picked network, which it then opens on.
+  const g = groupOf(id);
+  const drafted = g && groupRooms(g).find((x) => x.id !== id && (S.drafts.get(x.id) || '').trim());
+  if (drafted) id = drafted.id;
+  else if (g) saveMerges({ ...mergeData(), groups: (mergeData().groups || []).map((x) => (x.id === g.id ? { ...x, via: id, viaAt: Date.now() } : x)) });
   const now = S.drafts.get(id) || '';
   if (!now.includes(link)) setDraft(id, now.trim() ? `${now.trimEnd()} ${link}` : link);
   S.focusComposer = true;
@@ -5421,7 +5435,7 @@ function bubbleBody(r, m, ev) {
   // the post's card. A reel or story is its video alone; its address shows only when Karchi forwards it (Preposlať).
   // The address itself is not repeated; only words beside it stay as the caption.
   const shared = typeof c.external_url === 'string' && !sharedVideo(c) ? linkCards(r, ev, c, c.external_url) : null;
-  if (typeof c.external_url === 'string' && caption) {
+  if (shareLink(c) && caption) {
     const words = sharedWords(c.body);
     caption = words ? h('div', { class: 'caption' }, linkified(words)) : null;
   }
@@ -6311,6 +6325,7 @@ function viewerSource(o) {
 }
 function stepViewer(d) {
   const o = S.overlay;
+  viewerSpaceUp(null, false); // a held Space belongs to the video being left
   if (o.gallery) {
     if (!gal?.items[o.index + d]) return;
     Object.assign(o, { index: o.index + d, zoom: 1, x: 0, y: 0 });
@@ -6454,7 +6469,7 @@ function viewerKey(e) {
   const arrow = e.altKey || e.shiftKey ? 0 : e.key === 'ArrowLeft' ? -1 : e.key === 'ArrowRight' ? 1 : 0;
   if (arrow && (mod || !video)) stepViewer(arrow);
   else if (arrow) video.currentTime = Math.max(0, Math.min(video.duration || Infinity, video.currentTime + arrow * 5));
-  else if (video && e.key === ' ' && !mod && !e.altKey) { if (!e.repeat && !spaceHold) holdSpace(o, video); }
+  else if (e.key === ' ' && !mod && !e.altKey) { if (video && !e.repeat && !spaceHold) holdSpace(o, video); } // on a picture: nothing
   else if (mod && e.key.toLowerCase() === 's') viewerDownload(o);
   else if (!mod && img && ['+', '='].includes(e.key)) zoomAt(o, img, o.zoom * 1.5, ...middle());
   else if (!mod && img && e.key === '-') zoomAt(o, img, o.zoom / 1.5, ...middle());
@@ -6469,10 +6484,11 @@ addEventListener('resize', () => S.overlay?.kind === 'image' && render());
  *  answer Space and the arrows itself, on top of viewerKey (Space played and paused again, or the keys died). */
 const playerVideo = (src) => h('video', { class: 'full', src, controls: true, autoplay: true, onfocus: (e) => { const v = e.currentTarget; setTimeout(() => v.blur()); } });
 
-let spaceHold = null; // { timer, rate }: Space down over the viewer's video; `rate` once it went fast
+let spaceHold = null; // { timer, o, video, rate }: Space down over the viewer's video; `rate` once it went fast
 function holdSpace(o, video) {
-  spaceHold = { timer: setTimeout(() => {
-    if (!spaceHold) return;
+  spaceHold = { o, video, timer: setTimeout(() => {
+    // Paged on or closed meanwhile: that video is not the one in front any more.
+    if (!spaceHold || S.overlay !== o || !video.isConnected) return;
     spaceHold.rate = video.playbackRate;
     video.playbackRate = 2;
     video.play().catch(() => {});
@@ -6480,18 +6496,17 @@ function holdSpace(o, video) {
     render();
   }, 300) };
 }
-/** Space let go: a short press plays or pauses, after holding the video goes back to its speed and plays on. */
+/** Space let go: a short press plays or pauses, after holding the video goes back to its speed and plays on.
+ *  `toggle` false only ends the hold (the window lost the key, the viewer paged on). */
 function viewerSpaceUp(e, toggle = true) {
   if (!spaceHold) return;
-  const { timer, rate } = spaceHold;
+  const { timer, o, video, rate } = spaceHold;
   spaceHold = null;
   clearTimeout(timer);
   e?.preventDefault();
-  const video = document.querySelector('.veil.viewer video');
-  if (S.overlay?.fast) { S.overlay.fast = false; render(); }
-  if (!video) return;
   if (rate) video.playbackRate = rate;
-  else if (toggle) { if (video.paused) video.play().catch(() => {}); else video.pause(); }
+  if (o.fast) { o.fast = false; render(); }
+  if (!rate && toggle && S.overlay === o && video.isConnected) { if (video.paused) video.play().catch(() => {}); else video.pause(); }
 }
 document.addEventListener('keyup', (e) => { if (e.key === ' ') viewerSpaceUp(e); });
 addEventListener('blur', () => viewerSpaceUp(null, false)); // the window lost the key: never stuck fast
@@ -8056,6 +8071,7 @@ function chatCompose(r, m, t = null) {
       }
       if (e.key !== 'Enter' || (e.shiftKey && !e.ctrlKey && !e.metaKey) || e.altKey) return;
       e.preventDefault();
+      if (e.repeat) return; // a held Enter (one that picked a chat a moment ago) sends nothing
       if (editing) return saveEdit(r);
       // A command is the first word: what follows it is the message, or for /gif what to look for.
       const cmd = SLASH.find(([name]) => new RegExp(`^/${name}(\\s|$)`, 'i').test(draft.trim()));
