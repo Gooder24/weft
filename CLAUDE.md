@@ -107,13 +107,15 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   refused never merges again (`dismissed`). Account data `sk.karchi.merges`; the row's inbox state is under
   `merge:<id>`, `S.selected` stays a member room and the switch by the message box picks the network. Ctrl+K and `weft chats`
   show a merged chat as one row. Checks: `overenie/merged-chats/run.sh`, `overenie/auto-merge/run.sh`.
-- People's look (Settings → Správy → Ľudia v chate): everyone's messages alike (default), „Farba“ (name and bubble
-  edge in one of four palette colours: --message, --warning, --notice, --info) or „Farba a tvar“ (also the bubble's
-  corners). A person's look comes from their id, a merged chat's from its group, so every device agrees; a group of
-  up to 12 gives each joined member a different one, colours before shapes (so someone may look different there than
-  in their own chat). The profile's „V správach“ picks one person's
-  colour and shape, shown in every mode. Account data `sk.karchi.people.look` (`lookClass` in app.js; the class is
-  part of bubbleKept's `sig`). Check: `overenie/ludia-vzhlad/run.sh`.
+- Chats' look (Settings → Správy → Vzhľad chatov): everything alike (default), „Farba“ or „Farba a tvar“. Each chat's
+  message area gets a faint tint (9 % of one of four palette colours: --message, --warning, --notice, --info; in
+  light mode over --panel to keep 4.5:1), people's names and bubble edges wear a colour, and „Farba a tvar“ adds the
+  bubble's corners. A one-to-one chat's colour is its person's (a merged chat's its group's), a group's its own, all
+  from ids, so every device agrees. In a group a person with a chat with Karchi wears its colour; two of the same
+  colour get different shapes when one is free, and the others share out the rest, colours before shapes (up to 12).
+  Chat menu → „Farba chatu…“ and the profile's „Vzhľad“ pick colours (and the shape), shown in every mode. Account
+  data `sk.karchi.people.look` (`{ mode, people: { user | merge:<id> | room id: { color, shape } } }`; `lookClass`
+  and `chatTint` in app.js; the class is part of bubbleKept's `sig`). Check: `overenie/ludia-vzhlad/run.sh`.
 - A person's profile (their picture in the inbox, the chat's head or beside a group message, or chat menu → „Profil“;
   each network of a merged chat; on networks without one only name, picture and networks): WhatsApp's „about“ text and the
   person's statuses of the last day, Discord's bio, pronouns, banner or colour, activity, mutual servers and connected

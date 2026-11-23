@@ -825,9 +825,10 @@ a.rnote.rlink { color: var(--link); text-decoration: none; }
 .seg button:hover { background: var(--hover); }
 .seg button.on { background: var(--accent); color: var(--accent-text); }
 .seg button:focus-visible { outline: var(--bw) solid var(--text); outline-offset: 0; }
-/* Ľudia v chate (Settings → Správy, the profile's „V správach“): a person's colour is their name and their bubble's
-   edge, drawn inside it so the bubble keeps its size and its text its contrast; the shape is the bubble's corners:
-   round, a sharp tip toward the picture (Cíp), or square-ish. */
+/* Vzhľad chatov (Settings → Správy, chat menu → Farba chatu…, the profile's „Vzhľad“): a chat's colour is a faint
+   tint of its messages' background, a person's is their name and their bubble's edge, drawn inside it so the bubble
+   keeps its size and its text its contrast; the shape is the bubble's corners: round, a sharp tip toward the
+   picture (Cíp), or square-ish. */
 .look-c0 { --who: var(--message); }
 .look-c1 { --who: var(--warning); }
 .look-c2 { --who: var(--notice); }
@@ -837,7 +838,10 @@ a.rnote.rlink { color: var(--link); text-decoration: none; }
 .msg.tinted .mname { color: var(--who); }
 .msg.tinted .bubble:not(.sticker) { outline: var(--bw) solid var(--who); outline-offset: calc(-1 * var(--bw)); }
 .msg[class*='look-s'] .bubble:not(.sticker) { border-radius: var(--corners); }
-.lookdemo { display: flex; flex-direction: column; padding: 4px 0 2px; }
+.msgs.tinted, .lookdemo.tinted { background: color-mix(in srgb, var(--who) 9%, var(--card)); }
+/* Light: over the white panel, so names and muted text keep 4.5:1 on every tint. */
+@media (prefers-color-scheme: light) { .msgs.tinted, .lookdemo.tinted { background: color-mix(in srgb, var(--who) 9%, var(--panel)); } }
+.lookdemo { display: flex; flex-direction: column; margin-top: 8px; padding: 10px 12px; border: var(--bw) solid var(--line); border-radius: var(--radius); }
 .lookdemo .mname { margin-left: 0; }
 .lookdemo .msg:first-child { margin-top: 0; }
 .lookpick button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }

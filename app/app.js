@@ -7554,7 +7554,7 @@ function chatView(r, e = null) {
         h('button', { class: 'ghost', title: T('Neponúkať znova'), onclick: () => dismissHint(r.id, hint.id) }, T('Nie'))) : null,
       call ? h('button', { class: 'callbtn', type: 'button', title: callWhere(call.network), 'aria-label': callWhere(call.network), onclick: () => openCall(r) }, icon('phone')) : null,
       h('button', { class: 'more', title: T('Možnosti'), onclick: (ev) => openMenu(ev, entryOf(r.id)) }, '⋯')),
-    h('div', { class: 'msgs', 'data-scroll': 'chat', onscroll: (ev) => { chatAwayCheck(ev.target); if (ev.target.scrollTop < 300) chatNearTop(r); } },
+    h('div', { class: `msgs${chatTint(r)}`, 'data-scroll': 'chat', onscroll: (ev) => { chatAwayCheck(ev.target); if (ev.target.scrollTop < 300) chatNearTop(r); } },
       from > 0 ? h('div', { class: 'cstart' }) : done ? chatIntro(r, app, group) : h('div', { class: 'cstart' }, t.parts.some((x) => x.loading) ? T('Načítavam staršie správy…') : ''),
       items,
       heldBar(r, held === m.held ? m : { held }),
@@ -9321,6 +9321,7 @@ function menuView(o) {
       room && e.key === selKey() && !dmPartner(room) && joinedPeople(room).length
         ? item(icon('users'), T('Členovia'), null, () => openMembers(room, document.querySelector('[data-members="head"]'), false, true)) : null,
       room && !room.archiveOnly ? item(icon('label'), T('Prezývka…'), null, () => openNick(e)) : null,
+      room ? item(icon('fill'), T('Farba chatu…'), null, () => openChatLook(e)) : null,
       personChat(e) ? item(icon('user'), T('Profil'), null, () => openProfile(e)) : null],
     // Merged chats: one more of the person's chats, or apart again.
     [room && canMerge(room) ? item(icon('link'), T('Spojiť s…'), null, () => openMergePick(room)) : null,
@@ -9818,7 +9819,7 @@ function overlayView() {
   // chats), its results follow in a quiet moment, so new data never holds up typing.
   const live = o.kind === 'search' && document.querySelector('#app > .veil.search');
   if (live?._o === o) { if (!o.base || !sameSig(o.base.sig, searchSig())) searchRedrawSoon(o); return live; }
-  const body = o.kind === 'search' ? searchView(o) : o.kind === 'new' ? newChatView(o) : o.kind === 'remind' ? remindView(o) : o.kind === 'stashask' ? stashAskView(o)
+  const body = o.kind === 'search' ? searchView(o) : o.kind === 'new' ? newChatView(o) : o.kind === 'remind' ? remindView(o) : o.kind === 'chatlook' ? chatLookView(o) : o.kind === 'stashask' ? stashAskView(o)
     : o.kind === 'gif' ? gifView(o) : o.kind === 'emoji' ? emojiView(o) : o.kind === 'later' ? laterView(o) : o.kind === 'tools' ? toolsView(o) : o.kind === 'merge' ? mergePickView(o) : o.kind === 'relay' ? relayPickView(o) : o.kind === 'forward' ? forwardPickView(o) : o.kind === 'nick' ? nickView(o)
     : [h('div', { class: 'rsec' }, T('Klávesové skratky')), h('div', { class: 'results keys', ...listScroll(o) }, SHORTCUTS.map(([k, label]) => h('div', { class: 'krow' }, h('kbd', {}, k), label)))];
   const veil = h('div', { class: `veil${o.kind === 'search' || o.kind === 'tools' || o.kind === 'merge' || o.kind === 'relay' || o.kind === 'forward' ? ' search' : ''}`, onclick: (e) => onVeil(e) && close() }, h('div', { class: `cmd ${o.kind}`, onclick: (e) => e.stopPropagation() },
@@ -12274,11 +12275,13 @@ function batchSettings() {
   ];
 }
 
-// Settings → Správy → Ľudia v chate: everyone's messages look alike (the default), or each person is told apart by
-// a colour of the palette (their name and the bubble's edge), with „Farba a tvar“ also by the bubble's corners. A
-// person's look comes from their id, a merged chat's from its group (one person, one look), so every device shows the
-// same; in a group two people get different looks while there are free ones. A look picked in the profile wins and
-// shows in every mode. Account data: { mode?: 'color' | 'both', people: { [user id | merge:<id>]: { color?, shape? } } }.
+// Settings → Správy → Vzhľad chatov: all chats alike (the default), or each chat its own colour of the palette, shown
+// as a faint tint of its messages' background, with „Farba a tvar“ also each person's bubble corners. A one-to-one
+// chat's colour is its person's: a merged chat is one person with one colour, and in a group that person's name and
+// bubble edge wear the colour of their chat with Karchi; the others in the group take free colours. Colours come
+// from the chat's or person's id, so every device shows the same. A colour picked in the chat's menu (Farba chatu…)
+// or a person's profile wins and shows in every mode.
+// Account data: { mode?: 'color' | 'both', people: { [user id | merge:<id> | group room id]: { color?, shape? } } }.
 const LOOK = 'sk.karchi.people.look';
 const LOOK_MODES = [['same', T('Rovnako')], ['color', T('Farba')], ['both', T('Farba a tvar')]];
 const LOOK_COLORS = [T('Červená'), T('Žltá'), T('Zelená'), T('Modrá')]; // .look-c0… in app.css
@@ -12289,46 +12292,67 @@ function saveLook(data) {
   putAccount(LOOK, data).catch(() => alert(T('Nastavenie sa neuložilo.')));
   render();
 }
-let lookKeys = { idx: null, map: new Map() };
-/** Whose look a sender wears: their merged chat's, else their own. */
-function lookKey(user) {
-  const idx = mergeIndex();
-  if (lookKeys.idx !== idx) {
-    const map = new Map();
-    for (const [id, g] of idx) { const p = dmPartner(S.rooms.get(id)); if (p) map.set(p[0], mergeKey(g)); }
-    lookKeys = { idx, map };
-  }
-  return lookKeys.map.get(user) || user;
+/** Picks (or with null fields clears) the look of one key. */
+function setLook(key, patch) {
+  const data = lookData();
+  const next = { ...(data.people?.[key] || {}), ...patch };
+  for (const k of Object.keys(next)) if (next[k] == null) delete next[k];
+  const people = { ...(data.people || {}) };
+  if (Object.keys(next).length) people[key] = next; else delete people[key];
+  saveLook({ ...data, people });
 }
+let lookKeys = { idx: null, size: -1, map: new Map(), dm: new Set() };
+function lookIndex() {
+  const idx = mergeIndex();
+  if (lookKeys.idx !== idx || lookKeys.size !== S.rooms.size) {
+    const map = new Map();
+    const dm = new Set();
+    for (const r of S.rooms.values()) {
+      const p = !r.archiveOnly && isChat(r) && dmPartner(r);
+      if (!p) continue;
+      dm.add(p[0]);
+      const g = idx.get(r.id);
+      if (g) map.set(p[0], mergeKey(g));
+    }
+    lookKeys = { idx, size: S.rooms.size, map, dm };
+  }
+  return lookKeys;
+}
+/** Whose look a sender wears: their merged chat's, else their own. */
+const lookKey = (user) => lookIndex().map.get(user) || user;
+/** The key of a chat's colour: its person's in a one-to-one chat, the room's in a group. */
+const chatLookKey = (r) => { const p = dmPartner(r); return p ? lookKey(p[0]) : r.id; };
 const lookHash = (key) => { let x = 2166136261; for (let i = 0; i < key.length; i++) x = Math.imul(x ^ key.charCodeAt(i), 16777619); return x >>> 0; };
-const lookMemo = new Map(); // room id -> { data, idx, version, size, looks: Map(user -> class names) }
 const lookSlots = () => (lookMode() === 'both' ? LOOK_COLORS.length * LOOK_SHAPES.length : lookMode() === 'color' ? LOOK_COLORS.length : 0);
-/** A person's own look: what Karchi picked, the rest from their id (colour and shape only where the mode shows them). */
-function lookOwn(id) {
-  const p = lookData().people?.[lookKey(id)] || {};
+/** The look of a key: what Karchi picked, the rest from the key (colour and shape only where the mode shows them). */
+function lookOf(key) {
+  const p = lookData().people?.[key] || {};
   const n = lookSlots();
-  const s = n ? lookHash(lookKey(id)) % n : 0;
+  const s = n ? lookHash(key) % n : 0;
   return { color: p.color ?? (n ? s % LOOK_COLORS.length : null), shape: p.shape ?? (lookMode() === 'both' ? Math.floor(s / LOOK_COLORS.length) : null), pickedColor: p.color != null, pickedShape: p.shape != null };
 }
+/** The classes of a chat's message area: its tint, none while chats look alike. */
+const chatTint = (r) => { const c = lookOf(chatLookKey(r)).color; return c == null ? '' : ` tinted look-c${c}`; };
 const lookClasses = (l) => `${l.color != null ? ` tinted look-c${l.color}` : ''}${l.shape ? ` look-s${l.shape}` : ''}`;
+const lookMemo = new Map(); // room id -> { data, keys, version, size, looks: Map(user -> class names) }
 /** The classes of a person's look in a room ('' for Karchi and while all look alike). */
 function lookClass(r, user) {
   if (user === S.userId) return '';
   const data = lookData();
-  const idx = mergeIndex();
+  const keys = lookIndex();
   let memo = lookMemo.get(r.id);
-  if (!memo || memo.data !== data || memo.idx !== idx || memo.version !== r.version || memo.size !== r.members.size) {
-    memo = { data, idx, version: r.version, size: r.members.size, looks: roomLooks(r) };
+  if (!memo || memo.data !== data || memo.keys !== keys || memo.version !== r.version || memo.size !== r.members.size) {
+    memo = { data, keys, version: r.version, size: r.members.size, looks: roomLooks(r) };
     lookMemo.set(r.id, memo);
   }
-  if (!memo.looks.has(user)) memo.looks.set(user, lookClasses(lookOwn(user)));
+  if (!memo.looks.has(user)) memo.looks.set(user, lookClasses(lookOf(lookKey(user))));
   return memo.looks.get(user);
 }
-/** The looks of a group's people. Only who is in it now (bridge bots too: they write) shares them out, by id: each
- *  takes their own, or the next free one when someone has it, a free colour before a free shape (shapes tell apart
- *  only those the colours cannot); a picked colour or shape never moves.
- *  Someone who left keeps their own. So one person may look different in a group than in their own chat; a
- *  one-to-one chat and a group fuller than the looks keep everyone's own. */
+/** The looks of a group's people now in it (bridge bots too: they write). Who has a chat with Karchi wears its
+ *  colour, as does one he picked a colour for; with „Farba a tvar“ two of the same colour get different shapes when
+ *  one is free. The others take, by id, their own look or the next free one, a free colour before a free shape
+ *  (shapes tell apart only those the colours cannot); a picked shape stays. With four colours two people with chats
+ *  may share one. Someone who left keeps their own; a group fuller than the looks keeps everyone's own. */
 function roomLooks(r) {
   const looks = new Map();
   const n = lookSlots();
@@ -12336,21 +12360,22 @@ function roomLooks(r) {
   const both = lookMode() === 'both';
   const joined = [...r.members].filter(([id, m]) => m.membership === 'join' && id !== S.userId).map(([id]) => id).sort();
   if (!n || dmPartner(r) || joined.length > n) return looks;
-  const all = joined.map((id) => [id, lookOwn(id)]);
+  const { dm } = lookIndex();
+  const all = joined.map((id) => { const l = lookOf(lookKey(id)); l.fixedColor = l.pickedColor || dm.has(id); return [id, l]; });
   const slotOf = (l) => (both ? l.color + C * l.shape : l.color);
   const taken = new Set();
   const colors = new Set();
   const take = (l) => { taken.add(slotOf(l)); colors.add(l.color); };
   const free = (from, ok) => { for (let i = 0; i < n; i++) { const x = (from + i) % n; if (!taken.has(x) && ok(x)) return x; } return -1; };
-  // What Karchi picked goes first, most picked first: a whole look, then a colour with any free shape, then a shape
-  // with a free colour; the automatic ones share what is left.
+  // A fixed colour (picked, or a chat's) goes first, most fixed first: a whole look, then a colour with any free
+  // shape, then a picked shape with a free colour; the automatic ones share what is left.
   const place = (l, fits) => {
     let x = free(slotOf(l), (y) => fits(y) && !colors.has(y % C));
     if (x < 0) x = free(slotOf(l), fits);
     if (x >= 0) { l.color = x % C; if (both) l.shape = Math.floor(x / C); }
     take(l);
   };
-  const rank = (l) => (l.pickedColor ? (l.pickedShape || !both ? 0 : 1) : l.pickedShape && both ? 2 : 3);
+  const rank = (l) => (l.fixedColor ? (l.pickedShape || !both ? 0 : 1) : l.pickedShape && both ? 2 : 3);
   for (const [, l] of all.filter(([, x]) => rank(x) === 0)) take(l);
   for (const [, l] of all.filter(([, x]) => rank(x) === 1)) place(l, (y) => y % C === l.color);
   for (const [, l] of all.filter(([, x]) => rank(x) === 2)) place(l, (y) => Math.floor(y / C) === l.shape);
@@ -12378,47 +12403,63 @@ function roomLooks(r) {
   }
   return looks;
 }
-/** Settings → Správy: how people's messages look. */
+/** Settings → Správy: how chats and people look. */
 function lookSettings() {
   const mode = lookMode();
-  const demo = [['Ema', T('Ideš zajtra?')], ['Peter', T('Jasné, o piatej.')], ['Lucia', T('Ja prídem neskôr.')]];
+  const demo = [['Ema', T('Ideš zajtra?')], ['Peter', T('Jasné, o piatej.')], ['', T('Ja prídem neskôr.')]];
   return [
-    h('h3', {}, T('Ľudia v chate')),
-    h('div', { class: 'seg', role: 'radiogroup', 'aria-label': T('Ľudia v chate') }, LOOK_MODES.map(([id, label]) =>
+    h('h3', {}, T('Vzhľad chatov')),
+    h('div', { class: 'seg', role: 'radiogroup', 'aria-label': T('Vzhľad chatov') }, LOOK_MODES.map(([id, label]) =>
       h('button', { type: 'button', role: 'radio', 'aria-checked': String(mode === id), class: mode === id ? 'on' : '', onclick: () => mode !== id && saveLook({ ...lookData(), mode: id === 'same' ? undefined : id }) }, label))),
     h('p', { class: 'hint' }, {
-      same: T('Správy všetkých vyzerajú rovnako. Jednému človeku dáš farbu v jeho profile.'),
-      color: T('Každý má svoju farbu mena a okraja správy, na každom zariadení rovnakú. V skupine sa farby neopakujú, kým sú voľné.'),
-      both: T('Každý má svoju farbu aj tvar rohov správy, takže sa rozoznajú aj vo väčšej skupine.'),
+      same: T('Všetky chaty a správy vyzerajú rovnako. Jednému chatu dáš farbu v jeho menu (Farba chatu…).'),
+      color: T('Každý chat má jemne zafarbené pozadie, na každom zariadení rovnaké. Človek má v skupine farbu svojho chatu s tebou, ostatní voľnú.'),
+      both: T('K farbe má každý človek aj svoj tvar rohov správy, takže sa rozoznajú aj vo väčšej skupine.'),
     }[mode]),
-    h('div', { class: 'lookdemo', 'aria-hidden': 'true' }, demo.map(([name, text], i) => {
-      const look = mode === 'same' ? '' : ` tinted look-c${i}${mode === 'both' && i ? ` look-s${i}` : ''}`;
-      return h('div', { class: `msg${look}`, 'data-key': `${mode}${i}` }, h('div', { class: 'mname' }, name), h('div', { class: 'mrow' }, h('div', { class: 'bubble' }, text)));
+    h('div', { class: `lookdemo${mode === 'same' ? '' : ' tinted look-c3'}`, 'aria-hidden': 'true' }, demo.map(([name, text], i) => {
+      const look = mode === 'same' || !name ? '' : ` tinted look-c${i}${mode === 'both' && i ? ` look-s${i}` : ''}`;
+      return h('div', { class: `msg${name ? '' : ' mine'}${look}`, 'data-key': `${mode}${i}` }, name ? h('div', { class: 'mname' }, name) : null, h('div', { class: 'mrow' }, h('div', { class: 'bubble' }, text)));
     })),
   ];
 }
-/** The profile's „V správach“: Karchi picks this person's colour and shape himself, or leaves them automatic. */
+/** The profile's „Vzhľad“: Karchi picks this person's colour (their chat's too) and shape, or leaves them automatic. */
 function lookPicker(user) {
   const key = lookKey(user);
-  const data = lookData();
-  const mine = data.people?.[key] || {};
-  const set = (patch) => {
-    const next = { ...mine, ...patch };
-    for (const k of Object.keys(next)) if (next[k] == null) delete next[k];
-    const people = { ...(data.people || {}) };
-    if (Object.keys(next).length) people[key] = next; else delete people[key];
-    saveLook({ ...data, people });
-  };
+  const mine = lookData().people?.[key] || {};
   const row = (label, field, names, mark) => h('div', { class: 'seg lookpick', role: 'radiogroup', 'aria-label': label },
     [null, ...names.keys()].map((v) => h('button', {
       type: 'button', role: 'radio', 'aria-checked': String((mine[field] ?? null) === v), class: (mine[field] ?? null) === v ? 'on' : '',
-      onclick: () => set({ [field]: v }),
+      onclick: () => setLook(key, { [field]: v }),
     }, v == null ? T('Automaticky') : [h('i', { class: mark(v) }), names[v]])));
   return h('section', { class: 'prof-sec', 'data-key': 'look' },
-    h('h3', {}, T('V správach')),
+    h('h3', {}, T('Vzhľad')),
     row(T('Farba'), 'color', LOOK_COLORS, (v) => `swatch look-c${v}`),
     row(T('Tvar'), 'shape', LOOK_SHAPES, (v) => `swatch shape look-s${v}`),
-    h('p', { class: 'muted' }, lookMode() === 'same' && mine.color == null ? T('Vybraná farba sa ukáže, aj keď ostatní vyzerajú rovnako (Nastavenia → Správy → Ľudia v chate).') : T('Platí na každom zariadení.')));
+    h('p', { class: 'muted' }, T('Farba platí pre váš chat aj pre jeho správy v skupinách, na každom zariadení. Vybraná sa ukáže, aj keď ostatné vyzerajú rovnako.')));
+}
+/** Chat menu → Farba chatu…: the chat's colour, by number key or arrows. */
+function openChatLook(e) {
+  if (e?.room) openOverlay('chatlook', { key: e.key, index: 0 });
+}
+function chatLookView(o) {
+  const e = entryOf(o.key);
+  if (!e?.room) return null;
+  const key = chatLookKey(e.room);
+  const now = lookData().people?.[key]?.color ?? null;
+  const choices = [[T('Automaticky'), null], ...LOOK_COLORS.map((name, i) => [name, i])];
+  const pick = (v) => { S.overlay = null; setLook(key, { color: v }); };
+  o.flat = choices.map(([, v]) => () => pick(v));
+  return [
+    h('div', { class: 'rsec' }, T`Farba chatu: ${e.title || ''}`),
+    h('div', { class: 'results', tabindex: -1, 'data-root': '__overlay', onkeydown: (ev) => {
+      const n = Number(ev.key);
+      if (n >= 1 && n <= o.flat.length) { ev.preventDefault(); o.flat[n - 1](); }
+      else if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') { ev.preventDefault(); o.index = (o.index + (ev.key === 'ArrowDown' ? 1 : -1) + o.flat.length) % o.flat.length; render(); }
+      else if (ev.key === 'Enter') { ev.preventDefault(); o.flat[o.index](); }
+    } },
+    choices.map(([label, v], i) => resultRow(o, null, i, [h('kbd', { class: 'num' }, String(i + 1)), v == null ? null : h('i', { class: `swatch look-c${v}` }),
+      h('div', { class: 'rmeta' }, h('b', {}, label)), h('time', {}, now === v ? T('vybraná') : '')]))),
+  ];
 }
 
 /** The network of a person: of a chat they are in. */
