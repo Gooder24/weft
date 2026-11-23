@@ -11168,7 +11168,12 @@ function calSubmit(scope = null) {
   const old = calEvent(ed.from, ed.uid);
   if (!old) return fail(T('Udalosť medzitým zmizla.'));
   if (!ed.recurring) return calSave(place({ ...old, ...calFields(ed, old), rrule: calRuleOf(ed, start) }));
-  if (!scope) { ed.asking = 'save'; return render(); }
+  if (!scope) { // the keys go to the answer, also after Enter in a field
+    ed.asking = 'save';
+    render();
+    calEditBox()?.querySelector('.calask button')?.focus();
+    return;
+  }
   const at = ed.at;
   const days = Cal.dayNumber(start) - Cal.dayNumber(at);
   if (scope === 'one') {
