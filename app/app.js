@@ -10069,10 +10069,12 @@ function calSetShown(id, on) {
   putAccount(CAL_PREFS, { ...prefs, shown: { ...prefs.shown, [id]: on } }).catch(() => alert(T('Nastavenie sa neuložilo.')));
   render();
 }
-/** Without the lessons of timetable subjects turned off in Settings → Kalendár: they are not drawn and do not remind. */
+/** Without cancelled lessons and the lessons of timetable subjects turned off in Settings → Kalendár: they are not
+ *  drawn and do not remind. */
 function calSubjectsShown(items) {
   const off = new Set(S.account[CAL_PREFS]?.hiddenSubjects || []);
-  return off.size ? items.filter((i) => !(i.cal.id === TIMETABLE_CAL && !i.event.allDay && off.has(Cal.titleKey(i.event.title || '')))) : items;
+  return items.filter((i) => !(i.cal.id === TIMETABLE_CAL && !i.event.allDay
+    && (Cal.lessonChange(i.event)?.kind === 'cancelled' || off.has(Cal.titleKey(i.event.title || '')))));
 }
 const calExpand = (from, to) => calSubjectsShown(Cal.expand(cal.doc, from, to, calShown));
 
@@ -10378,9 +10380,9 @@ function calGrid(days) {
         const height = Math.max(0, (it.end - it.start) / span * 100);
         const change = it.whole.managed ? Cal.lessonChange(it.whole.event) : null;
         const sub = change?.who && change.kind === 'substitution' ? change : null;
-        const note = sub ? T`supluje ${sub.who}` : change?.room && change.kind !== 'cancelled' ? T`učebňa ${change.room}` : '';
+        const note = sub ? T`supluje ${sub.who}` : change?.room ? T`učebňa ${change.room}` : '';
         return h('button', {
-          class: `calev${it.whole.managed ? ' managed' : ''}${change?.kind === 'cancelled' ? ' cancelled' : ''}`, title: `${it.whole.event.title}\n${calWhen(it.whole)}${it.whole.event.location ? `\n${it.whole.event.location}` : ''}${sub ? `\n${T`Supluje ${sub.who} namiesto ${sub.instead}`}` : ''}${change?.room ? `\n${T`Učebňa ${change.room} namiesto ${change.roomBefore}`}` : ''}${it.whole.recurring ? T`\nOpakuje sa ${calRepeatText(it.whole.event.rrule, Date.parse(it.whole.event.start))}` : ''}`,
+          class: `calev${it.whole.managed ? ' managed' : ''}`, title: `${it.whole.event.title}\n${calWhen(it.whole)}${it.whole.event.location ? `\n${it.whole.event.location}` : ''}${sub ? `\n${T`Supluje ${sub.who} namiesto ${sub.instead}`}` : ''}${change?.room ? `\n${T`Učebňa ${change.room} namiesto ${change.roomBefore}`}` : ''}${it.whole.recurring ? T`\nOpakuje sa ${calRepeatText(it.whole.event.rrule, Date.parse(it.whole.event.start))}` : ''}`,
           style: { top: `${top}%`, height: `calc(${height}% - 1px)`, left: `calc(${(it.col / it.cols) * 100}% + 1px)`, width: `calc(${100 / it.cols}% - 3px)`, ...calChipStyle(it.whole) },
           onclick: (e) => { e.stopPropagation(); calOpen(it.whole); },
           ...calDraggable(it.whole, (e) => { const box = e.currentTarget.getBoundingClientRect(); return { ms: it.start - it.whole.start + (e.clientY - box.top) / box.height * (it.end - it.start) }; }),

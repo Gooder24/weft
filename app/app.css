@@ -913,8 +913,6 @@ a.rnote.rlink { color: var(--link); text-decoration: none; }
 .calev b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 .calev small { opacity: .8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 .calev.managed, .calchip.managed { opacity: .85; }
-.calev.cancelled { opacity: .5; }
-.calev.cancelled b { text-decoration: line-through; }
 .calev .calsub { opacity: 1; font-weight: 600; }
 .calnow { position: absolute; left: 0; right: 0; height: 2px; background: var(--message); pointer-events: none; }
 .calchip { display: block; width: 100%; padding: 1px 6px; border: 0; border-radius: 5px; font: inherit; font-size: 12px; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
@@ -1030,7 +1028,6 @@ a.rnote.rlink { color: var(--link); text-decoration: none; }
 .home .calev b { font-weight: normal; white-space: normal; overflow-wrap: anywhere; }
 .home .calev small { font: inherit; opacity: 1; flex-shrink: 0; }
 .home .calev.managed, .home .calchip.managed { opacity: 1; }
-.home .calev.cancelled { opacity: .5; }
 .home .calhours span { font-size: 11px; }
 .daily-feed { padding-top: 0; max-width: 1000px; margin: 0 auto; }
 @media (max-width: 700px) {
