@@ -1336,6 +1336,7 @@ class Account:
         # Teachers Karchi can start a message to, from the school's data at the last poll.
         self.teachers: list[dict] = []
         self.grades_at = 0.0
+        self.grade_marks: set[str] | None = None  # timeline ids of the grade notices at the last poll
         # nudge_timetable: a refresh on its way, the notice mark it finished well, and tries per mark.
         self.timetable_busy = False
         self.timetable_done: set[str] | None = None
@@ -1459,6 +1460,11 @@ class Account:
             log("matrix error:", err)
             return
         log(f"poll ok: {len(items)} source items, posted {posted} messages, {noticed} notices")
+        marks = {str(i.get("timelineid")) for i in items if i.get("typ") == "znamka"}
+        if self.grade_marks is not None and marks - self.grade_marks:
+            self.grades_at = 0.0  # a new grade: Ctrl+G shows it now, not up to GRADES_EVERY later
+            log("new grade: reading the grade book now")
+        self.grade_marks = marks
         self.sync_grades(edu, [row[0] for row in rooms.db.execute("SELECT mxid FROM ghosts")], rooms.db)
         try:
             people = {**school_people(edu), "groups": (self.facts or {}).get("groups") or []}
