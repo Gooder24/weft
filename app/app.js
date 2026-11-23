@@ -6493,7 +6493,8 @@ function holdSpace(o, video) {
     video.playbackRate = 2;
     video.play().catch(() => {});
     o.fast = true;
-    render();
+    // Drawing the mark rebuilds the viewer, which would take the video out of full screen: there it goes without.
+    if (!document.fullscreenElement) render();
   }, 300) };
 }
 /** Space let go: a short press plays or pauses, after holding the video goes back to its speed and plays on.
@@ -6505,7 +6506,7 @@ function viewerSpaceUp(e, toggle = true) {
   clearTimeout(timer);
   e?.preventDefault();
   if (rate) video.playbackRate = rate;
-  if (o.fast) { o.fast = false; render(); }
+  if (o.fast) { o.fast = false; if (!document.fullscreenElement) render(); }
   if (!rate && toggle && S.overlay === o && video.isConnected) { if (video.paused) video.play().catch(() => {}); else video.pause(); }
 }
 document.addEventListener('keyup', (e) => { if (e.key === ' ') viewerSpaceUp(e); });
