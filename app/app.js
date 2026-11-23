@@ -12945,6 +12945,9 @@ function render() {
   const schoolFocus = active?.closest('.detail')
     ? (active.dataset.eduAction ? { action: active.dataset.eduAction } : active.matches('.back') ? { back: true } : null) : null;
   const typing = active?.dataset?.root ? { root: active.dataset.root, at: active.selectionStart, end: active.selectionEnd } : null;
+  // Settings is drawn whole: its section tab or a control with data-focus keeps the keys through any render (a sync too).
+  const setFocus = active?.closest('.setpane') && active.dataset.focus ? `.setpane [data-focus="${CSS.escape(active.dataset.focus)}"]`
+    : active?.closest('.setnav') && active.dataset.tab ? `.setnav [data-tab="${CSS.escape(active.dataset.tab)}"]` : null;
   const same = S.shownThread === S.selected;
   const scroll = {};
   const left = {};
@@ -13057,6 +13060,8 @@ function render() {
     const target = schoolFocus.back ? root.querySelector('.detail .back')
       : root.querySelector(`[data-edu-action="${CSS.escape(schoolFocus.action)}"]`);
     target?.focus({ preventScroll: true });
+  } else if (setFocus) {
+    root.querySelector(setFocus)?.focus({ preventScroll: true });
   } else if (S.focusComposer) {
     const box = root.querySelector('.ccompose textarea, .compose textarea');
     if (box) {
