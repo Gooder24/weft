@@ -10816,7 +10816,7 @@ const calOnDay = (day) => (e, d) => { const s = new Date(d.i.start); return new 
 
 const calNewCal = { name: '', color: '', asking: null }; // the new calendar being named, and the one whose removal is asked
 
-/** Why a calendar cannot be removed here (a program fills it and would fail or bring it back), else ''. Same rule as kalendar.py. */
+/** Why a calendar cannot be removed here (a program fills it and would fail or bring it back), else ''. Same rule as core.ts. */
 function calKeep(c) {
   if (c.id === TIMETABLE_CAL) return T('plní ho rozvrh');
   if (Cal.isSynced({ events: [], ...c })) return T('plní ho synchronizácia');

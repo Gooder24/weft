@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
 import postgres from "postgres";
-import { applyOps, merge, OpError, putTimetable, utcMs, version, type Lesson, type Obj } from "./core.ts";
+import { applyOps, empty, merge, OpError, putTimetable, utcMs, version, type Lesson, type Obj } from "./core.ts";
 
 const cal = (id: string, events: Obj[], extra: Obj = {}): Obj => ({ id, name: id, ...extra, events });
 const doc = (...calendars: Obj[]): Obj => ({ version: 1, calendars });
@@ -56,6 +56,23 @@ test("ops: a put keeps fields Weft does not send, synced events are refused, err
   assert.throws(() => applyOps(d, [{ op: "del", cal: "gmail-x", uid: "m@gmail" }]), new OpError("this event belongs to a sync program"));
   assert.throws(() => applyOps(d, [{ op: "move", cal: "home", uid: "a" }]), new OpError("unknown op 'move'"));
   assert.throws(() => applyOps(d, [{ op: "del", cal: "nope", uid: "a" }]), new OpError("no calendar 'nope'"));
+});
+
+test("calendars: added once, deleted with their events, except the ones a program fills", () => {
+  const d = doc(cal("home", [ev("a")]), cal("lifeos-edupage", [ev("2026-11-20-1@lifeos")]), cal("t", [], { name: " Testy " }), cal("gmail-x", [ev("m@gmail")]));
+  applyOps(d, [{ op: "addcal", cal: "kx-1", name: " Skaut ", color: "#7fb3ff" }, { op: "put", cal: "kx-1", event: ev("v") }]);
+  assert.deepEqual((d.calendars as Obj[]).at(-1), { id: "kx-1", name: "Skaut", color: "#7fb3ff", customColor: "#7fb3ff", visible: true, events: [{ description: "", notes: "", location: "", allDay: false, rrule: null, exdates: [], alarmMinutes: "", ...ev("v") }] });
+  const before = structuredClone(d);
+  applyOps(d, [{ op: "addcal", cal: "kx-1", name: "Iné", color: "#000000" }, { op: "delcal", cal: "nope" }]);
+  assert.deepEqual(d, before, "sent again, nothing changes");
+  applyOps(d, [{ op: "delcal", cal: "home" }]);
+  assert.deepEqual((d.calendars as Obj[]).map((c) => c.id), ["lifeos-edupage", "t", "gmail-x", "kx-1"]);
+  assert.throws(() => applyOps(d, [{ op: "delcal", cal: "lifeos-edupage" }]), new OpError("this calendar belongs to a sync program"));
+  assert.throws(() => applyOps(d, [{ op: "delcal", cal: "gmail-x" }]), new OpError("this calendar belongs to a sync program"));
+  assert.throws(() => applyOps(d, [{ op: "delcal", cal: "t" }]), new OpError("the EduPage bridge writes tests into this calendar"));
+  assert.throws(() => applyOps(d, [{ op: "addcal", cal: "n", name: " ", color: "#ffffff" }]), new OpError("a calendar needs a name"));
+  assert.throws(() => applyOps(d, [{ op: "addcal", cal: "n", name: "N", color: "red" }]), new OpError("color must be #rrggbb"));
+  assert.deepEqual(applyOps(empty(), [{ op: "addcal", cal: "k", name: "Prvý", color: "#ffffff" }]).schema, 2);
 });
 
 test("the version is the one the Python service gave the same doc", () => {
@@ -137,6 +154,12 @@ test("the service on Postgres: takes over the file, serves, saves, and one write
     const saved = await store.read();
     assert.equal(events(saved!, "home")?.length, 21);
 
+    // Calendars added and deleted over HTTP.
+    const ops = (list: unknown[]) => call("/ops", { method: "POST", body: JSON.stringify({ ops: list }) });
+    assert.equal((await ops([{ op: "addcal", cal: "kx-new", name: "Skaut", color: "#7fb3ff" }])).status, 200);
+    assert.deepEqual(((await store.read())!.calendars as Obj[]).map((c) => c.id), ["home", "kx-new"]);
+    assert.equal((await ops([{ op: "delcal", cal: "kx-new" }])).status, 200);
+
     // x270's merge through the CLI, and the way back to a file.
     const run = (args: string[], input: string) => {
       const child = promisify(execFile)("node", [join(import.meta.dirname, "kalendar.ts"), ...args], { env: { ...process.env, DATABASE_URL: DB } });
@@ -151,6 +174,32 @@ test("the service on Postgres: takes over the file, serves, saves, and one write
   } finally {
     server?.close();
     rmSync(dir, { recursive: true, force: true });
+    await store.close();
+    await admin.end();
+    hs.close();
+  }
+});
+
+test("the service with no calendars at all: the first change starts them", { skip: !DB && "TEST_DATABASE_URL not set" }, async () => {
+  const admin = postgres(DB!, { onnotice: () => {} });
+  await admin`drop table if exists calendar_master`;
+  const hs = await fakeHomeserver();
+  Object.assign(process.env, { HS: `http://127.0.0.1:${portOf(hs)}`, OWNER });
+  const { serve } = await import("./kalendar.ts");
+  const { openStore } = await import("./store.ts");
+  const store = openStore(DB!);
+  let server: Server | undefined;
+  try {
+    await store.setup(join(tmpdir(), "no-such-calendars.json"));
+    server = await serve(store, 0);
+    const base = `http://127.0.0.1:${portOf(server)}/_calendar`;
+    const auth = { Authorization: "Bearer good" };
+    assert.deepEqual(await (await fetch(base + "/doc", { headers: auth })).json(), { version: "", doc: null });
+    const r = await fetch(base + "/ops", { method: "POST", headers: auth, body: JSON.stringify({ ops: [{ op: "addcal", cal: "k", name: "Prvý", color: "#ffffff" }] }) });
+    assert.equal(r.status, 200);
+    assert.deepEqual(await store.read(), { schema: 2, calendars: [{ id: "k", name: "Prvý", color: "#ffffff", customColor: "#ffffff", visible: true, events: [] }] });
+  } finally {
+    server?.close();
     await store.close();
     await admin.end();
     hs.close();

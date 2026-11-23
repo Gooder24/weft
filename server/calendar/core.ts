@@ -243,12 +243,47 @@ const repr = (v: Json | undefined) => (typeof v === "string" ? `'${v}'` : text(v
 
 export class OpError extends Error {}
 
-/** Weft's edits into the doc (changed in place). Throws OpError on the first bad op, before anything is saved. */
+/** A calendars.json with nothing in it yet, in Kalendarix's current schema: Weft needs no Kalendarix to start one. */
+export const empty = (): Obj => ({ schema: 2, calendars: [] });
+
+const TESTS_NAME = "testy"; // the EduPage bridge finds the calendar it writes tests into by this name (TESTS_CALENDAR)
+
+/** Why a calendar may not be removed, or null: a program fills it and would fail or bring it back. */
+function undeletable(cal: Obj): string | null {
+  if (cal.id === TIMETABLE_CAL || list(cal.events).some((e) => isObj(e) && managed(e, cal.id as Json))) return "this calendar belongs to a sync program";
+  if (text((cal.name || "") as Json).trim().toLowerCase() === TESTS_NAME) return "the EduPage bridge writes tests into this calendar";
+  return null;
+}
+
+/** Weft's edits into the doc (changed in place). Throws OpError on the first bad op, before anything is saved.
+ * addcal of an id that is there and delcal of one that is not change nothing, so a batch sent again does no harm. */
 export function applyOps(doc: Obj, ops: Json): Obj {
   if (!Array.isArray(ops)) throw new OpError("ops must be a list");
   const cals = byKey(doc.calendars, "id");
   for (const op of ops) {
     if (!isObj(op)) throw new OpError("an op must be an object");
+    if (op.op === "addcal") {
+      const { cal: id, name, color } = op;
+      if (typeof id !== "string" || !id) throw new OpError("a calendar needs an id");
+      if (typeof name !== "string" || !name.trim()) throw new OpError("a calendar needs a name");
+      if (typeof color !== "string" || !/^#[0-9a-fA-F]{6}$/.test(color)) throw new OpError("color must be #rrggbb");
+      if (cals.has(id)) continue;
+      // Kalendarix's fields for a calendar of one's own; the colour it shows is customColor.
+      const fresh: Obj = { id, name: name.trim(), color, customColor: color, visible: true, events: [] };
+      if (!Array.isArray(doc.calendars)) doc.calendars = [];
+      doc.calendars.push(fresh);
+      cals.set(id, fresh);
+      continue;
+    }
+    if (op.op === "delcal") {
+      const cal = cals.get(keyOf(op.cal ?? null));
+      if (cal === undefined) continue;
+      const why = undeletable(cal);
+      if (why) throw new OpError(why);
+      doc.calendars = list(doc.calendars).filter((c) => c !== cal);
+      cals.delete(keyOf(cal.id as Json));
+      continue;
+    }
     const cal = cals.get(keyOf(op.cal ?? null));
     if (cal === undefined) throw new OpError(`no calendar ${repr(op.cal ?? null)}`);
     if (!Array.isArray(cal.events)) cal.events = [];

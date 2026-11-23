@@ -1,14 +1,15 @@
 // Weft's calendar on asus: the master copy of Kalendarix's calendars.json and the API Weft edits it through.
 //
-// The doc keeps Kalendarix's layout (docs/calendars-json.md in github.com/Gooder24/kalendarix), so the same data
+// The doc keeps Kalendarix's layout (docs/calendars-json.md in github.com/Gooder24/kalendarix-archive), so the same data
 // shows in Weft, in Kalendarix on x270 and in its desktop widget. It lives in Postgres (database "weft" on the local
 // socket, or DATABASE_URL); the first start takes over the calendars.json the Python service kept in CALENDAR_DATA.
 // Ways in:
 //
 //   HTTP on 127.0.0.1:29327 behind Caddy /_calendar/ (Karchi's Matrix token):
-//     GET  /_calendar/doc               -> {"version", "doc"}  (doc is null until a computer has sent its calendars)
+//     GET  /_calendar/doc               -> {"version", "doc"}  (doc is null until the first change or timetable round)
 //     GET  /_calendar/doc?have=<version> -> {"version", "same": true} when nothing changed since that version
-//     POST /_calendar/ops {"ops": [{"op": "put", "cal": id, "event": {...}} | {"op": "del", "cal": id, "uid": uid}]}
+//     POST /_calendar/ops {"ops": [{"op": "put", "cal": id, "event": {...}} | {"op": "del", "cal": id, "uid": uid}
+//                                  | {"op": "addcal", "cal": id, "name": text, "color": "#rrggbb"} | {"op": "delcal", "cal": id}]}
 //   CLI:
 //     node kalendar.ts merge < {"base": what it last wrote from here (or null), "local": its calendars.json}
 //       -> the merged file on stdout, which is now also the master (x270 runs it over ssh, see x270/). The computer
@@ -21,7 +22,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { applyOps, bratislavaToday, dump, isObj, merge, OpError, putTimetable, readLessons, same, version, type Json } from "./core.ts";
+import { applyOps, bratislavaToday, dump, empty, isObj, merge, OpError, putTimetable, readLessons, same, version, type Json } from "./core.ts";
 import { openStore, type Store } from "./store.ts";
 
 const env = process.env;
@@ -44,9 +45,9 @@ export async function mirrorTimetable(store: Store, url = TIMETABLE_URL) {
   const { events, fresh } = readLessons(await r.json());
   if (fresh === null) return { written: null, fresh }; // never read EduPage yet: an empty list says nothing
   const written = await store.update((doc) => {
-    if (doc === null) return { result: null }; // the first calendars come from x270
-    if (!putTimetable(doc, events, bratislavaToday())) return { result: null };
-    return { save: doc, result: events.length };
+    const next = doc ?? empty();
+    if (!putTimetable(next, events, bratislavaToday())) return { result: null };
+    return { save: next, result: events.length };
   });
   return { written, fresh };
 }
@@ -137,11 +138,9 @@ export function serve(store: Store, port = PORT) {
       const raw = isObj(input) ? input.ops : undefined;
       const ops = !raw || (isObj(raw) && !Object.keys(raw).length) ? [] : raw;
       const out = await store.update((doc) => {
-        if (doc === null) return { result: null };
-        const changed = applyOps(doc, ops);
+        const changed = applyOps(doc ?? empty(), ops);
         return { save: changed, result: changed };
       });
-      if (out === null) return send(res, 409, { error: "no calendars yet: x270 has not sent them" });
       send(res, 200, { version: version(out), doc: out });
     } catch (e) {
       if (e instanceof OpError) return send(res, 400, { error: e.message });
