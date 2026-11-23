@@ -4,8 +4,10 @@
 // storage) gives back a used one.
 import { T, LOCALE } from './i18n.js';
 import { icon } from './icons.js';
+/** Tiles drawn at once; „Zobraziť ďalšie“ adds as many again (sixty YouTube channels bring hundreds of videos). */
+const PAGE = 120;
 export function createFeed({ h, api, kv, refresh, offline, user, settingsPanel, schedule, close, isOpen = () => false, readingWindow, onWindow, windowsLeft }) {
-  const state = { doc: null, busy: false, error: '', open: null, addUrl: '', addName: '', reader: null, sel: null };
+  const state = { doc: null, busy: false, error: '', open: null, addUrl: '', addName: '', reader: null, sel: null, limit: PAGE };
   const media = new Map();
   let generation = 0;
   let flushing = null;
@@ -218,7 +220,7 @@ export function createFeed({ h, api, kv, refresh, offline, user, settingsPanel, 
   /** What a tile shows, loaded once it is in sight: avatars, the first pictures (a video's poster), a thumbnail. */
   function needed(item) {
     const pics = (role, max) => assets(item, role).slice(0, max).map(([a, n]) => (a.type === 'video' ? posterOf(item, a) : n)).filter((n) => n != null);
-    return [...pics('avatar', 1), ...pics('media', 4), ...pics('quote-avatar', 1), ...pics('quote', 1), ...pics('thumb', 1)];
+    return [...pics('avatar', 1), ...pics('media', 4), ...pics('quote-avatar', 1), ...pics('quote', 1)];
   }
   const logo = (c) => h('span', { class: `feed-logo feed-logo-${c}`, role: 'img', 'aria-label': catName(c) });
   function pic(item, n, cls, alt = '') {
@@ -226,14 +228,22 @@ export function createFeed({ h, api, kv, refresh, offline, user, settingsPanel, 
     return v?.url ? h('img', { class: cls, src: v.url, alt, decoding: 'async' }) : h('span', { class: `${cls} feed-ph`, 'aria-hidden': 'true' });
   }
   const hm2 = (t) => (t ? new Date(t).toLocaleTimeString(LOCALE, { hour: '2-digit', minute: '2-digit' }) : '');
-  /** A tile's time: only the hour today, „včera 23:21“ yesterday, the date before that. */
+  /** A tile's time, always to the minute: „16:00“ today, „včera 23:21“, „pi 20. 11. 16:40“ before that. */
   function when(t) {
     if (!t) return '';
     const d = new Date(t); const y = new Date(); y.setDate(y.getDate() - 1);
     if (d.toDateString() === new Date().toDateString()) return hm2(t);
     if (d.toDateString() === y.toDateString()) return T`včera ${hm2(t)}`;
-    return d.toLocaleDateString(LOCALE, { weekday: 'short', day: 'numeric', month: 'numeric' });
+    return `${d.toLocaleDateString(LOCALE, { weekday: 'short', day: 'numeric', month: 'numeric' })} ${hm2(t)}`;
   }
+  /** When a video came out, exactly: „22. 11. 2026 16:00“ (YouTube itself only says how long ago). */
+  const stamp = (t) => (t ? new Date(t).toLocaleString(LOCALE, { day: 'numeric', month: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '');
+  const views = (item) => (item.counts?.views != null ? T`${item.counts.views.toLocaleString(LOCALE)} zhliadnutí` : null);
+  /** A video's line under its title as YouTube's own list writes it (Karchi wanted it native): channel, when it came
+   *  out, views, Shorts. */
+  const videoMeta = (item, channel = true) => h('div', { class: 'feed-video-meta' },
+    // avoid-ai-design-ignore: SD4d
+    [channel ? item.author : null, stamp(item.at), views(item), item.short ? 'Shorts' : null].filter(Boolean).join(' · '));
   /** An article's text without the title it often repeats at its start. */
   const articleText = (item) => { const t = String(item.text || ''); return item.title && t.startsWith(item.title) ? t.slice(item.title.length).trim() : t; };
   // URLs in a post become links in the reader; the tile itself is one click target.
@@ -294,7 +304,13 @@ export function createFeed({ h, api, kv, refresh, offline, user, settingsPanel, 
   }
   const filterKey = () => `ep_feed_filter:${user()}`;
   const filter = () => (CATS.includes(localStorage.getItem(filterKey())) ? localStorage.getItem(filterKey()) : 'all');
-  function setFilter(c) { localStorage.setItem(filterKey(), c); state.reader = null; refresh(); }
+  function setFilter(c) { localStorage.setItem(filterKey(), c); state.reader = null; state.limit = PAGE; refresh(); }
+  /** YouTube's own list as one row a video: the title, then its line. */
+  function videoRow(item) {
+    return h('article', { class: `feed-tile feed-row${state.sel === item.id ? ' sel' : ''}`, tabindex: '0', 'data-feed-id': item.id, 'data-key': item.id,
+      'aria-label': `YouTube: ${item.title}`, onclick: (e) => { if (!e.target.closest('a')) openReader(item.id); }, onfocus: () => { state.sel = item.id; } },
+      logo('youtube'), h('div', {}, h('p', { class: 'feed-text feed-text-title' }, item.title), videoMeta(item)));
+  }
   let shown = [];
   /** Instagram's problem in one sentence, or '' when it reads fine. */
   function instagramProblem(doc) {
@@ -346,10 +362,10 @@ export function createFeed({ h, api, kv, refresh, offline, user, settingsPanel, 
     const big = (c === 'x' && !own.length && !item.quote && text.length <= 110) || (c === 'rss' && text.length <= 70);
     let body;
     if (c === 'x') body = [via(item), h('p', { class: `feed-text${big ? ' feed-text-big' : ''}`, style: { '--lines': String(own.length ? 4 : item.quote ? 7 : 14) } }, text), own.length ? pics(item, 'media', 'feed-pics') : null, quoteBox(item)];
-    else if (c === 'youtube') { const [t] = assets(item, 'thumb'); body = [t ? pic(item, t[1], 'feed-yt-thumb') : h('span', { class: 'feed-yt-thumb feed-ph' }), h('p', { class: 'feed-text feed-text-title', style: { '--lines': '4' } }, item.title)]; }
+    else if (c === 'youtube') body = [h('p', { class: 'feed-text feed-text-title feed-text-big', style: { '--lines': '6' } }, item.title), videoMeta(item, false)];
     else if (c === 'instagram') body = [own.length ? pics(item, 'media', 'feed-pics feed-pics-ig') : null, item.kind === 'post' && item.title ? h('p', { class: 'feed-text', style: { '--lines': '3' } }, item.title) : null];
     else body = [h('p', { class: `feed-text feed-text-title${big ? ' feed-text-big' : ''}`, style: { '--lines': '5' } }, item.title || item.url), articleText(item) ? h('p', { class: 'feed-text feed-muted', style: { '--lines': '8' } }, articleText(item)) : null];
-    return h('article', { class: `feed-tile feed-tile-${c}${state.sel === item.id ? ' sel' : ''}${!own.length && c !== 'youtube' ? ' textual' : ''}`, tabindex: '0', 'data-feed-id': item.id, 'data-key': item.id,
+    return h('article', { class: `feed-tile feed-tile-${c}${state.sel === item.id ? ' sel' : ''}${!own.length ? ' textual' : ''}`, tabindex: '0', 'data-feed-id': item.id, 'data-key': item.id,
       'aria-label': `${catName(c)}: ${c === 'x' ? item.name || item.author : item.author}`,
       onclick: (e) => { if (!e.target.closest('a')) openReader(item.id); }, onfocus: () => { state.sel = item.id; } }, head(item), body);
   }
@@ -380,12 +396,12 @@ export function createFeed({ h, api, kv, refresh, offline, user, settingsPanel, 
         h('button', { class: 'ghost', disabled: i >= shown.length - 1, onclick: () => step(1) }, T('Staršie'), icon('chevron-right')),
         h('button', { class: 'ghost feed-read-close', onclick: closeReader, 'aria-label': T('Späť na feed') }, icon('close'), h('kbd', {}, 'Esc'))),
       head(item, true), via(item),
-      c === 'youtube' ? [...big('thumb'), h('p', { class: 'feed-text feed-text-title feed-text-big' }, item.title), item.text ? h('p', { class: 'feed-text feed-muted' }, linkify(item.text)) : null]
+      c === 'youtube' ? [h('p', { class: 'feed-text feed-text-title feed-text-big' }, item.title), videoMeta(item), item.text ? h('p', { class: 'feed-text feed-muted' }, linkify(item.text)) : null]
         : c === 'rss' ? [h('p', { class: 'feed-text feed-text-title feed-text-big' }, item.title || item.url), articleText(item) ? h('p', { class: 'feed-text' }, linkify(articleText(item))) : null]
           : [item.title && item.title !== 'Story' ? h('p', { class: 'feed-text' }, linkify(item.title)) : null, h('div', { class: 'feed-read-pics' }, big('media')), quoteBox(item, true)],
       Object.keys(counts).length ? h('div', { class: 'feed-counts' },
         counts.replies != null ? h('span', {}, T`${counts.replies} odpovedí`) : null, counts.reposts != null ? h('span', {}, T`${counts.reposts} zdieľaní`) : null,
-        counts.likes != null ? h('span', {}, T`${counts.likes} páči sa`) : null, counts.views != null ? h('span', {}, T`${counts.views} zobrazení`) : null) : null,
+        counts.likes != null ? h('span', {}, T`${counts.likes} páči sa`) : null, counts.views != null && c !== 'youtube' ? h('span', {}, T`${counts.views} zobrazení`) : null) : null,
       h('div', { class: 'feed-actions' },
         item.url ? h('a', { class: 'ghost button', href: item.url, target: '_blank', rel: 'noopener noreferrer' }, icon('link'), T('Otvoriť originál'), h('kbd', {}, 'O')) : null,
         c === 'youtube' ? h('button', { class: 'ghost', onclick: () => schedule(item) }, icon('calendar'), T('Naplánovať pozeranie')) : null,
@@ -427,7 +443,11 @@ export function createFeed({ h, api, kv, refresh, offline, user, settingsPanel, 
     if (!d) return false;
     const i = shown.findIndex((x) => x.id === state.sel);
     const next = shown[Math.max(0, Math.min(shown.length - 1, i < 0 ? 0 : i + d))];
-    if (next) { state.sel = next.id; const el = document.querySelector(`.feed-tile[data-feed-id="${CSS.escape(next.id)}"]`); el?.focus(); el?.scrollIntoView({ block: 'nearest' }); }
+    if (!next) return true;
+    state.sel = next.id;
+    const go = () => { const el = document.querySelector(`.feed-tile[data-feed-id="${CSS.escape(next.id)}"]`); el?.focus(); el?.scrollIntoView({ block: 'nearest' }); };
+    // Past the drawn tiles: draw the next page first.
+    if (shown.indexOf(next) >= state.limit) { state.limit += PAGE; refresh(); requestAnimationFrame(go); } else go();
     return true;
   }
   function view() {
@@ -448,7 +468,11 @@ export function createFeed({ h, api, kv, refresh, offline, user, settingsPanel, 
     if (state.reader && !current) state.reader = null;
     if (open && !current) requestAnimationFrame(watchTiles);
     // One grid, newest first: a heading per day would break rows (one video a day left a row each); tiles carry the day.
-    const grid = shown.map(tile);
+    // YouTube alone is a list of titles, like its app without thumbnails.
+    const list = f === 'youtube';
+    const grid = shown.slice(0, state.limit).map(list ? videoRow : tile);
+    // Many failed sources make one line, not a wall of them.
+    const failed = otherErrors.length > 2 ? [{ message: T`${otherErrors.length} zdrojov sa nenačítalo: ${otherErrors.map((e) => e.message.replace(/ sa nenačítal[o]?\.$/, '')).join(', ')}.` }] : otherErrors;
     return h('section', { class: 'daily-feed', 'aria-label': T('Denný feed') },
       h('div', { class: 'feed-head' }, h('h2', {}, 'Feed'),
         h('span', { class: 'feed-date' }, doc?.at ? T`obnovené ${new Date(doc.at).toLocaleString(LOCALE, { day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit' })}` : ''),
@@ -464,12 +488,13 @@ export function createFeed({ h, api, kv, refresh, offline, user, settingsPanel, 
             const warn = c === 'instagram' && igProblem;
             return h('button', { class: f === c ? 'on' : '', role: 'radio', 'aria-checked': String(f === c), title: warn ? igProblem : T`Kláves ${n + 1}`, onclick: () => setFilter(c) },
               c === 'all' ? null : logo(c), catName(c), h('span', { class: warn ? 'n warn' : 'n' }, warn ? '!' : String(count(c))));
-          }), h('span', { class: 'feed-keys' }, T('1–5 kategória · šípky · Enter čítať · O originál'))),
+          }), h('span', { class: 'feed-keys' }, T('1–5 kategória, šípky, Enter čítať, O originál'))),
           igProblem && (f === 'all' || f === 'instagram') ? instagramRow(doc, igProblem) : null,
-          otherErrors.map((err) => h('p', { class: 'feed-note', role: 'status' }, err.message)),
+          failed.map((err) => h('p', { class: 'feed-note', role: 'status' }, err.message)),
           current ? reader(current)
             : !shown.length ? h('div', { class: 'feed-empty' }, state.busy ? T('Načítavam dnešný feed…') : f === 'all' ? T('Zatiaľ žiadne položky. Zdroje pridáš v Zdroje a filtre.') : T`V kategórii ${catName(f)} dnes nič nie je.`)
-              : h('div', { class: 'feed-grid' }, grid),
+              : [h('div', { class: list ? 'feed-grid feed-list' : 'feed-grid' }, grid),
+                shown.length > state.limit ? h('button', { class: 'ghost feed-more', onclick: () => { state.limit += PAGE; refresh(); } }, T`Zobraziť ďalšie (${shown.length - state.limit})`) : null],
         ],
       open ? h('button', { class: 'ghost feed-finish', onclick: finish }, T('Skončiť okno')) : null);
   }

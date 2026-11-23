@@ -1041,7 +1041,11 @@ a.rnote.rlink { color: var(--link); text-decoration: none; }
 .feed-quote-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
 .feed-quote .feed-text { --lines: 5; font-size: 13px; line-height: 18px; color: var(--muted); }
 .feed-quote-thumb { flex: none; width: 44px; height: 44px; }
-.feed-yt-thumb { flex: none; display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: var(--radius-s); background: var(--soft); }
+.feed-video-meta { color: var(--muted); font-size: var(--fs); }
+.feed-list { grid-template-columns: 1fr; gap: 6px; }
+.feed-row { aspect-ratio: auto; flex-direction: row; align-items: flex-start; gap: 11px; padding: 9px 11px; }
+.feed-row > div { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.feed-more { justify-self: start; margin-top: 11px; }
 .feed-tile-instagram .feed-pics { min-height: 0; }
 .feed-read { max-width: 680px; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; padding: 16px; border: var(--bw) solid var(--line); border-radius: var(--radius-l); background: var(--panel); outline: none; }
 .feed-read-nav { display: flex; align-items: center; gap: 8px; font-size: var(--fs); }

@@ -12,11 +12,13 @@ or an X profile (read without a login through FxTwitter's public API). Feed's re
 WEB_EVERY seconds and Instagram once a day; expired stories are never shown.
 """
 import base64
+import concurrent.futures
 import copy
 import datetime as dt
 import email.utils
 import fcntl
 import hashlib
+import html
 import ipaddress
 import json
 import os
@@ -118,7 +120,10 @@ def public_bytes(url, cookie=None):
 
 
 def clean(s):
-    return re.sub(r'<[^>]*>', '', str(s or '')).strip()
+    """Plain text of a feed's HTML: tags gone, entities like &lt;select&gt; read as the characters they stand for
+    (Weft shows text, never HTML), runs of spaces and blank lines made one."""
+    text = html.unescape(re.sub(r'<[^>]*>', '', str(s or '')))
+    return re.sub(r'\n\s*\n\s*', '\n\n', re.sub(r'[ \t\r\f\v]+', ' ', text)).strip()
 
 
 def web_url(url):
@@ -157,16 +162,15 @@ def parse_feed(data, source):
         if not link: continue
         uid = e.findtext('guid') or e.findtext('id') or link
         youtube = 'youtube.com/' in link or 'youtu.be/' in link
-        # YouTube's Atom keeps the thumbnail and description in media:group.
-        thumb = (e.find('group/thumbnail') if youtube else None)
-        thumb = thumb.get('url', '') if thumb is not None else ''
-        media = [{'url': thumb, 'type': 'image', 'role': 'thumb'}] if (urllib.parse.urlsplit(thumb).hostname or '').endswith('.ytimg.com') else []
+        # YouTube's Atom keeps the description and view count in media:group.
+        stats = e.find('group/community/statistics') if youtube else None
+        views = int(stats.get('views')) if stats is not None and (stats.get('views') or '').isdigit() else None
         out.append({'id': 'rss:' + hashlib.sha256((source['id'] + uid).encode()).hexdigest()[:24],
                     'kind': 'youtube' if youtube else 'rss',
                     'source': source['id'], 'author': name, 'title': clean(e.findtext('title'))[:1000],
                     'text': clean(e.findtext('description') or e.findtext('summary') or e.findtext('content') or e.findtext('group/description'))[:2000],
                     'url': link, 'at': timestamp(e.findtext('pubDate') or e.findtext('published') or e.findtext('updated') or e.findtext('date')),
-                    'short': '/shorts/' in link, 'media': media})
+                    'short': '/shorts/' in link, 'media': [], **({'counts': {'views': views}} if views is not None else {})})
     return out
 
 
@@ -593,16 +597,21 @@ def collect():
         kept = lambda source: [i for i in prev['items'] if i.get('source') == source and not expired(i)]
         old_errors = lambda source: [e for e in prev.get('errors', []) if e.get('source') == source]
         out, errors, users, coverage = [], [], prev.get('users', []), prev.get('coverage') or {}
-        for source in cfg['sources']:
-            if not web:
-                out += kept(source['id']); errors += old_errors(source['id'])
-                continue
-            try:
-                out += source_items(source); fresh[source['id']] = now_ms()
+        def read_source(source):
+            try: return source_items(source), None
             except Exception:
                 what = 'Profil na X' if source.get('kind') == 'x' else 'YouTube kanál' if source.get('kind') == 'youtube' else 'RSS'
-                errors.append({'source': source['id'], 'message': f"{what} {source.get('name') or source['url']} sa nenačítal{'o' if what == 'RSS' else ''}."})
-                out += kept(source['id'])
+                return None, {'source': source['id'], 'message': f"{what} {source.get('name') or source['url']} sa nenačítal{'o' if what == 'RSS' else ''}."}
+        # Sixty YouTube channels one after another took a minute; a few at a time, each still read once.
+        with concurrent.futures.ThreadPoolExecutor(6) as pool:
+            results = list(pool.map(read_source, cfg['sources'])) if web else [(None, None)] * len(cfg['sources'])
+        for source, (items, error) in zip(cfg['sources'], results):
+            if not web:
+                out += kept(source['id']); errors += old_errors(source['id'])
+            elif error:
+                errors.append(error); out += kept(source['id'])
+            else:
+                out += items; fresh[source['id']] = now_ms()
         if cfg['instagram'] and not ig:
             out += kept('instagram'); errors += old_errors('instagram')
         elif cfg['instagram']:
@@ -705,7 +714,7 @@ def media_file(item_id, index):
     parsed = urllib.parse.urlsplit(url)
     host = parsed.hostname or ''
     allowed = (host.endswith('.cdninstagram.com') or host.endswith('.fbcdn.net') if instagram
-               else host.endswith('.ytimg.com') if item['kind'] == 'youtube' else host in X_MEDIA)
+               else host in X_MEDIA if item['kind'] == 'x' else False)
     if parsed.scheme != 'https' or not allowed:
         raise ValueError('Neplatná adresa média.')
     digest = hashlib.sha256(url.encode()).hexdigest()
