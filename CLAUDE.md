@@ -65,9 +65,9 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   device); Settings → Účty → Gmail sets per account window / window and system notification / nothing. Codes
   stay in the bridge's memory only. „Window and notification“ also reaches a closed Weft: an empty Web Push
   (`server/gmail/push.py`, own VAPID key) to each phone or browser that allowed notifications, shown by `app/sw.js`
-  without the code; the desktop shell has no push and instead keeps running hidden when its window is closed
-  (Ctrl+Q quits, starting it again shows it). Checks: `overenie/gmail-codes/` (`heuristic_test.py`, `bridge.sh`,
-  `ui.cjs`, `sw-push.cjs`, `shell.cjs`).
+  without the code; the desktop shell has no push and hears codes only while it is open (closing its window with
+  Super+W or ✕ quits it, like Ctrl+Q; Karchi, 2026-11-23). Checks: `overenie/gmail-codes/` (`heuristic_test.py`, `bridge.sh`,
+  `ui.cjs`, `sw-push.cjs`).
 - `server/microsoft/bridge.py` is Outlook and Teams (asus `~/matrix-spike/microsoft/`, unit `matrix-spike-microsoft`,
   127.0.0.1:29330 behind Caddy's `/_bridges/outlook/` and `/_bridges/teams/`). Any number of Microsoft accounts of
   each, signed in on Microsoft's page through Microsoft Graph Command Line Tools (no own app needed; an Entra app in
@@ -88,7 +88,7 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   (weekdays, nth/last weekday of the month, count or end date), reminder, category and second colour, and changing or
   deleting only one occurrence, it and the following, or the whole series; events move by dragging (a series moves
   whole); Settings → Kalendár adds and deletes calendars of Karchi's own (ops `addcal`, `delcal`; not the timetable, nor „Testy“, which the EduPage bridge finds by name), hides calendars in Weft only (`sk.karchi.calendar.shown`) and turns off single timetable subjects, by `titleKey` so their cancelled and substituted lessons go too (`hiddenSubjects`; not drawn, no reminder). Check: `overenie/kalendar-kategorie/`. Off by default (Kalendarix gives every event 120 minutes for the phone), once Settings → Kalendár `notify` turns it on an event's reminder (`alarmMinutes`) shows a system notification at its time on each device where Weft runs
-  (the desktop app keeps running hidden, so x270 hears it with the window closed; a missed one still comes until the event starts; a click
+  (on x270 only while the desktop app is open; a missed one still comes until the event starts; a click
   opens the event with the keys in it); no Web Push to phones for it yet. Check: `overenie/pripomienky/run.sh`. A message that names a time
   („zajtra o 17:00 tréning“, „v piatok test z mat“) gets „Pridať do kalendára“ under it: on the device chrono-node
   (`app/chrono.js`, vendored) reads English and `app/when-sk.js` is its Slovak, and `app/when.js` judges what they

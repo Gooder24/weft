@@ -10064,8 +10064,8 @@ setInterval(recheckCalendar, 120000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) recheckCalendar(); });
 
 // ---- reminders: an event's „Pripomienka“ (alarmMinutes, kept as Kalendarix keeps it) notifies on this device at its
-// time, the way a Gmail code does: a system notification while Weft runs (on x270 the desktop's own notifications; the
-// desktop app keeps running hidden when its window is closed). A click opens the event. Off until Settings → Kalendár
+// time, the way a Gmail code does: a system notification while Weft runs (on x270 the desktop's own notifications, only
+// while the desktop app is open: closing its window quits it). A click opens the event. Off until Settings → Kalendár
 // turns it on (`sk.karchi.calendar` `notify`): Kalendarix gives every event 120 minutes for the phone, so on by
 // default it would ring two hours before everything. Calendars hidden in Weft do not remind.
 const CAL_REMIND_LATE = 10 * Cal.MS_MINUTE; // a reminder missed (asleep, Weft not running) still comes until its event starts, and at least this long
@@ -12820,7 +12820,7 @@ function dismissCode(c) {
 /** Web Push on this device (a phone, a browser): a code of an account set to „okno a notifikácia“ is heard of
  *  also while Weft is closed. The push carries nothing, so the code never passes through Google's or Apple's
  *  push service; the service worker (sw.js) says only that a code came, and opening Weft shows it. The desktop
- *  app has no push service: it keeps running hidden instead (desktop/main.js). */
+ *  app has no push service: it notifies only while it is open (closing its window quits it, desktop/main.js). */
 async function pushSetup() {
   try {
     if (!gmailApp() || !('Notification' in window) || Notification.permission !== 'granted') return;

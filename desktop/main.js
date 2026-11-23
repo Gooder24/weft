@@ -30,7 +30,6 @@ const CHROME_UA = `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, li
 app.setName('Správy');
 
 let main = null;
-let quitting = false; // closing the window only hides it; Ctrl+Q, a logout or the system really quits
 let pending = null; // the one login window that may be open: { win, reject }
 
 // Login windows go out through asus (an SSH SOCKS tunnel): the bridges run on asus, so Meta sees the login come from
@@ -74,17 +73,10 @@ function openMain() {
     height: 820,
     title: 'Weft',
     autoHideMenuBar: true,
-    // Hidden, it still hears of codes at once (Chromium would slow a hidden window's timers).
+    // Behind other windows it still hears of codes at once (Chromium would slow a hidden window's timers).
     webPreferences: { preload: path.join(__dirname, 'preload.js'), partition: 'persist:app', contextIsolation: true, sandbox: true, backgroundThrottling: false },
   });
   main.loadURL(APP_URL);
-  // Closing the window hides it: Weft keeps running, so a Gmail code still notifies (the desktop app has no Web
-  // Push). Starting Weft again or a click on the notification shows it; Ctrl+Q quits for real.
-  main.on('close', (event) => {
-    if (quitting) return;
-    event.preventDefault();
-    main.hide();
-  });
   main.webContents.on('before-input-event', (event, input) => {
     if (input.type === 'keyDown' && input.control && !input.alt && !input.shift && input.key.toLowerCase() === 'q') {
       event.preventDefault();
@@ -102,7 +94,8 @@ function openMain() {
       if (/^https?:/.test(url)) shell.openExternal(url);
     }
   });
-  main.on('closed', () => { main = null; });
+  // Closing the window (Super+W, ✕) quits Weft with its call, follow and login windows, like Ctrl+Q.
+  main.on('closed', () => { main = null; if (!process.env.SPRAVY_SELFTEST) app.quit(); });
 }
 
 /**
@@ -1043,7 +1036,7 @@ ipcMain.handle('focus', (event) => {
   main.focus();
 });
 
-// One Weft: starting it again shows the running (perhaps hidden) window instead of a second one.
+// One Weft: starting it again brings the running window to the front instead of a second one.
 const primary = !!process.env.SPRAVY_SELFTEST || app.requestSingleInstanceLock();
 if (!primary) app.quit();
 app.on('second-instance', () => {
@@ -1053,7 +1046,6 @@ app.on('second-instance', () => {
   main.show();
   main.focus();
 });
-app.on('before-quit', () => { quitting = true; });
 
 app.whenReady().then(() => {
   if (!primary) return;
