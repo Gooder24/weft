@@ -3308,7 +3308,8 @@ function forwardState(it) {
   const r = S.rooms.get(it.to);
   if (!r) return (it.state = it.state === 'sent' ? 'sent' : 'failed'); // the chat left before its copy was seen going
   const p = r.pending.get(it.txn) || [...r.pending.values()].find((x) => x.content === it.content);
-  if (p) { it.txn = p.event_id; it.state = p.failed ? 'failed' : p.waiting ? 'waiting' : 'sending'; }
+  // Its content too: a retry that waits for the network is queued with a rebuilt copy, and the next one shows that.
+  if (p) { it.txn = p.event_id; it.content = p.content; it.state = p.failed ? 'failed' : p.waiting ? 'waiting' : 'sending'; }
   else if (it.state !== 'failed') it.state = 'sent';
   return it.state;
 }
