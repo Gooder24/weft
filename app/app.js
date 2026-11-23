@@ -6511,6 +6511,8 @@ function viewerSpaceUp(e, toggle = true) {
 }
 document.addEventListener('keyup', (e) => { if (e.key === ' ') viewerSpaceUp(e); });
 addEventListener('blur', () => viewerSpaceUp(null, false)); // the window lost the key: never stuck fast
+// Back from full screen, the viewer draws what changed there (the 2× mark it skipped).
+document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement && S.overlay?.kind === 'image') render(); });
 
 function jumpTo(r, eventId) {
   S.focusEvent = eventId;
