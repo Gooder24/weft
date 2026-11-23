@@ -12,11 +12,13 @@ or an X profile (read without a login through FxTwitter's public API). Feed's re
 WEB_EVERY seconds and Instagram once a day; expired stories are never shown.
 """
 import base64
+import concurrent.futures
 import copy
 import datetime as dt
 import email.utils
 import fcntl
 import hashlib
+import html
 import ipaddress
 import json
 import os
@@ -118,7 +120,11 @@ def public_bytes(url, cookie=None):
 
 
 def clean(s):
-    return re.sub(r'<[^>]*>', '', str(s or '')).strip()
+    """Plain text of a feed's HTML: tags gone, entities like &lt;select&gt; read as the characters they stand for
+    (Weft shows text, never HTML), runs of spaces and blank lines made one."""
+    text = html.unescape(re.sub(r'<[^>]*>', '', str(s or '')))
+    text = re.sub(r' *\n *', '\n', re.sub(r'[ \t\r\f\v]+', ' ', text))
+    return re.sub(r'\n{3,}', '\n\n', text).strip()
 
 
 def web_url(url):
@@ -156,11 +162,16 @@ def parse_feed(data, source):
         link = web_url(urllib.parse.urljoin(source['url'], link or e.findtext('link') or ''))
         if not link: continue
         uid = e.findtext('guid') or e.findtext('id') or link
+        youtube = 'youtube.com/' in link or 'youtu.be/' in link
+        # YouTube's Atom keeps the description and view count in media:group.
+        stats = e.find('group/community/statistics') if youtube else None
+        views = int(stats.get('views')) if stats is not None and (stats.get('views') or '').isdigit() else None
         out.append({'id': 'rss:' + hashlib.sha256((source['id'] + uid).encode()).hexdigest()[:24],
-                    'kind': 'youtube' if 'youtube.com/' in link or 'youtu.be/' in link else 'rss',
+                    'kind': 'youtube' if youtube else 'rss',
                     'source': source['id'], 'author': name, 'title': clean(e.findtext('title'))[:1000],
-                    'text': clean(e.findtext('description') or e.findtext('summary') or e.findtext('content'))[:2000],
-                    'url': link, 'at': timestamp(e.findtext('pubDate') or e.findtext('published') or e.findtext('updated') or e.findtext('date'))})
+                    'text': clean(e.findtext('description') or e.findtext('summary') or e.findtext('content') or e.findtext('group/description'))[:2000],
+                    'url': link, 'at': timestamp(e.findtext('pubDate') or e.findtext('published') or e.findtext('updated') or e.findtext('date')),
+                    'short': '/shorts/' in link, 'media': [], **({'counts': {'views': views}} if views is not None else {})})
     return out
 
 
@@ -199,29 +210,50 @@ def x_posts(handle, tries=3):
     raise ValueError('X profile not found')
 
 
+def x_media(post, role, assets):
+    """Appends a post's photos and videos (a video with its poster frame) to `assets`, all on X's media hosts."""
+    ok = lambda url: urllib.parse.urlsplit(url).scheme == 'https' and urllib.parse.urlsplit(url).hostname in X_MEDIA
+    for m in ((post.get('media') or {}).get('all') or [])[:4]:
+        if m.get('type') == 'photo':
+            url = re.sub(r'([?&]name=)orig\b', r'\1small', m.get('url', ''))  # 680 px: a tile's width, about 60 KB
+            if ok(url): assets.append({'url': url, 'type': 'image', 'role': role, 'w': m.get('width'), 'h': m.get('height')})
+            continue
+        mp4 = [f for f in m.get('formats') or [] if f.get('container') == 'mp4' and f.get('bitrate')]
+        url = min(mp4, key=lambda f: abs(f['bitrate'] - 832000))['url'] if mp4 else m.get('url', '')
+        poster = m.get('thumbnail_url', '')
+        if not ok(url): continue
+        if ok(poster): assets.append({'url': poster, 'type': 'image', 'role': role + '-poster'})
+        assets.append({'url': url, 'type': 'video', 'role': role, 'w': m.get('width'), 'h': m.get('height'),
+                       'poster': len(assets) - 1 if ok(poster) else None})
+
+
 def x_items(source):
-    """An X profile's recent posts and reposts, and its replies within its own threads; replies to others are left out."""
+    """An X profile's recent posts and reposts, and its replies within its own threads; replies to others are left out.
+    `media` holds every picture the card shows, each with its `role`: avatar, media (the post's own, a video with its
+    poster), quote-avatar and quote (the quoted post's)."""
     handle = source['handle'].lower()
     out = []
     for p in x_posts(source['handle'])[:40]:
-        author = (p.get('author') or {}).get('screen_name') or source['handle']
+        user = p.get('author') or {}
+        author = user.get('screen_name') or source['handle']
         to = (p.get('replying_to') or {}).get('screen_name')
         if to and to.lower() != handle or not str(p.get('id', '')).isdecimal(): continue
-        quote = p.get('quote') or {}
-        notes = [f"Zdieľal @{source['handle']}" if author.lower() != handle else '',
-                 f"Cituje @{(quote.get('author') or {}).get('screen_name', '')}: {quote.get('text', '')}" if quote else '']
         assets = []
-        for m in ((p.get('media') or {}).get('all') or [])[:4]:
-            if m.get('type') == 'photo':
-                url = re.sub(r'([?&]name=)orig\b', r'\1medium', m.get('url', ''))
-                kind = 'image'
-            else:
-                mp4 = [f for f in m.get('formats') or [] if f.get('container') == 'mp4' and f.get('bitrate')]
-                url, kind = (min(mp4, key=lambda f: abs(f['bitrate'] - 832000))['url'] if mp4 else m.get('url', '')), 'video'
-            if urllib.parse.urlsplit(url).scheme == 'https' and urllib.parse.urlsplit(url).hostname in X_MEDIA:
-                assets.append({'url': url, 'type': kind})
+        if (urllib.parse.urlsplit(user.get('avatar_url') or '').hostname or '') in X_MEDIA:
+            assets.append({'url': user['avatar_url'], 'type': 'image', 'role': 'avatar'})
+        x_media(p, 'media', assets)
+        quote = p.get('quote') or {}
+        if quote:
+            q = quote.get('author') or {}
+            if (urllib.parse.urlsplit(q.get('avatar_url') or '').hostname or '') in X_MEDIA:
+                assets.append({'url': q['avatar_url'], 'type': 'image', 'role': 'quote-avatar'})
+            x_media(quote, 'quote', assets)
+            quote = {'handle': q.get('screen_name', ''), 'name': clean(q.get('name'))[:100], 'text': clean(quote.get('text'))[:2000],
+                     'url': web_url(quote.get('url', '')), 'at': int(quote.get('created_timestamp') or 0) * 1000}
         out.append({'id': f"x:{source['id']}:{p['id']}", 'kind': 'x', 'source': source['id'], 'author': '@' + author,
-                    'title': clean(p.get('text'))[:1000], 'text': '\n'.join(n for n in notes if n)[:2000],
+                    'name': clean(user.get('name'))[:100], 'title': clean(p.get('text'))[:4000], 'text': '',
+                    'via': source['handle'] if author.lower() != handle else '', 'quote': quote or None,
+                    'counts': {k: p.get(k) for k in ('replies', 'reposts', 'likes', 'views') if isinstance(p.get(k), int)},
                     'url': web_url(p.get('url', '')) or f"https://x.com/{author}/status/{p['id']}",
                     'at': int(p.get('created_timestamp') or 0) * 1000, 'media': assets})
     return out
@@ -566,16 +598,21 @@ def collect():
         kept = lambda source: [i for i in prev['items'] if i.get('source') == source and not expired(i)]
         old_errors = lambda source: [e for e in prev.get('errors', []) if e.get('source') == source]
         out, errors, users, coverage = [], [], prev.get('users', []), prev.get('coverage') or {}
-        for source in cfg['sources']:
-            if not web:
-                out += kept(source['id']); errors += old_errors(source['id'])
-                continue
-            try:
-                out += source_items(source); fresh[source['id']] = now_ms()
+        def read_source(source):
+            try: return source_items(source), None
             except Exception:
                 what = 'Profil na X' if source.get('kind') == 'x' else 'YouTube kanál' if source.get('kind') == 'youtube' else 'RSS'
-                errors.append({'source': source['id'], 'message': f"{what} {source.get('name') or source['url']} sa nenačítal{'o' if what == 'RSS' else ''}."})
-                out += kept(source['id'])
+                return None, {'source': source['id'], 'message': f"{what} {source.get('name') or source['url']} sa nenačítal{'o' if what == 'RSS' else ''}."}
+        # Sixty YouTube channels one after another took a minute; a few at a time, each still read once.
+        with concurrent.futures.ThreadPoolExecutor(6) as pool:
+            results = list(pool.map(read_source, cfg['sources'])) if web else [(None, None)] * len(cfg['sources'])
+        for source, (items, error) in zip(cfg['sources'], results):
+            if not web:
+                out += kept(source['id']); errors += old_errors(source['id'])
+            elif error:
+                errors.append(error); out += kept(source['id'])
+            else:
+                out += items; fresh[source['id']] = now_ms()
         if cfg['instagram'] and not ig:
             out += kept('instagram'); errors += old_errors('instagram')
         elif cfg['instagram']:
@@ -677,7 +714,9 @@ def media_file(item_id, index):
     url = asset['url']
     parsed = urllib.parse.urlsplit(url)
     host = parsed.hostname or ''
-    if parsed.scheme != 'https' or not (host in X_MEDIA if not instagram else host.endswith('.cdninstagram.com') or host.endswith('.fbcdn.net')):
+    allowed = (host.endswith('.cdninstagram.com') or host.endswith('.fbcdn.net') if instagram
+               else host in X_MEDIA if item['kind'] == 'x' else False)
+    if parsed.scheme != 'https' or not allowed:
         raise ValueError('Neplatná adresa média.')
     digest = hashlib.sha256(url.encode()).hexdigest()
     folder = os.path.join(DATA, 'media')

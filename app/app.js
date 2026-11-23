@@ -5269,6 +5269,8 @@ document.addEventListener('keydown', (e) => {
   else if (mod && (key === '/' || key === '?')) run(() => (S.overlay?.kind === 'help' ? (S.overlay = null, render()) : openOverlay('help')));
   else if (key === 'tab' && S.panel === 'grades' && !mod) run(() => setGradeMode(S.gradeMode === 'table' ? 'recent' : 'table'));
   else if (key === 'escape' && S.overlay) run(() => closeOverlay(true));
+  // Feed's own keys (categories, tiles, its reader) come before Esc closes it.
+  else if (S.surface === 'feed' && !S.panel && !S.overlay && !typing && feed.key(e)) e.preventDefault();
   else if (key === 'escape' && S.surface === 'feed' && !S.panel) run(closeFeed);
   else if (key === 'escape' && S.panel === 'link') run(cancelLink);
   else if (key === 'escape' && S.panel === 'people' && pm.naming) run(() => setNaming(false));

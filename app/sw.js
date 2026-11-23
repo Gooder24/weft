@@ -9,7 +9,7 @@ const MEDIA_FILE_MAX = 8e6; // larger downloads (videos) are not kept
 const WAIT = 4000; // a sleeping asus never answers: after this the cached copy opens
 let downUntil = 0;
 const FILES = ['/', '/app.js', '/updates.js', '/app.css', '/icon.svg', '/emoji.json', '/qrcode.js', '/calendar.js', '/kalendarix-colors.js', '/feed.js', '/stash.js', '/hermes.svg', '/fonts/DepartureMono-Regular.woff2',
-  '/discord.png', '/edupage.png', '/gmail.ico', '/instagram.png', '/messenger.ico', '/outlook.png', '/teams.png', '/whatsapp.webp'];
+  '/discord.png', '/edupage.png', '/gmail.ico', '/instagram.png', '/messenger.ico', '/outlook.png', '/teams.png', '/whatsapp.webp', '/x.svg', '/youtube.svg', '/rss.svg'];
 
 self.addEventListener('install', (e) => {
   self.skipWaiting();
