@@ -286,6 +286,7 @@ def calendar_fields(op, cal=None):
 def apply_ops(doc, ops):
     cals = by_key(doc.get("calendars"), "id")
     for op in ops:
+        if not isinstance(op, dict): raise ValueError("an op is an object")
         kind = op.get("op")
         if kind == "addcal":
             cid = op.get("cal")
@@ -566,7 +567,7 @@ class Api(BaseHTTPRequestHandler):
                 doc = apply_ops(read(MASTER) or empty(), body.get("ops") or [])
                 write(MASTER, doc)
             self.send(200, {"version": version(doc), "doc": doc})
-        except (ValueError, KeyError, TypeError) as e:
+        except (ValueError, KeyError, TypeError, AttributeError) as e:
             self.send(400, {"error": str(e)})
 
 

@@ -10354,7 +10354,15 @@ function calMove(dir) {
 function calSetView(view) {
   cal.view = view;
   render();
+  calKeysBack();
   if (view === 'day' || view === 'week') calScroll();
+}
+/** After a redraw took away the focused control (a day of the year, a closed detail), the keys go back to the
+ * calendar on the home screen; in the calendar panel they work without focus. */
+function calKeysBack() {
+  const a = document.activeElement;
+  if (S.panel || (a && a !== document.body && a.isConnected)) return;
+  document.querySelector('.home-calendar')?.focus({ preventScroll: true });
 }
 function calToday() { cal.cursor = Cal.startOfDay(Date.now()); render(); calScroll(); }
 
@@ -10583,7 +10591,8 @@ function calShow(i) {
   cal.search = null;
   cal.detail = { key: i.key, start: i.start, coloring: false, asking: false };
   render();
-  calDetailBox()?.querySelector('.caldetail-foot button.primary, .caldetail-close')?.focus({ preventScroll: true });
+  const box = calDetailBox();
+  (box?.querySelector('.caldetail-foot button.primary') || box?.querySelector('.caldetail-close'))?.focus({ preventScroll: true });
 }
 const calDetailBox = () => [...document.querySelectorAll('.caldetail')].pop();
 /** The detail or the search closes; the keys go back to the calendar. */
@@ -10591,7 +10600,7 @@ function calCloseBox() {
   cal.detail = null;
   cal.search = null;
   render();
-  [...document.querySelectorAll('.home-calendar, .calendar')].filter((x) => x.offsetParent).pop()?.focus?.({ preventScroll: true });
+  calKeysBack();
 }
 /** The occurrence `cal.detail` points at, as the calendar is now (null once it is gone). */
 function calDetailOcc() {
@@ -10730,7 +10739,7 @@ function calOpenSearch() {
   cal.detail = null;
   cal.search = { query: '', picked: 0, seq: -1, pool: [] };
   render();
-  calSearchBox()?.querySelector('input')?.focus();
+  cal.search.box?.()?.querySelector('input')?.focus();
 }
 function calSearchBox() {
   const sr = cal.search;
@@ -10869,7 +10878,8 @@ const calPhone = { open: false, profile: '', range: 'upcoming', chosen: null, al
 function calPhoneItems() {
   const chosen = calPhone.chosen || new Set((cal.doc?.calendars || []).filter(calShown).map((c) => c.id));
   // A repeating event still has occurrences ahead, whenever it began.
-  return (cal.doc?.calendars || []).filter((c) => chosen.has(c.id)).flatMap((c) => c.events.map((event) => ({ event, calendarName: c.name })))
+  // Like the calendar: no cancelled lessons and none of the subjects turned off.
+  return calSubjectsShown((cal.doc?.calendars || []).filter((c) => chosen.has(c.id)).flatMap((c) => c.events.map((event) => ({ event, cal: c, calendarName: c.name }))))
     .filter(({ event }) => calPhone.range === 'all' || event.rrule?.FREQ || Date.parse(event.end || event.start) >= Date.now())
     .sort((a, b) => Date.parse(a.event.start) - Date.parse(b.event.start));
 }
@@ -11456,7 +11466,7 @@ function calCalendarEditor(c) {
 }
 
 /** Categories of Karchi's own: renamed, recoloured, removed; and a line to make another (Kalendarix's OwnCategories). */
-const calCat = { name: '', color: '', picking: null };
+const calCat = { name: '', color: '', picking: null, names: new Map() }; // names: a category's name being typed, kept through redraws
 function calCategories() {
   const all = Cal.categoryList(cal.doc || {});
   const own = all.filter((c) => c.own);
@@ -11468,6 +11478,14 @@ function calCategories() {
     calCat.color = '';
     calSave([{ op: 'addcat', id: Cal.categoryId(name, all), name, color }], true);
   };
+  // A redraw (asus's copy changed) replaces the input being typed in: the text stays in calCat.names, and only Enter
+  // or really leaving the field renames.
+  const rename = (c) => {
+    if (!calCat.names.has(c.id)) return;
+    const name = calCat.names.get(c.id).trim();
+    calCat.names.delete(c.id);
+    if (name && name !== c.name) calSave([{ op: 'updcat', id: c.id, name }], true); else render();
+  };
   const palette = (current, label, pick, prefix) => h('div', { class: 'calaccent', role: 'radiogroup', 'aria-label': label, onkeydown: radioKeys },
     [...new Set([...Cal.CATEGORY_PALETTE, current])].map((x) => h('button', { type: 'button', role: 'radio', 'aria-checked': String(current === x), tabindex: current === x ? 0 : -1, class: current === x ? 'on' : '',
       title: colorName(x), 'aria-label': colorName(x), style: { background: x }, 'data-focus': `${prefix}${x}`, onclick: calKeepFocus(() => pick(x)) })));
@@ -11477,9 +11495,11 @@ function calCategories() {
     h('div', { class: 'calcatlist' }, own.map((c) => h('div', { class: 'calcatrow', 'data-key': c.id },
       h('button', { type: 'button', class: 'calswatch', style: { background: c.color }, 'aria-label': T`Farba kategórie ${c.name}`, 'aria-expanded': String(calCat.picking === c.id),
         'data-focus': `catcolor:${c.id}`, onclick: calKeepFocus(() => { calCat.picking = calCat.picking === c.id ? null : c.id; render(); }) }),
-      h('input', { value: c.name, 'aria-label': T`Názov kategórie ${c.name}`, 'data-focus': `catname:${c.id}`,
-        onchange: (e) => { const name = e.target.value.trim(); if (name && name !== c.name) calSave([{ op: 'updcat', id: c.id, name }], true); else e.target.value = c.name; } }),
-      h('button', { type: 'button', class: 'ghost', 'aria-label': T`Zmazať kategóriu ${c.name}`, onclick: () => { calSave([{ op: 'delcat', id: c.id }], true); document.querySelector('.calnewcat input')?.focus(); } }, T('Zmazať')),
+      h('input', { value: calCat.names.get(c.id) ?? c.name, 'aria-label': T`Názov kategórie ${c.name}`, 'data-focus': `catname:${c.id}`,
+        oninput: (e) => calCat.names.set(c.id, e.target.value),
+        onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); rename(c); } },
+        onblur: () => setTimeout(() => { if (document.activeElement?.dataset?.focus !== `catname:${c.id}`) rename(c); }) }),
+      h('button', { type: 'button', class: 'ghost', 'aria-label': T`Zmazať kategóriu ${c.name}`, 'data-focus': `catdel:${c.id}`, onclick: () => { calSave([{ op: 'delcat', id: c.id }], true); document.querySelector('.calnewcat input')?.focus(); } }, T('Zmazať')),
       calCat.picking === c.id ? palette(c.color, T`Farba kategórie ${c.name}`, (x) => calSave([{ op: 'updcat', id: c.id, color: x }], true), `catpick:${c.id}:`) : null))),
     h('form', { class: 'calnewcal calnewcat', onsubmit: (e) => { e.preventDefault(); add(); } },
       h('input', { value: calCat.name, required: true, maxlength: 40, placeholder: T('Nová kategória'), 'aria-label': T('Názov novej kategórie'), 'data-root': '__calNewCat', oninput: (e) => { calCat.name = e.target.value; } }),
