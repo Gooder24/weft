@@ -6343,7 +6343,7 @@ function viewerView(o) {
   const full = media(c.url);
   let stage;
   if (video) {
-    if (full && viewerVideo?.src !== full) viewerVideo = { src: full, el: h('video', { class: 'full', src: full, controls: true, autoplay: true }) };
+    if (full && viewerVideo?.src !== full) viewerVideo = { src: full, el: playerVideo(full) };
     stage = full ? viewerVideo.el : h('div', { class: 'empty' }, T('Načítavam…'));
   } else {
     // The chat's small picture stands in, at full size, until the whole one arrives.
@@ -6464,6 +6464,10 @@ function viewerKey(e) {
   return true;
 }
 addEventListener('resize', () => S.overlay?.kind === 'image' && render());
+
+/** The viewer's video. A click on it or its controls gives focus back to the page at once: a focused video would
+ *  answer Space and the arrows itself, on top of viewerKey (Space played and paused again, or the keys died). */
+const playerVideo = (src) => h('video', { class: 'full', src, controls: true, autoplay: true, onfocus: (e) => { const v = e.currentTarget; setTimeout(() => v.blur()); } });
 
 let spaceHold = null; // { timer, rate }: Space down over the viewer's video; `rate` once it went fast
 function holdSpace(o, video) {
@@ -6951,7 +6955,7 @@ function galleryViewerView(o) {
   const full = galFile(it);
   let stage;
   if (it.kind === 'video') {
-    if (full && viewerVideo?.src !== full) viewerVideo = { src: full, el: h('video', { class: 'full', src: full, controls: true, autoplay: true }) };
+    if (full && viewerVideo?.src !== full) viewerVideo = { src: full, el: playerVideo(full) };
     stage = full ? viewerVideo.el : h('div', { class: 'empty' }, T('Načítavam…'));
   } else {
     const src = full || galThumbs.get(galKey(it));
