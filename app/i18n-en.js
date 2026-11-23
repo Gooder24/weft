@@ -648,6 +648,7 @@ export default {
   "Bez názvu": "Untitled",
   "Kalendáre": "Calendars",
   "plní ho rozvrh": "the timetable fills it",
+  "plní ho synchronizácia": "a sync program fills it",
   "sem píše testy EduPage": "EduPage writes tests here",
   "Zmazať kalendár {}": "Delete the calendar {}",
   "Zmazať aj s {}?": "Delete it with {}?",

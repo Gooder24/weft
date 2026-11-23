@@ -10676,10 +10676,19 @@ const calNewCal = { name: '', color: '', asking: null }; // the new calendar bei
 
 /** Why a calendar cannot be removed here (a program fills it and would fail or bring it back), else ''. Same rule as kalendar.py. */
 function calKeep(c) {
-  if (c.id === TIMETABLE_CAL || (c.events || []).some((e) => Cal.isManaged(e, c.id))) return T('plní ho rozvrh');
+  if (c.id === TIMETABLE_CAL) return T('plní ho rozvrh');
+  if ((c.events || []).some((e) => Cal.isManaged(e, c.id))) return T('plní ho synchronizácia');
   if (String(c.name || '').trim().toLocaleLowerCase('sk') === 'testy') return T('sem píše testy EduPage');
   return '';
 }
+
+/** Settings is drawn again whole after a change: the keys stay on the control that made it (data-focus). */
+const calKeepFocus = (fn) => (e) => {
+  const id = e.currentTarget.dataset.focus;
+  const back = () => document.querySelector(`.setpane [data-focus="${CSS.escape(id)}"]`)?.focus();
+  Promise.resolve(fn(e)).then(back, back);
+  back();
+};
 
 function calAddCalendar(color) {
   const name = calNewCal.name.trim();
@@ -10731,7 +10740,7 @@ function calendarSettings() {
     const asking = calNewCal.asking === c.id;
     return h('div', { class: 'calsetrow', 'data-key': c.id },
       h('label', { class: 'bcheck' },
-        h('input', { type: 'checkbox', checked: calShown(c), onchange: (e) => calSetShown(c.id, e.currentTarget.checked) }),
+        h('input', { type: 'checkbox', checked: calShown(c), 'data-focus': `shown:${c.id}`, onchange: calKeepFocus((e) => calSetShown(c.id, e.currentTarget.checked)) }),
         h('i', { style: { background: Cal.calendarColor(c, cats) } }), name),
       asking ? h('span', { class: 'calconfirm', role: 'group', 'aria-label': T`Zmazať kalendár ${name}` },
         h('span', {}, n ? T`Zmazať aj s ${eventsWord(n)}?` : T('Zmazať?')),
@@ -10744,7 +10753,7 @@ function calendarSettings() {
     h('h3', {}, T('Predvolené zobrazenie')),
     h('div', { class: 'seg', role: 'radiogroup', 'aria-label': T('Kalendár sa otvorí na') }, CAL_VIEWS.map(([id, label]) =>
       h('button', { type: 'button', role: 'radio', 'aria-checked': String(v === id), class: v === id ? 'on' : '',
-        onclick: () => { if (v === id) return; cal.view = id; cal.scrolled = false; putAccount(CAL_PREFS, { ...S.account[CAL_PREFS], view: id }).catch(() => alert(T('Nastavenie sa neuložilo.'))); render(); } }, label))),
+        'data-focus': `view:${id}`, onclick: calKeepFocus(() => { if (v === id) return; cal.view = id; cal.scrolled = false; putAccount(CAL_PREFS, { ...S.account[CAL_PREFS], view: id }).catch(() => alert(T('Nastavenie sa neuložilo.'))); render(); }) }, label))),
     h('p', { class: 'hint' }, T('Takto sa kalendár ukáže na úvodnej ploche aj na Ctrl+D.')),
     h('h3', {}, T('Kalendáre')),
     cals.length ? h('div', { class: 'calshown calsetlist' }, cals.map(row)) : null,
@@ -10753,20 +10762,20 @@ function calendarSettings() {
         oninput: (e) => { calNewCal.name = e.target.value; }, 'data-root': '__calNewName' }),
       h('div', { class: 'calaccent', role: 'radiogroup', 'aria-label': T('Farba nového kalendára') }, Cal.ACCENT_PALETTE.map((c) =>
         h('button', { type: 'button', role: 'radio', class: color === c ? 'on' : '', title: c, 'aria-label': T`Farba ${c}`, 'aria-checked': String(color === c),
-          style: { background: c }, onclick: () => { calNewCal.color = c; render(); } }))),
+          style: { background: c }, 'data-focus': `color:${c}`, onclick: calKeepFocus(() => { calNewCal.color = c; render(); }) }))),
       h('button', { type: 'submit', class: 'primary' }, T('Pridať kalendár'))) : null,
     h('p', { class: 'hint' }, T('Odškrtnutý kalendár sa vo Wefte nekreslí a jeho udalosti ostávajú. Zmazaný zmizne aj s udalosťami.')),
     subjects.length ? h('h3', {}, T('Predmety v rozvrhu')) : null,
     subjects.length ? h('div', { class: 'calshown' }, subjects.map((s) => h('label', { class: 'bcheck', 'data-key': s.key },
-      h('input', { type: 'checkbox', checked: !off.has(s.key), onchange: (e) => calSetSubject(s.key, e.currentTarget.checked) }),
+      h('input', { type: 'checkbox', checked: !off.has(s.key), 'data-focus': `subject:${s.key}`, onchange: calKeepFocus((e) => calSetSubject(s.key, e.currentTarget.checked)) }),
       h('i', { style: { background: paint.get(s.key) } }), s.name))) : null,
     subjects.length ? h('p', { class: 'hint' }, T('Odškrtnutý predmet sa v kalendári nekreslí ani nepripomína, ani keď odpadne alebo sa supluje.')) : null,
     h('h3', {}, T('Pripomienky')),
-    h('label', { class: 'bcheck' }, h('input', { type: 'checkbox', checked: calRemindOn(), onchange: (e) => calSetRemind(e.currentTarget.checked) }),
+    h('label', { class: 'bcheck' }, h('input', { type: 'checkbox', checked: calRemindOn(), 'data-focus': 'remind', onchange: calKeepFocus((e) => calSetRemind(e.currentTarget.checked)) }),
       h('span', {}, T('Upozorniť v čase pripomienky'), h('small', {}, T('Udalosť s pripomienkou ukáže notifikáciu na zariadení, kde Weft beží (desktopová appka beží aj so zatvoreným oknom), a klik ju otvorí. Kalendarix dáva každej udalosti pripomienku 2 hodiny vopred pre telefón, takže zapnuté pípne aj pri nich.')))),
     'Notification' in window && Notification.permission === 'denied' ? h('p', { class: 'hint' }, T('Tento prehliadač má notifikácie Weftu zakázané.')) : null,
     h('h3', {}, T('Návrhy zo správ')),
-    h('label', { class: 'bcheck' }, h('input', { type: 'checkbox', checked: calSuggestOn(), onchange: (e) => calSetPrefs({ suggest: e.currentTarget.checked }) }),
+    h('label', { class: 'bcheck' }, h('input', { type: 'checkbox', checked: calSuggestOn(), 'data-focus': 'suggest', onchange: calKeepFocus((e) => calSetPrefs({ suggest: e.currentTarget.checked })) }),
       h('span', {}, T('Navrhovať udalosti zo správ'), h('small', {}, T('Pod správou s termínom ponúkne „Pridať do kalendára“. Čas číta toto zariadenie; či je to naozaj plán, posúdi malý model na asuse. Text nikam inam neodchádza.')))),
   ];
 }
