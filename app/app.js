@@ -514,7 +514,7 @@ async function flushOut() {
     // Written in an earlier window: the message it answers may not be loaded here yet, so it is read first.
     let thread;
     try { thread = await heldReply(r, it.room, to); } catch {
-      shown.waiting = true; r.version++; goOffline(); break;
+      shown.waiting = true; r.version++; goOffline(); refresh(); break; // already offline, goOffline draws nothing
     }
     if (thread) {
       // The text is kept in the chat's stash (every window, after a reload too), without the reply.
@@ -535,6 +535,7 @@ async function flushOut() {
         shown.waiting = true;
         r.version++;
         goOffline();
+        refresh(); // already offline, goOffline draws nothing: the bubble (and a forward's note) would stay „sending“
         break;
       }
       // Again as the same bubble (a forward's note follows it), sending what was kept (a reply keeps its relation).
