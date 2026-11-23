@@ -5274,6 +5274,8 @@ document.addEventListener('keydown', (e) => {
   else if (mod && (key === '/' || key === '?')) run(() => (S.overlay?.kind === 'help' ? (S.overlay = null, render()) : openOverlay('help')));
   else if (key === 'tab' && S.panel === 'grades' && !mod) run(() => setGradeMode(S.gradeMode === 'table' ? 'recent' : 'table'));
   else if (key === 'escape' && S.overlay) run(() => closeOverlay(true));
+  // Esc in the calendar's editor, detail or search closes that, not the feed beside it.
+  else if (key === 'escape' && !S.panel && (cal.edit || cal.detail || cal.search) && document.activeElement?.closest('.home-calendar')) run(() => (cal.edit ? (cal.edit = null, render()) : calCloseBox()));
   // Feed's own keys (categories, tiles, its reader) come before Esc closes it.
   else if (S.surface === 'feed' && !S.panel && !S.overlay && !typing && feed.key(e)) e.preventDefault();
   else if (key === 'escape' && S.surface === 'feed' && !S.panel) run(closeFeed);
@@ -11094,18 +11096,18 @@ function calEditor() {
       ed.ruleTouched ? null : h('button', { type: 'button', class: 'ghost', onclick: () => calSubmit('one') }, T('Len túto')),
       first ? null : h('button', { type: 'button', class: 'ghost', onclick: () => calSubmit('following') }, T('Túto a ďalšie')),
       h('button', { type: 'button', class: 'primary', onclick: () => calSubmit('all') }, T('Celú sériu')),
-      h('button', { type: 'button', class: 'ghost', onclick: () => { ed.asking = null; render(); } }, T('Späť')));
+      h('button', { type: 'button', class: 'ghost', onclick: () => { ed.asking = null; render(); calEditBox()?.querySelector('.calbtns button.primary')?.focus(); } }, T('Späť')));
   } else if (ed.asking === 'del') {
     buttons = h('div', { class: 'calbtns calask' }, h('span', {}, recurring ? T('Opakuje sa. Zmazať:') : T`Zmazať „${ed.title}“?`),
       recurring ? h('button', { type: 'button', class: 'ghost danger', onclick: () => calDelete('one') }, T('Len túto')) : null,
       recurring && !first ? h('button', { type: 'button', class: 'ghost danger', onclick: () => calDelete('following') }, T('Túto a ďalšie')) : null,
       h('button', { type: 'button', class: 'ghost danger', onclick: () => calDelete('all') }, recurring ? T('Celú sériu') : T('Zmazať')),
-      h('button', { type: 'button', class: 'ghost', onclick: () => { ed.asking = null; render(); } }, T('Späť')));
+      h('button', { type: 'button', class: 'ghost', onclick: () => { ed.asking = null; render(); calEditBox()?.querySelector('.calbtns .danger')?.focus(); } }, T('Späť')));
   } else {
     buttons = h('div', { class: 'calbtns' },
       h('button', { class: 'primary', type: 'submit' }, T('Uložiť')),
       h('button', { class: 'ghost', type: 'button', onclick: close }, T('Zrušiť')),
-      ed.isNew ? null : h('button', { class: 'ghost danger', type: 'button', onclick: () => { ed.asking = 'del'; render(); } }, T('Zmazať')));
+      ed.isNew ? null : h('button', { class: 'ghost danger', type: 'button', onclick: () => { ed.asking = 'del'; render(); calEditBox()?.querySelector('.calask .danger')?.focus(); } }, T('Zmazať')));
   }
   return h('form', { class: 'caledit', onsubmit: (e) => { e.preventDefault(); calSubmit(); } },
     h('input', { name: 'title', value: ed.title, placeholder: T('Názov'), required: true, oninput: set('title'), 'data-root': '__calTitle' }),
