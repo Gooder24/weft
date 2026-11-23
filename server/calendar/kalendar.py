@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Weft's calendar on asus: the master copy of Kalendarix's calendars.json and the API Weft edits it through.
 
-The file keeps Kalendarix's layout (docs/calendars-json.md in github.com/Gooder24/kalendarix), so the
+The file keeps Kalendarix's layout (docs/calendars-json.md in github.com/Gooder24/kalendarix-archive), so the
 same data shows in Weft, in Kalendarix on x270 and in its desktop widget. Two ways in:
 
   HTTP on 127.0.0.1:29327 behind Caddy /_calendar/ (Karchi's Matrix token):
