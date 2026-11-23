@@ -123,7 +123,8 @@ def clean(s):
     """Plain text of a feed's HTML: tags gone, entities like &lt;select&gt; read as the characters they stand for
     (Weft shows text, never HTML), runs of spaces and blank lines made one."""
     text = html.unescape(re.sub(r'<[^>]*>', '', str(s or '')))
-    return re.sub(r'\n\s*\n\s*', '\n\n', re.sub(r'[ \t\r\f\v]+', ' ', text)).strip()
+    text = re.sub(r' *\n *', '\n', re.sub(r'[ \t\r\f\v]+', ' ', text))
+    return re.sub(r'\n{3,}', '\n\n', text).strip()
 
 
 def web_url(url):

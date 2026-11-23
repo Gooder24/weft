@@ -371,7 +371,11 @@ export function createFeed({ h, api, kv, refresh, offline, user, settingsPanel, 
   }
   function openReader(id) { state.reader = id; state.sel = id; refresh(); requestAnimationFrame(() => document.querySelector('.feed-read')?.focus()); }
   function closeReader() {
-    const id = state.reader; state.reader = null; refresh();
+    const id = state.reader; state.reader = null;
+    // A post read past the drawn tiles gets its page drawn, so the focus has somewhere to land.
+    const at = shown.findIndex((x) => x.id === id);
+    if (at >= state.limit) state.limit = (Math.floor(at / PAGE) + 1) * PAGE;
+    refresh();
     requestAnimationFrame(() => { const el = document.querySelector(`.feed-tile[data-feed-id="${CSS.escape(id || '')}"]`); el?.scrollIntoView({ block: 'nearest' }); el?.focus(); });
   }
   function step(d) { const i = shown.findIndex((x) => x.id === state.reader); const next = shown[i + d]; if (next) openReader(next.id); }
