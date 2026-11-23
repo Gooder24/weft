@@ -15,13 +15,6 @@ jobs:
     # Karchi's own pushes and PRs run on asus (github/asus-runner.sh in Karchi-skills.md);
     # a pull request from a fork runs on GitHub's machines.
     runs-on: ${{ github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || 'asus' }}
-    services:
-      postgres:
-        image: postgres:17-alpine
-        env:
-          POSTGRES_PASSWORD: test
-        ports: ["127.0.0.1::5432"]
-        options: --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 15
     defaults:
       run:
         working-directory: server/calendar
@@ -35,7 +28,6 @@ jobs:
       - run: npm ci
       - name: Typecheck (strict)
         run: npx tsc
+      # A Postgres 17 of the job's own (embedded-postgres): the asus runner has no Docker (github-ci, Karchi-skills.md).
       - name: Tests, the Postgres part included
-        env:
-          TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:${{ job.services.postgres.ports[5432] }}/postgres
-        run: node --test
+        run: npm run test:db
