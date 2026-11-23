@@ -322,6 +322,8 @@ function clearSession() {
   feed.clear();
   S.homeReady = S.homeSynced = false;
   S.rooms.clear(); // also what a kept copy showed before asus said the session had ended
+  for (const it of S.forwards || []) clearTimeout(it.gone);
+  S.forwards = [];
   S.archiveTag = null; S.archiveAt = 0;
   S.fromSnapshot = false;
   cal.doc = null; cal.loaded = false;
@@ -512,7 +514,7 @@ async function flushOut() {
     // Written in an earlier window: the message it answers may not be loaded here yet, so it is read first.
     let thread;
     try { thread = await heldReply(r, it.room, to); } catch {
-      shown.waiting = true; r.version++; goOffline(); break;
+      shown.waiting = true; r.version++; goOffline(); refresh(); break; // already offline, goOffline draws nothing
     }
     if (thread) {
       // The text is kept in the chat's stash (every window, after a reload too), without the reply.
@@ -533,9 +535,11 @@ async function flushOut() {
         shown.waiting = true;
         r.version++;
         goOffline();
+        refresh(); // already offline, goOffline draws nothing: the bubble (and a forward's note) would stay „sending“
         break;
       }
-      failLocal(r, it.txn, err, () => sendAgain(r, 'm.room.message', it.content, async () => it.content));
+      // Again as the same bubble (a forward's note follows it), sending what was kept (a reply keeps its relation).
+      failLocal(r, it.txn, err, () => sendAgain(r, 'm.room.message', shown.content, async () => it.content));
     }
     saveOutbox(outbox().filter((x) => x.txn !== it.txn));
   }
@@ -3198,21 +3202,22 @@ async function saveRelay(change) {
   render();
 }
 /** Chats to pick for something to go to, the latest first, filtered by the words typed. */
-function chatPicks(query, skip = []) {
+function chatPicks(query, skip = [], most = 40) {
   const words = norm(query).split(/\s+/).filter(Boolean);
   const off = serversOff();
   return [...S.rooms.values()].filter((x) => isChat(x) && !x.archiveOnly && !skip.includes(x.id) && roomTitle(x) && !serverOff(x, off))
     .sort((a, b) => (roomModel(b).messages.at(-1)?.origin_server_ts || 0) - (roomModel(a).messages.at(-1)?.origin_server_ts || 0))
-    .filter((x) => words.every((w) => norm(`${roomTitle(x)} ${appOf(x.app)?.name || ''}`).includes(w))).slice(0, 40);
+    .filter((x) => words.every((w) => norm(`${roomTitle(x)} ${appOf(x.app)?.name || ''}`).includes(w))).slice(0, most);
 }
-const chatPickRow = (o, x, i) => resultRow(o, null, i, [avatar(roomAvatar(x), roomTitle(x), 28),
+const chatPickRow = (o, x, i, extra = '') => resultRow(o, null, i, [avatar(roomAvatar(x), roomTitle(x), 28),
   h('div', { class: 'rmeta' }, h('b', {}, highlighted(roomTitle(x), o.query)), h('small', {}, appOf(x.app)?.name || 'Matrix')),
-  appOf(x.app) ? h('img', { class: 'rnet', src: appOf(x.app).icon, alt: '' }) : null]);
+  appOf(x.app) ? h('img', { class: 'rnet', src: appOf(x.app).icon, alt: '' }) : null], extra);
 
 /** Preposlať: a shared post's address goes into the picked chat's message box, after what is there, and Karchi
  *  sends it himself. Only here and in the message's menu does its address show. */
 const openForward = (link) => openOverlay('forward', { link });
 function forwardPickView(o) {
+  if (!o.link) return forwardCopyView(o);
   const list = chatPicks(o.query);
   o.flat = list.map((x) => () => forwardTo(o.link, x.id));
   if (o.index >= o.flat.length) o.index = 0;
@@ -3235,6 +3240,100 @@ function forwardTo(link, id) {
   S.focusComposer = true;
   select(id);
 }
+// ------------------------------------------------------------------ forward: a message again, in another chat
+
+/** What forwarding `ev` sends: its text (as it reads now, without the quote it answers or mentions of this chat's
+ *  people) or its file (the same upload, no new one). null when it is nothing Weft can send again (a poll, a call).
+ *  A shared post or reel is not this: its address goes into a message box instead (openForward). */
+function forwardContent(m, ev) {
+  // Archive rows are no Matrix events (their files live in the archive), so like the hover bar they are not offered.
+  if (ev.archived || ev.type !== 'm.room.message' || isRedacted(m, ev) || pollIn(ev, ev.content) || callOf(ev)) return null;
+  const c = contentOf(m, ev);
+  if (['m.text', 'm.notice', 'm.emote'].includes(c.msgtype)) {
+    const body = plainBody(c).trim(); // an edit's new text has no quote to cut
+    return body ? { msgtype: 'm.text', body } : null;
+  }
+  if (!['m.image', 'm.video', 'm.audio', 'm.file'].includes(c.msgtype) || !(c.url || c.file?.url)?.startsWith('mxc://')) return null;
+  const { msgtype, body, filename, info, url, file, 'org.matrix.msc3245.voice': voice, 'org.matrix.msc1767.audio': audio } = c;
+  return structuredClone(Object.fromEntries(Object.entries({ msgtype, body: body || filename || 'file', filename, info, url, file,
+    'org.matrix.msc3245.voice': voice, 'org.matrix.msc1767.audio': audio }).filter(([, v]) => v !== undefined)));
+}
+/** „Preposlať…“ on a message: a shared post's address into a message box, anything else as a copy to a picked chat. */
+function forwardMessage(r, ev) {
+  const m = roomModel(r);
+  const link = isRedacted(m, ev) ? '' : shareLink(contentOf(m, ev));
+  if (link) return openForward(link);
+  openOverlay('forward', { room: r.id, event: ev.event_id }); // one Weft cannot send says so
+}
+/** Ctrl+J „Preposlať poslednú správu…“: the open chat's newest message, a merged chat's included. */
+function forwardLast(r) {
+  const t = timelineOf(r);
+  const ev = t.msgs.findLast((x) => !x.pending && !isRedacted(roomModel(t.roomOf(x)), x));
+  if (ev) forwardMessage(t.roomOf(ev), ev);
+}
+function forwardCopyView(o) {
+  const from = S.rooms.get(o.room);
+  const ev = from && roomModel(from).byId.get(o.event);
+  const content = ev && forwardContent(roomModel(from), ev);
+  const words = norm(o.query).split(/\s+/).filter(Boolean);
+  // The list is taken once: a message arriving or a chat leaving meanwhile must not move another chat under the highlight.
+  o.pool ||= chatPicks('', [o.room], Infinity);
+  const list = o.pool.filter((x) => words.every((w) => norm(`${roomTitle(x)} ${appOf(x.app)?.name || ''}`).includes(w))).slice(0, 40);
+  // A chat that left while the picker was open stays in its place, but cannot be picked.
+  o.flat = content ? list.map((x) => () => { if (S.rooms.get(x.id) !== x) return; S.overlay = null; forwardCopy(from, x, content); }) : [];
+  if (o.index >= o.flat.length) o.index = 0;
+  const what = !content ? '' : content.msgtype === 'm.text' ? content.body.replace(/\s+/g, ' ') : content.body;
+  return [
+    cmdInput(o, T('Preposlať do… (meno)')),
+    h('div', { class: 'rsec fwdwhat' }, content ? (what.length > 80 ? `${what.slice(0, 80)}…` : what) : T('Táto správa sa nedá preposlať.')),
+    h('div', { class: 'results', ...listScroll(o) }, list.length && content
+      ? list.map((x, i) => chatPickRow(o, x, i, S.rooms.get(x.id) === x ? '' : ' dim'))
+      : content ? h('div', { class: 'empty' }, T('Taký chat sa nenašiel.')) : null),
+  ];
+}
+/** Sends the copy into `to` as Karchi's own message; the chat it came from says where it went, and a copy that did
+ *  not go stays in `to` as „neodoslané“ with „Znova odoslať“. */
+async function forwardCopy(from, to, content) {
+  noteHeldReply(to);
+  const note = { id: txnId(), from: from.id, to: to.id, content, state: 'sending' };
+  S.forwards = [...(S.forwards || []), note];
+  const sending = sendAgain(to, 'm.room.message', content, async () => content);
+  note.txn = [...to.pending.values()].find((x) => x.content === content)?.event_id; // sendAgain's bubble, made at once
+  await sending;
+  render();
+}
+/** Follows the copy's own bubble in `to` by its transaction id (the outbox keeps it; „Znova odoslať“ makes a new
+ *  bubble with the same content object). A bubble that leaves after it was on its way went out; one that leaves after
+ *  it failed was dropped („Zahodiť“), so it did not go. */
+function forwardState(it) {
+  const r = S.rooms.get(it.to);
+  if (!r) return (it.state = it.state === 'sent' ? 'sent' : 'failed'); // the chat left before its copy was seen going
+  const p = r.pending.get(it.txn) || [...r.pending.values()].find((x) => x.content === it.content);
+  // Its content too: a retry that waits for the network is queued with a rebuilt copy, and the next one shows that.
+  if (p) { it.txn = p.event_id; it.content = p.content; it.state = p.failed ? 'failed' : p.waiting ? 'waiting' : 'sending'; }
+  else if (it.state !== 'failed') it.state = 'sent';
+  return it.state;
+}
+const forwardDrop = (it) => { clearTimeout(it.gone); S.forwards = (S.forwards || []).filter((x) => x !== it); };
+/** Over the message box, in sight wherever the chat is scrolled: where a forwarded message went, or that it did not. */
+function forwardBar(rooms) {
+  for (const it of S.forwards || []) forwardState(it); // every note follows its copy, also while its chat is not open
+  const ids = new Set(rooms.map((x) => x.id));
+  const notes = (S.forwards || []).filter((it) => ids.has(it.from)).map((it) => {
+    const to = S.rooms.get(it.to);
+    const name = to ? roomTitle(to) : 'chat';
+    const state = forwardState(it);
+    // „Preposlané“ goes after a while, however late the copy went (the outbox sends it once the network is back).
+    if (state === 'sent' && !it.gone) it.gone = setTimeout(() => { S.forwards = (S.forwards || []).filter((x) => x !== it); render(); }, 8000);
+    const label = state === 'sending' ? T`Preposiela sa do chatu ${name}…` : state === 'sent' ? T`Preposlané do chatu ${name}`
+      : state === 'waiting' ? T`Preposlanie do chatu ${name} odíde, keď bude sieť` : T`Preposlanie do chatu ${name} neodišlo`;
+    return h('div', { class: `replybar fwdnote${state === 'failed' ? ' failed' : ''}`, 'data-key': `fwd:${it.id}` }, h('span', {}, label),
+      to ? h('button', { class: 'ghost', onclick: () => { forwardDrop(it); select(to.id); } }, T('Otvoriť')) : null,
+      h('button', { class: 'ghost', title: T('Zavrieť'), onclick: () => { forwardDrop(it); render(); } }, icon('close')));
+  });
+  return notes.length ? h('div', { class: 'fwdnotes', 'data-key': '__fwd' }, notes) : null;
+}
+
 async function copyLink(link) {
   try { await navigator.clipboard.writeText(link); } catch { prompt(T('Odkaz:'), link); }
 }
@@ -5051,7 +5150,7 @@ function openMenu(ev, e) {
 // Every scrolling list stays where Karchi left it when the window is drawn again (the mouse picking a row, a setting
 // changed, a sync): render() keeps the place of each element with a data-scroll key. Typing a new query starts at the
 // top again (cmdInput), the keyboard's choice is brought into sight (overlayMark).
-const listScroll = (o) => ({ 'data-scroll': `list:${o.kind}` });
+const listScroll = (o) => ({ 'data-scroll': `list:${o.kind}:${o.query ?? ''}` });
 // A list that opens under a resting mouse ignores it until it really moves, so the keyboard keeps the choice.
 // The browser also sends mouse events when the list is redrawn under the cursor; those carry the same position.
 let pointerAt = null;
@@ -6494,7 +6593,7 @@ function viewerKey(e) {
   e.preventDefault();
   return true;
 }
-addEventListener('resize', () => S.overlay?.kind === 'image' && render());
+addEventListener('resize', () => ['image', 'forward', 'relay'].includes(S.overlay?.kind) && render()); // pickers follow the chat pane
 
 /** The viewer's video. A click on it or its controls gives focus back to the page at once: a focused video would
  *  answer Space and the arrows itself, on top of viewerKey (Space played and paused again, or the keys died). */
@@ -7200,7 +7299,8 @@ function msgActs(r, m, ev, mine) {
       class: 'qreply', title: T('Odpovedať (Ctrl+R)'),
       onclick: () => { writeIn(r); S.replyTo = { room: r.id, event: ev.event_id }; S.focusComposer = true; render(); },
     }, icon('undo')),
-    shareLink(contentOf(m, ev)) ? h('button', { class: 'qmenu', title: T('Preposlať…'), onclick: () => openForward(shareLink(contentOf(m, ev))) }, icon('forward')) : null,
+    shareLink(contentOf(m, ev)) ? h('button', { class: 'qmenu', title: T('Preposlať…'), onclick: () => openForward(shareLink(contentOf(m, ev))) }, icon('forward'))
+      : forwardContent(m, ev) ? h('button', { class: 'qfwd', title: T('Preposlať'), onclick: () => forwardMessage(r, ev) }, icon('forward')) : null,
     contentOf(m, ev).msgtype === 'm.audio' && contentOf(m, ev).url ? h('button', { class: 'qmenu', title: T('Stiahnuť hlasovku'), onclick: () => downloadVoice(r, ev, contentOf(m, ev)) }, icon('download')) : null,
     mine ? h('button', { class: 'qmenu', title: canEdit(r, m, ev) || canDelete(r, m, ev) ? T('Upraviť, odstrániť, počkať na odpoveď') : T('Počkať na odpoveď'), onclick: (e) => openMsgMenu(e, r, ev) }, icon('more-horizontal')) : null);
 }
@@ -7371,7 +7471,8 @@ function msgMenuView(o) {
   return ctxMenu(o, [
     [c.msgtype === 'm.audio' && c.url ? item(icon('download'), T('Stiahnuť hlasovku'), 'Ctrl+S', () => downloadVoice(r, ev, c)) : null],
     [canEdit(r, m, ev) ? item(icon('pencil'), T('Upraviť'), lastEditable(r) === ev ? '↑' : null, () => startEdit(r, ev)) : null,
-      ev.sender === S.userId && !r.archiveOnly && !ev.archived ? item(icon('forward'), T('Keď odpíše, ukázať kamošovi…'), null, () => openRelay(r, ev)) : null,
+      !r.archiveOnly && !shareLink(c) && forwardContent(m, ev) ? item(icon('forward'), T('Preposlať…'), null, () => forwardMessage(r, ev)) : null,
+      ev.sender === S.userId && !r.archiveOnly && !ev.archived ? item(icon('eye'), T('Keď odpíše, ukázať kamošovi…'), null, () => openRelay(r, ev)) : null,
       ev.sender !== S.userId && !isBot(ev.sender) && !dmPartner(r) ? item(icon('label'), T`Prezývka pre ${memberName(r, ev.sender)}…`, null, () => openNickFor([ev.sender], networkName(r, ev.sender))) : null],
     // A shared post or reel: the one place besides Preposlať where its address shows.
     ((link) => (link ? [item(icon('forward'), T('Preposlať…'), null, () => openForward(link)), item(icon('link'), T('Kopírovať odkaz'), null, () => copyLink(link))] : []))(isRedacted(m, ev) ? '' : shareLink(contentOf(m, ev))),
@@ -7597,6 +7698,7 @@ function chatView(r, e = null) {
       items,
       heldBar(r, held === m.held ? m : { held }),
       h('div', { class: 'tonew', 'data-key': '__tonew' }, h('button', { type: 'button', title: T('Na najnovšie správy (Ctrl+↓)'), 'aria-label': T('Na najnovšie správy'), hidden: !S.chatAway, onclick: chatToNew }, icon('arrow-down'), h('kbd', {}, 'Ctrl+↓')))),
+    forwardBar(t.parts),
     r.archiveOnly ? archiveCompose(r) : chatCompose(r, m, merged ? t : null));
 }
 
@@ -9800,6 +9902,7 @@ function toolList() {
     [T('Nahrať hlasovku'), 'voice hlasova sprava audio nahravka mikrofon', 'Ctrl+Shift+A', toggleRecording, !!r],
     [T('Prehrať / pozastaviť hlasovku'), 'voice hlasovka prehrat pustit pozastavit audio play pause', 'Ctrl+Shift+Space', voiceShortcut, !!voice.event || !!r],
     [T('Odoslať neskôr'), 'send later sendlater naplanovat', 'Ctrl+Shift+Enter', () => openLater(r), !!r],
+    [T('Preposlať poslednú správu…'), 'forward preposlat poslat dalej zdielat share', '', () => forwardLast(r), !!r],
     [T('Keď odpíše, ukázať odpoveď kamošovi…'), 'relay screenshot preposlat odpoved kamos cakam odpise obrazok', '', () => openRelay(r), !!r],
     [T('Poslať GIF'), 'gif klipy obrazok', '/gif', () => openGifs(r), !!r],
     ...(call ? [[callWhere(call.network), 'call hovor volat zavolat videohovor telefon video', '', () => openCall(r)]] : []),
@@ -9867,7 +9970,10 @@ function overlayView() {
   const body = o.kind === 'search' ? searchView(o) : o.kind === 'new' ? newChatView(o) : o.kind === 'remind' ? remindView(o) : o.kind === 'chatlook' ? chatLookView(o) : o.kind === 'stashask' ? stashAskView(o)
     : o.kind === 'gif' ? gifView(o) : o.kind === 'emoji' ? emojiView(o) : o.kind === 'later' ? laterView(o) : o.kind === 'tools' ? toolsView(o) : o.kind === 'merge' ? mergePickView(o) : o.kind === 'relay' ? relayPickView(o) : o.kind === 'forward' ? forwardPickView(o) : o.kind === 'nick' ? nickView(o)
     : [h('div', { class: 'rsec' }, T('Klávesové skratky')), h('div', { class: 'results keys', ...listScroll(o) }, SHORTCUTS.map(([k, label]) => h('div', { class: 'krow' }, h('kbd', {}, k), label)))];
-  const veil = h('div', { class: `veil${o.kind === 'search' || o.kind === 'tools' || o.kind === 'merge' || o.kind === 'relay' || o.kind === 'forward' ? ' search' : ''}`, onclick: (e) => onVeil(e) && close() }, h('div', { class: `cmd ${o.kind}`, onclick: (e) => e.stopPropagation() },
+  // Pickers that send the open chat's message elsewhere stand over that chat, not over the inbox beside it.
+  const pane = (o.kind === 'forward' || o.kind === 'relay') && document.querySelector('#app .detail.chat')?.getBoundingClientRect();
+  const side = pane?.left > 0 && pane.width >= 360 ? { paddingLeft: `${Math.round(pane.left) + 16}px`, paddingRight: `${Math.max(0, Math.round(innerWidth - pane.right)) + 16}px` } : null;
+  const veil = h('div', { class: `veil${o.kind === 'search' || o.kind === 'tools' || o.kind === 'merge' || o.kind === 'relay' || o.kind === 'forward' ? ' search' : ''}${side ? ' overchat' : ''}`, style: side, onclick: (e) => onVeil(e) && close() }, h('div', { class: `cmd ${o.kind}`, onclick: (e) => e.stopPropagation() },
     h('button', { class: 'pclose', title: T('Zavrieť'), onclick: close }, icon('close')), body));
   if (o.kind === 'search') {
     veil._o = o;

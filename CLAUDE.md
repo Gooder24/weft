@@ -155,6 +155,10 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   A shared reel or story is its video alone, without the page's card or address; Preposlať (the hover bar, a right
   click on it, the viewer) shows the address without Instagram's tracking parameters and puts it into a picked chat's
   message box, unsent; „Kopírovať odkaz“ copies it. Check: `overenie/reels/ui.cjs`.
+- Forwarding any other message („Preposlať“: the bar over a message, its ⋯ menu, Ctrl+J for the newest) sends a copy
+  into a picked chat as Karchi's own new message: text without the quote it answers or mentions, a file or voice
+  message as the same upload; a note over the message box says whether it went. The picker, like „Keď odpíše…“, stands
+  over the open chat, not the inbox. Check: `overenie/forward/run.sh`.
 - `server/feed/feed.py` serves explicit daily reading on asus (unit `matrix-spike-feed`, localhost
   29328 behind `/_feed/`). Calendar occupies the unused message area and fits the full week/day without scrolling. Inbox, an open
   conversation and calendar share one workspace, without Calendar/Messages tabs. Feed opens through its
