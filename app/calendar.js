@@ -174,13 +174,16 @@ function weekdaysOfMonth(year, month, token) {
 
 /** The categories that come with Kalendarix (src/core/categories.ts). */
 export const CATEGORIES = [
-  { id: 'school', name: T('Školské predmety'), color: '#4fae6b' },
-  { id: 'school-events', name: T('Školské akcie'), color: '#b9e6a2' },
-  { id: 'tests', name: T('Testy'), color: '#e5584f' },
-  { id: 'trips', name: 'Trips', color: '#f0913a' },
-  { id: 'holidays', name: T('Prázdniny'), color: '#f2d14e' },
-  { id: 'family', name: T('Rodinné'), color: '#9fd0f5' },
+  { id: 'school', name: T('Školské predmety'), color: '#4fae6b', match: /predmet|rozvrh|vyuc|subject|timetable|lesson/ },
+  { id: 'school-events', name: T('Školské akcie'), color: '#b9e6a2', match: /skolsk\w* akc|skola akc|school event/ },
+  { id: 'tests', name: T('Testy'), color: '#e5584f', match: /test|pisomk|skusk|exam|quiz/ },
+  { id: 'trips', name: 'Trips', color: '#f0913a', match: /trip|vylet|cest|travel|dovolenk/ },
+  { id: 'holidays', name: T('Prázdniny'), color: '#f2d14e', match: /prazd|holiday|vacation|volno/ },
+  { id: 'family', name: T('Rodinné'), color: '#9fd0f5', match: /rodin|family/ },
 ];
+/** Colours for a calendar of its own colour, and for a category of Karchi's own (none taken by one that comes with Kalendarix). */
+export const CALENDAR_PALETTE = ['#628790', '#d98cb3', '#7fb8a4', '#c9a26b', '#8fa3d9', '#c98f7a', '#9ab86a', '#b79ad6'];
+export const CATEGORY_PALETTE = ['#a374e0', '#2f55b0', '#a8713f', '#6e4526', '#e06c9f', '#3aa6b9', '#7d8a2e', '#8d99ae'];
 
 /** Category id -> colour, the file's own over the ones that come with Kalendarix. */
 export function categoryColors(doc) {
@@ -199,11 +202,38 @@ export function isManaged(event, calendarId) {
 }
 export const isSynced = (cal) => !!cal.sourceUrl || cal.events.some((e) => isManaged(e, cal.id));
 
-/** Every category an event can take: the ones that come with Kalendarix, then the file's own. */
+/** Every category an event or a calendar can take: the ones that come with Kalendarix, then the file's own (`own`, which
+ *  Settings renames, recolours and removes). A calendar naming a category nobody defines is itself that category, with
+ *  its name and colour, as Kalendarix reads it (categoriesOf). */
 export function categoryList(doc) {
   const out = new Map(CATEGORIES.map((c) => [c.id, c]));
-  for (const c of doc.categories || []) if (c?.id && /^#[0-9a-f]{6}$/i.test(c.color)) out.set(c.id, { id: c.id, name: c.name || c.id, color: c.color });
+  for (const c of doc.categories || []) if (c?.id && isHex(c.color)) out.set(c.id, { id: c.id, name: String(c.name || '').trim() || c.id, color: c.color.toLowerCase(), own: true });
+  for (const c of doc.calendars || []) {
+    if (typeof c.category !== 'string' || !c.category || out.has(c.category)) continue;
+    const color = [c.customColor, c.color].find(isHex);
+    if (color) out.set(c.category, { id: c.category, name: String(c.name || '').trim() || c.category, color: color.toLowerCase(), own: true });
+  }
   return [...out.values()];
+}
+
+const plainName = (text) => String(text ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+/** An id for a new category of this name that no other has: "Krúžok" → "kruzok". */
+export function categoryId(name, list) {
+  const stem = plainName(name).replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'category';
+  let id = stem;
+  for (let n = 2; list.some((c) => c.id === id); n++) id = `${stem}-${n}`;
+  return id;
+}
+/** The category a calendar of this name most likely is, or null (an imported file's calendar gets it, as in Kalendarix). */
+export function guessCategory(name, list) {
+  const plain = plainName(name);
+  if (!plain) return null;
+  const squeezed = plain.replace(/(.)\1+/g, '$1');
+  const named = list.find((c) => c.own && plainName(c.name) === plain);
+  if (named) return named;
+  // School events before school subjects: both are "školské".
+  for (const c of [...list.filter((x) => x.id === 'school-events'), ...list.filter((x) => x.id !== 'school-events')]) if (c.match && (c.match.test(plain) || c.match.test(squeezed))) return c;
+  return null;
 }
 
 /** Every occurrence overlapping [from, to) of the shown calendars (by default the ones the file has visible), earliest first. */

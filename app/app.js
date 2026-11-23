@@ -6,6 +6,7 @@
 
 import { T, LANG, LOCALE, setLang } from './i18n.js';
 import * as Cal from './calendar.js';
+import * as Files from './kalendarix-files.js';
 import { findWhen } from './when.js';
 import { icon } from './icons.js';
 import { STASH, GONE_MS, applyStash, stashHas, stashOf } from './stash.js';
@@ -5280,6 +5281,8 @@ document.addEventListener('keydown', (e) => {
   else if (key === 'escape' && S.panel === 'people' && pm.naming) run(() => setNaming(false));
   else if (key === 'escape' && S.panel === 'people' && (pm.sel || pm.query)) run(clearPeople);
   else if (key === 'escape' && (!S.panel || S.panel === 'calendar') && cal.edit) run(() => { cal.edit = null; render(); });
+  else if (key === 'escape' && (!S.panel || S.panel === 'calendar') && (cal.detail || cal.search)) run(calCloseBox);
+  else if (key === 'escape' && S.panel === 'settings' && calNewCal.editing) run(() => calStopEditing(calNewCal.editing.id));
   else if (key === 'escape' && S.panel === 'settings' && calNewCal.asking) run(() => calKeepCalendar(calNewCal.asking));
   else if (key === 'escape' && (S.panel || S.menu)) run(() => { S.panel = null; S.menu = false; render(); });
   else if ((S.panel === 'calendar' || (!S.panel && document.activeElement?.closest('.home-calendar'))) && !typing && !mod && !e.altKey && calendarKey(e)) e.preventDefault();
@@ -10048,18 +10051,20 @@ function homeView() {
 }
 
 // ------------------------------------------------------------------ calendar
-// Weft's own calendars, kept on asus (server/calendar/kalendar.py) in Kalendarix's calendars.json layout; Settings
-// adds and deletes them, no Kalendarix needed. Ctrl+D opens it on the view chosen in Settings (a week unless changed). Offline the
-// last copy shows and edits wait in ep_cal_out, the way messages do. Events of a sync program (the EduPage
-// timetable) are shown and not edited.
+// Weft's own calendars, kept on asus (server/calendar/kalendar.py) in Kalendarix's calendars.json layout, with all
+// Kalendarix does, no Kalendarix needed: Settings → Kalendár adds, edits and deletes calendars and categories, imports,
+// exports and subscribes to .ics files and exports to a feature phone; a click on an event shows it (Upraviť edits
+// it), R shows the year and / finds events. Ctrl+D opens it on the view chosen in Settings (a week unless changed).
+// Offline the last copy shows and edits wait in ep_cal_out, the way messages do. Events of a sync program (the
+// EduPage timetable) and of a subscription are shown and not edited.
 
-const CAL_PREFS = 'sk.karchi.calendar'; // { view: 'day' | 'week' | 'month' | 'list', shown: { [calendar id]: bool }, hiddenSubjects: [titleKey], suggest: bool, dismissed: [event id] }
-const CAL_VIEWS = [['day', T('Deň'), 'D'], ['week', T('Týždeň'), 'T'], ['month', T('Mesiac'), 'M'], ['list', T('Zoznam'), 'Z']];
+const CAL_PREFS = 'sk.karchi.calendar'; // { view: 'day' | 'week' | 'month' | 'year' | 'list', shown: { [calendar id]: bool }, hiddenSubjects: [titleKey], suggest: bool, dismissed: [event id], dualFill: 'category' | 'accent', phone: { profile, alarm } }
+const CAL_VIEWS = [['day', T('Deň'), 'D'], ['week', T('Týždeň'), 'T'], ['month', T('Mesiac'), 'M'], ['year', T('Rok'), 'R'], ['list', T('Zoznam'), 'Z']];
 const DAYS_SHORT = [T('Ne'), T('Po'), T('Ut'), T('St'), T('Št'), T('Pi'), T('So')];
 const CAL_START_HOUR = 5;
 const CAL_END_HOUR = 21;
 const CAL_HOURS = CAL_END_HOUR - CAL_START_HOUR;
-const cal = { today: Cal.dayNumber(Date.now()), doc: null, version: '', seq: 0, loaded: false, error: '', view: 'week', cursor: Cal.startOfDay(Date.now()), edit: null, lastCal: null };
+const cal = { today: Cal.dayNumber(Date.now()), doc: null, version: '', seq: 0, loaded: false, error: '', view: 'week', cursor: Cal.startOfDay(Date.now()), edit: null, lastCal: null, detail: null, search: null };
 // A click with no Weft window open: sw.js opens /?event=<key>, shown once the calendar is in.
 let calAsked = new URLSearchParams(location.search).get('event');
 const calDefault = () => (CAL_VIEWS.some(([id]) => id === S.account[CAL_PREFS]?.view) ? S.account[CAL_PREFS].view : 'week');
@@ -10118,6 +10123,7 @@ async function loadCalendar() {
   cal.loaded = true;
   refresh();
   if (!cal.scrolled) calScroll();
+  calRefreshFeeds();
   if (calAsked && cal.doc) { const key = calAsked; calAsked = null; history.replaceState(null, '', location.pathname); calShowAlarm(key); }
 }
 
@@ -10134,20 +10140,67 @@ function setCalDoc(res, keep = true) {
 }
 
 /** The same change kalendar.py makes, done here first. */
+const CAL_FRESH = { description: '', notes: '', location: '', allDay: false, rrule: null, exdates: [], alarmMinutes: '' };
+/** name, category, colour and autoAccent of addcal and updcal, as kalendar.py's calendar_fields keeps them. */
+function calFieldsOf(op, add) {
+  const out = {};
+  if (add || 'name' in op) out.name = op.name.trim();
+  if (add || 'color' in op) out.color = out.customColor = op.color.toLowerCase();
+  if ('category' in op) out.category = op.category;
+  if ('autoAccent' in op) out.autoAccent = op.autoAccent;
+  return out;
+}
 function calApply(doc, op) {
   cal.seq++;
   if (op.op === 'addcal') {
-    if (!doc.calendars.some((x) => x.id === op.cal)) doc.calendars.push({ id: op.cal, name: op.name, color: op.color, customColor: op.color, visible: true, events: [] });
+    if (!doc.calendars.some((x) => x.id === op.cal)) {
+      doc.calendars.push({ id: op.cal, ...calFieldsOf(op, true), visible: true, ...(op.sourceUrl ? { sourceUrl: op.sourceUrl } : {}), events: (op.events || []).map((e) => ({ ...CAL_FRESH, ...e })) });
+    }
     return;
   }
+  if (op.op === 'addcat' || op.op === 'updcat' || op.op === 'delcat') return calApplyCategory(doc, op);
   const c = doc.calendars.find((x) => x.id === op.cal);
   if (!c) return;
   if (op.op === 'delcal') { doc.calendars = doc.calendars.filter((x) => x !== c); return; }
+  if (op.op === 'updcal') { Object.assign(c, calFieldsOf(op, false)); return; }
+  if (op.op === 'accent') {
+    const accents = { ...c.accents };
+    if (op.color) accents[op.key] = op.color.toLowerCase(); else delete accents[op.key];
+    c.accents = accents;
+    return;
+  }
+  if (op.op === 'feed') {
+    c.events = [...c.events.filter((e) => e.remote !== true), ...op.events.map((e) => ({ ...CAL_FRESH, ...e, remote: true }))];
+    c.fetchedAt = new Date().toISOString();
+    return;
+  }
   const uid = op.uid || op.event.uid;
   const old = c.events.find((e) => e.uid === uid);
   if (op.op === 'del') c.events = c.events.filter((e) => e.uid !== uid);
   else if (old) Object.assign(old, op.event);
-  else c.events.push({ description: '', notes: '', location: '', allDay: false, rrule: null, exdates: [], alarmMinutes: '', ...op.event });
+  else c.events.push({ ...CAL_FRESH, ...op.event });
+}
+
+/** Categories of Karchi's own (Kalendarix's addCategory, updateCategory, deleteCategory; same as kalendar.py's cat_op). */
+function calApplyCategory(doc, op) {
+  const stored = (doc.categories || []).filter((c) => c && typeof c === 'object');
+  if (op.op === 'addcat') {
+    if (!stored.some((c) => c.id === op.id)) doc.categories = [...stored, { id: op.id, name: op.name.trim(), color: op.color.toLowerCase() }];
+    return;
+  }
+  const cur = Cal.categoryList(doc).find((c) => c.id === op.id && c.own);
+  if (!cur) return;
+  if (op.op === 'updcat') {
+    const next = { id: cur.id, name: 'name' in op ? op.name.trim() : cur.name, color: 'color' in op ? op.color.toLowerCase() : cur.color };
+    doc.categories = stored.some((c) => c.id === op.id) ? stored.map((c) => (c.id === op.id ? { ...c, ...next } : c)) : [...stored, next];
+    for (const c of doc.calendars) if (c.category === op.id) c.color = c.customColor = next.color;
+    return;
+  }
+  doc.categories = stored.filter((c) => c.id !== op.id);
+  for (const c of doc.calendars) {
+    for (const e of c.events) if (e.category === op.id) delete e.category;
+    if (c.category === op.id) Object.assign(c, { category: '', color: cur.color, customColor: cur.color });
+  }
 }
 
 function calSave(ops, keepEdit = false) {
@@ -10254,9 +10307,7 @@ function calShowAlarm(key) {
   S.panel = 'calendar'; S.overlay = null; S.menu = false;
   cal.cursor = Cal.startOfDay(i.start);
   if (calTouched()) { render(); calKept(); return; }
-  calOpen(i);
-  // The keys go to the event, not to the message box of a chat open under it.
-  calEditBox()?.querySelector('input[name=title], button.primary')?.focus();
+  calShow(i); // the keys go to the event, not to the message box of a chat open under it
 }
 navigator.serviceWorker?.addEventListener('message', (e) => { if (e.data?.calendar) calShowAlarm(String(e.data.calendar)); });
 
@@ -10296,7 +10347,8 @@ function calDays() {
 }
 function calMove(dir) {
   const c = cal.cursor;
-  cal.cursor = cal.view === 'month' ? Cal.startOfMonth(Cal.addMonths(c, dir)) : Cal.addDays(c, dir * ({ day: 1, week: 7, list: 14 }[cal.view]));
+  cal.cursor = cal.view === 'month' ? Cal.startOfMonth(Cal.addMonths(c, dir)) : cal.view === 'year' ? new Date(c.getFullYear() + dir, 0, 1)
+    : Cal.addDays(c, dir * ({ day: 1, week: 7, list: 14 }[cal.view]));
   render();
 }
 function calSetView(view) {
@@ -10310,6 +10362,7 @@ function calTitle() {
   const c = cal.cursor;
   if (cal.view === 'day') return `${DAYS[c.getDay()]} ${c.getDate()}. ${MONTH_NAMES[c.getMonth()]} ${c.getFullYear()}`;
   if (cal.view === 'month') return `${MONTH_NAMES[c.getMonth()]} ${c.getFullYear()}`;
+  if (cal.view === 'year') return String(c.getFullYear());
   const days = cal.view === 'list' ? [c, Cal.addDays(c, 13)] : [calDays()[0], calDays()[6]];
   const [a, b] = days;
   return a.getMonth() === b.getMonth() ? `${a.getDate()}. – ${b.getDate()}. ${MONTH_NAMES[a.getMonth()]} ${a.getFullYear()}`
@@ -10318,8 +10371,9 @@ function calTitle() {
 
 /** Keys while the calendar is open and nothing is being typed. */
 function calendarKey(e) {
-  if (cal.edit) return false;
+  if (cal.edit || cal.detail || cal.search) return false;
   const k = e.key.toLowerCase();
+  if (e.key === '/' && cal.doc) { calOpenSearch(); return true; }
   const view = CAL_VIEWS.find(([, , key]) => key.toLowerCase() === k);
   if (view) calSetView(view[0]);
   else if (k === 'arrowleft' || k === 'pageup') calMove(-1);
@@ -10334,7 +10388,11 @@ function calendarKey(e) {
 
 /** Dark text on light colours, white on dark ones. */
 const inkOn = Cal.textOn;
-const calChipStyle = (i) => ({ background: i.color, color: inkOn(i.color), borderLeft: i.accent ? `6px solid ${i.accent}` : '0' });
+/** An event of two colours is a fill and a stripe; which is which is Karchi's choice (Kalendarix's dualFill, category fill by default). */
+const calAccentFills = () => S.account[CAL_PREFS]?.dualFill === 'accent';
+const calFill = (i) => (calAccentFills() ? i.accent || i.color : i.color);
+const calStripe = (i) => (i.accent ? (calAccentFills() ? i.color : i.accent) : null);
+const calChipStyle = (i) => ({ background: calFill(i), color: inkOn(calFill(i)), borderLeft: calStripe(i) ? `6px solid ${calStripe(i)}` : '0' });
 const calWhen = (i) => (i.allDay ? T('celý deň') : `${calHm(i.start)} – ${calHm(i.end)}`);
 
 function calendarView() {
@@ -10349,15 +10407,24 @@ function calendarView() {
     h('button', { title: T('Ďalej (→)'), 'aria-label': T('Ďalej'), onclick: () => calMove(1) }, '›'),
     h('b', { class: 'caltitle' }, calTitle()),
     CAL_VIEWS.map(([id, label, key]) => h('button', { class: cal.view === id ? 'on' : '', title: `${label} (${key})`, onclick: () => calSetView(id) }, label)),
+    h('button', { class: cal.search ? 'on' : '', disabled: !cal.doc, title: T('Hľadať (/)'), 'aria-expanded': String(!!cal.search), onclick: () => (cal.search ? calCloseBox() : calOpenSearch()) }, T('Hľadať')),
     h('button', { class: 'calnew', disabled: !calWritable().length, title: T('Nová udalosť (N)'), onclick: () => calNew() }, T('+ Nová')));
   let body;
-  if (!cal.doc) {
-    body = h('div', { class: 'empty' }, !cal.loaded ? T('Načítavam kalendár…') : cal.error
-      || (S.offline ? T('Offline a kalendár ešte nie je uložený na tomto počítači.') : T('Kalendár je zatiaľ prázdny: kalendár si pridáš v Nastaveniach → Kalendár.')));
+  if (!cal.doc || (!cal.doc.calendars.length && cal.loaded)) {
+    const text = !cal.loaded ? T('Načítavam kalendár…') : cal.error || (S.offline && !cal.doc ? T('Offline a kalendár ešte nie je uložený na tomto počítači.') : '');
+    body = h('div', { class: 'empty calempty' }, text || [h('p', {}, T('Zatiaľ tu nie je žiadny kalendár.')),
+      h('div', { class: 'calbtns' }, h('button', { class: 'primary', onclick: () => togglePanel('settings', 'calendar') }, T('Pridať kalendár')),
+        h('button', { class: 'ghost', onclick: calPickFiles }, T('Importovať .ics'))),
+      h('p', { class: 'hint' }, T('Súbor .ics sem môžeš aj pretiahnuť.'))]);
   } else if (cal.view === 'month') body = calMonth();
+  else if (cal.view === 'year') body = calYear();
   else if (cal.view === 'list') body = calList();
   else body = calGrid(calDays());
-  return h('div', { class: `calendar cal-${cal.view}` }, head, body, cal.edit ? calEditor() : null);
+  // .ics files dropped on the calendar become calendars of their own (as in Kalendarix); a dragged event is not a file.
+  const files = (e) => !calDrag && [...(e.dataTransfer?.types || [])].includes('Files');
+  return h('div', { class: `calendar cal-${cal.view}`, ondragover: (e) => { if (files(e)) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; } },
+    ondrop: (e) => { if (files(e)) { e.preventDefault(); calImportFiles([...e.dataTransfer.files]); } } },
+  head, body, cal.edit ? calEditor() : cal.detail ? calDetail() : cal.search ? calSearchBox() : null);
 }
 
 /** Day and week: whole-day events in a strip, the rest at their hours. */
@@ -10394,7 +10461,7 @@ function calGrid(days) {
         return h('button', {
           class: `calev${it.whole.managed ? ' managed' : ''}`, title: `${it.whole.event.title}\n${calWhen(it.whole)}${it.whole.event.location ? `\n${it.whole.event.location}` : ''}${sub ? `\n${T`Supluje ${sub.who} namiesto ${sub.instead}`}` : ''}${change?.room ? `\n${T`Učebňa ${change.room} namiesto ${change.roomBefore}`}` : ''}${it.whole.recurring ? T`\nOpakuje sa ${calRepeatText(it.whole.event.rrule, Date.parse(it.whole.event.start))}` : ''}`,
           style: { top: `${top}%`, height: `calc(${height}% - 1px)`, left: `calc(${(it.col / it.cols) * 100}% + 1px)`, width: `calc(${100 / it.cols}% - 3px)`, ...calChipStyle(it.whole) },
-          onclick: (e) => { e.stopPropagation(); calOpen(it.whole); },
+          onclick: (e) => { e.stopPropagation(); calShow(it.whole); },
           ...calDraggable(it.whole, (e) => { const box = e.currentTarget.getBoundingClientRect(); return { ms: it.start - it.whole.start + (e.clientY - box.top) / box.height * (it.end - it.start) }; }),
         }, h('b', {}, it.whole.event.title), note && height > 3 ? h('small', { class: 'calsub' }, note) : null, height > 5 ? h('small', {}, calWhen(it.whole)) : null);
       }),
@@ -10408,7 +10475,7 @@ function calGrid(days) {
 /** `day`: the day number the chip is drawn on, so a long bar dragged by that day keeps it under the pointer. */
 function calChip(i, label, day = i.firstDay) {
   return h('button', { class: `calchip${i.managed ? ' managed' : ''}`, style: calChipStyle(i), title: `${i.event.title}\n${calWhen(i)}${i.recurring ? T`\nOpakuje sa ${calRepeatText(i.event.rrule, Date.parse(i.event.start))}` : ''}`,
-    onclick: (e) => { e.stopPropagation(); calOpen(i); }, ...calDraggable(i, () => ({ days: Math.max(0, day - i.firstDay) })) }, label);
+    onclick: (e) => { e.stopPropagation(); calShow(i); }, ...calDraggable(i, () => ({ days: Math.max(0, day - i.firstDay) })) }, label);
 }
 
 /** A day's lessons from one timetable become one line: a school day is one thing, not seven. */
@@ -10440,7 +10507,8 @@ function calMonth() {
     const items = calFold(all.filter((i) => i.firstDay <= n && i.lastDay >= n).sort((a, b) => (Cal.isBar(b) - Cal.isBar(a)) || a.start - b.start));
     // The change mark leads: a narrow chip cuts its end off.
     const label = (i) => (i.parts?.length > 1 ? `${calRunChanged(i) ? `${T('Zmena')} · ` : ''}${i.cal.name} ${calHm(i.start)}–${calHm(i.end)}` : Cal.isBar(i) ? i.event.title : `${calHm(i.start)} ${i.event.title}`);
-    return h('div', { class: `calcell${d.getMonth() !== first.getMonth() ? ' other' : ''}${n === today ? ' today' : ''}`, onclick: () => { cal.cursor = d; calSetView('day'); }, ...calDropTarget(calOnDay(d)) },
+    return h('div', { class: `calcell${d.getMonth() !== first.getMonth() ? ' other' : ''}${n === today ? ' today' : ''}`, onclick: () => { cal.cursor = d; calSetView('day'); },
+      ondblclick: () => { const at = new Date(d); at.setHours(9, 0, 0, 0); calNew(at); }, ...calDropTarget(calOnDay(d)) },
       h('span', { class: 'calnum' }, String(d.getDate())),
       items.slice(0, 4).map((i) => calChip(i, label(i), n)),
       items.length > 4 ? h('small', {}, T`+${items.length - 4} ďalšie`) : null);
@@ -10462,14 +10530,357 @@ function calList() {
     rows.push(h('h3', { class: `calday-h${n === Cal.dayNumber(Date.now()) ? ' today' : ''}` }, `${DAYS[d.getDay()]} ${d.getDate()}. ${MONTHS[d.getMonth()]}`));
     for (const i of items) {
       const run = i.parts?.length > 1;
-      rows.push(h('button', { class: 'calline', onclick: () => (run ? (cal.cursor = d, calSetView('day')) : calOpen(i)) },
-        h('i', { style: { background: i.color } }),
+      rows.push(h('button', { class: 'calline', onclick: () => (run ? (cal.cursor = d, calSetView('day')) : calShow(i)) },
+        h('i', { style: { background: calFill(i) } }),
         h('span', { class: 'calt' }, Cal.isBar(i) ? T('celý deň') : `${calHm(i.start)} – ${calHm(i.end)}`),
         h('span', {}, run ? T`${i.cal.name}: ${i.parts.length} hodín` : i.event.title, i.event.location && !run ? h('small', {}, ` · ${i.event.location}`) : null,
           run && calRunChanged(i) ? h('small', {}, ` · ${T('zmena v rozvrhu')}`) : null)));
     }
   }
   return h('div', { class: 'callist', 'data-scroll': 'callist' }, rows.length ? rows : h('div', { class: 'empty' }, T('Najbližšie dva týždne nič.')));
+}
+
+/** A year at a glance: twelve small months, each day marked with up to three colours of what happens on it. */
+function calYear() {
+  const year = cal.cursor.getFullYear();
+  const first = Cal.dayNumber(new Date(year, 0, 1));
+  const last = Cal.dayNumber(new Date(year, 11, 31));
+  const marks = new Map();
+  for (const i of calExpand(new Date(year, 0, 1).getTime(), new Date(year + 1, 0, 1).getTime())) {
+    const color = calFill(i);
+    for (let d = Math.max(i.firstDay, first); d <= Math.min(i.lastDay, last); d++) {
+      const list = marks.get(d) || [];
+      if (list.length < 3 && !list.includes(color)) list.push(color);
+      marks.set(d, list);
+    }
+  }
+  const today = Cal.dayNumber(Date.now());
+  return h('div', { class: 'calyear', 'data-scroll': 'calyear' }, Array.from({ length: 12 }, (_, m) => {
+    const start = new Date(year, m, 1);
+    return h('section', { class: 'calym' },
+      h('button', { class: 'calym-name', title: T('Otvoriť mesiac'), onclick: () => { cal.cursor = start; calSetView('month'); } }, MONTH_NAMES[m]),
+      h('div', { class: 'calym-grid' },
+        WD_SHORT.map((d) => h('span', { class: 'calym-dow', 'aria-hidden': 'true' }, d[0])),
+        Array.from({ length: (start.getDay() + 6) % 7 }, () => h('span')),
+        Array.from({ length: Cal.daysInMonth(year, m) }, (_, k) => {
+          const day = new Date(year, m, k + 1);
+          const n = Cal.dayNumber(day);
+          const on = marks.get(n);
+          return h('button', { class: `calym-day${n === today ? ' today' : ''}${on ? ' busy' : ''}`, 'aria-label': `${DAYS[day.getDay()]} ${k + 1}. ${MONTHS[m]}${on ? `, ${T('niečo je naplánované')}` : ''}`,
+            onclick: () => { cal.cursor = day; calSetView('day'); } },
+          h('span', {}, String(k + 1)), on ? h('span', { class: 'calym-marks', 'aria-hidden': 'true' }, on.map((c) => h('i', { style: { background: c } }))) : null);
+        })));
+  }));
+}
+
+// ---- one event, to be read (Kalendarix's EventDetail): what it is and which kind, when and how far off, where, who,
+// and what comes before and after it. Upraviť opens the editor.
+
+/** Shows an occurrence; `cal.detail` keeps where it is, so a change from asus shows in it. */
+function calShow(i) {
+  if (calKept()) return;
+  cal.edit = null;
+  cal.search = null;
+  cal.detail = { key: i.key, start: i.start, coloring: false, asking: false };
+  render();
+  calDetailBox()?.querySelector('.caldetail-foot button.primary, .caldetail-close')?.focus({ preventScroll: true });
+}
+const calDetailBox = () => [...document.querySelectorAll('.caldetail')].pop();
+/** The detail or the search closes; the keys go back to the calendar. */
+function calCloseBox() {
+  cal.detail = null;
+  cal.search = null;
+  render();
+  [...document.querySelectorAll('.home-calendar, .calendar')].filter((x) => x.offsetParent).pop()?.focus?.({ preventScroll: true });
+}
+/** The occurrence `cal.detail` points at, as the calendar is now (null once it is gone). */
+function calDetailOcc() {
+  const { key, start } = cal.detail;
+  return cal.doc ? Cal.expand(cal.doc, start, start + 1, () => true).find((x) => x.key === key) || null : null;
+}
+
+/** The lessons of a double period (the same subject straight after one another) are read as one, as Kalendarix's blocks. */
+function calBlockOf(i) {
+  if (i.allDay || !i.managed) return [i];
+  const day = Cal.startOfDay(i.start);
+  const same = calExpand(day.getTime(), Cal.addDays(day, 1).getTime())
+    .filter((x) => x.cal.id === i.cal.id && !x.allDay && Cal.titleKey(x.event.title || '') === Cal.titleKey(i.event.title || '')).sort((a, b) => a.start - b.start);
+  let at = same.findIndex((x) => x.key === i.key);
+  if (at < 0) return [i];
+  let from = at;
+  while (from > 0 && same[from].start - same[from - 1].end <= 15 * Cal.MS_MINUTE) from--;
+  while (at < same.length - 1 && same[at + 1].start - same[at].end <= 15 * Cal.MS_MINUTE) at++;
+  return same.slice(from, at + 1);
+}
+
+const calPlural = (n, one, few, many) => (n === 1 ? one : n >= 2 && n <= 4 ? few : many);
+/** "1 h 30 min", "45 min", "3 dni". */
+function calDuration(ms) {
+  const minutes = Math.round(ms / Cal.MS_MINUTE);
+  if (minutes >= 1440 && minutes % 1440 === 0) { const d = minutes / 1440; return LANG === 'en' ? `${d} ${d === 1 ? 'day' : 'days'}` : `${d} ${calPlural(d, 'deň', 'dni', 'dní')}`; } // i18n-ignore: each language's own plural
+  const hh = Math.floor(minutes / 60), mm = minutes % 60;
+  return !hh ? `${mm} min` : mm ? `${hh} h ${mm} min` : `${hh} h`;
+}
+/** "dnes", "zajtra", "o 11 dní", "pred 3 dňami". */
+function calRelDay(at, now) {
+  const diff = Cal.dayNumber(at) - Cal.dayNumber(now);
+  if (diff === 0) return T('dnes');
+  if (diff === 1) return T('zajtra');
+  if (diff === -1) return T('včera');
+  if (LANG === 'en') return diff > 0 ? `in ${diff} days` : `${-diff} days ago`;
+  return diff > 0 ? `o ${diff} ${calPlural(diff, 'deň', 'dni', 'dní')}` : `pred ${-diff} ${-diff === 1 ? 'dňom' : 'dňami'}`; // i18n-ignore: Slovak's own plural
+}
+/** How far the event is from now, or that it is on, or over. */
+function calDistance(start, end, allDay) {
+  const now = Date.now();
+  if (start <= now && now < end) return { text: T('práve teraz'), kind: 'on' };
+  if (end <= now) return { text: `${T('skončilo')} · ${calRelDay(end - 1, now)}`, kind: 'past' };
+  if (allDay || start - now >= Cal.MS_DAY) return { text: calRelDay(start, now), kind: 'ahead' };
+  return { text: T`o ${calDuration(start - now)}`, kind: 'ahead' };
+}
+const calLongDate = (d) => { const x = new Date(d); return `${DAYS[x.getDay()]} ${x.getDate()}. ${MONTHS[x.getMonth()]}${x.getFullYear() !== new Date().getFullYear() ? ` ${x.getFullYear()}` : ''}`; };
+function calWhenLine(start, end, allDay) {
+  const last = end > start ? end - 1 : start;
+  if (Cal.dayNumber(start) === Cal.dayNumber(allDay ? last : end) || end <= start) return calLongDate(start);
+  return allDay ? `${calLongDate(start)} – ${calLongDate(last)}` : `${calLongDate(start)} ${calHm(start)} – ${calLongDate(end)} ${calHm(end)}`;
+}
+/** Text with its links clickable. */
+const calLinked = (text) => Files.linkify(text).map((p) => (p.href ? h('a', { href: p.href, target: '_blank', rel: 'noopener noreferrer' }, p.text) : p.text));
+const CAL_FIELD_ICONS = { teacher: 'user', group: 'users', topic: 'book-open', link: 'link', other: 'label' };
+
+function calDetail() {
+  const i = calDetailOcc();
+  if (!i) { cal.detail = null; return null; }
+  const d = cal.detail;
+  const ev = i.event;
+  const parts = calBlockOf(i);
+  const start = parts[0].start, end = parts.at(-1).end;
+  const { title: shownTitle, cancelled } = Files.splitCancelled(ev.title || '');
+  const title = shownTitle || T('Bez názvu');
+  const cats = Cal.categoryList(cal.doc);
+  const category = cats.find((c) => c.id === ev.category) || cats.find((c) => c.id === i.cal.category);
+  const details = Files.parseDetails(ev.notes || ev.description);
+  const far = calDistance(start, end, i.allDay);
+  const key = Cal.titleKey(ev.title || '');
+  const pinned = i.cal.accents?.[key] || null;
+  const fill = calFill(i);
+  // The timed events of the same day, to say what this one sits between.
+  const day = Cal.startOfDay(i.start);
+  const sameDay = i.allDay ? [] : calFold(calExpand(day.getTime(), Cal.addDays(day, 1).getTime()).filter((x) => !Cal.isBar(x)))
+    .flatMap((x) => (x.parts ? x.parts : [x])).sort((a, b) => a.start - b.start);
+  const at = sameDay.findIndex((x) => x.key === parts[0].key);
+  const before = at > 0 ? sameDay[at - 1] : null;
+  const after = at >= 0 ? sameDay.find((x, n) => n > at && !parts.some((p) => p.key === x.key)) : null;
+  const neighbour = (label, x) => (x ? h('button', { type: 'button', class: 'calnear', style: calChipStyle(x), onclick: () => calShow(x) },
+    h('small', {}, label), h('b', {}, `${calHm(x.start)} ${Files.splitCancelled(x.event.title || '').title}`), x.event.location ? h('small', {}, x.event.location) : null)
+    : h('div', { class: 'calnear none' }, h('small', {}, label), '–'));
+  const row = (iconName, label, value) => h('div', { class: 'caldrow' }, icon(iconName), h('span', { class: 'caldlabel' }, label), h('span', { class: 'caldvalue' }, value));
+  const asking = d.asking;
+  const ed = { from: i.cal.id, uid: ev.uid, at: i.start, recurring: i.recurring };
+  const first = !i.recurring || !Cal.countBefore(ev, i.start);
+  let foot;
+  if (i.managed) foot = h('p', { class: 'bline' }, ev.remote === true ? T('Udalosť prichádza z odoberanej adresy a pri ďalšej obnove sa prepíše; meniť sa dá len tam.') : T('Túto udalosť zapisuje synchronizácia (rozvrh), tu sa nemení.'));
+  else if (asking) {
+    foot = h('div', { class: 'calbtns calask' }, h('span', {}, i.recurring ? T('Opakuje sa. Zmazať:') : T`Zmazať „${title}“?`),
+      i.recurring ? h('button', { type: 'button', class: 'ghost danger', onclick: () => calDeleteOcc(ed, 'one') }, T('Len túto')) : null,
+      i.recurring && !first ? h('button', { type: 'button', class: 'ghost danger', onclick: () => calDeleteOcc(ed, 'following') }, T('Túto a ďalšie')) : null,
+      h('button', { type: 'button', class: 'ghost danger', onclick: () => calDeleteOcc(ed, 'all') }, i.recurring ? T('Celú sériu') : T('Zmazať')),
+      h('button', { type: 'button', class: 'ghost', 'data-cal-back': '', onclick: () => { d.asking = false; render(); calDetailBox()?.querySelector('.caldetail-foot .danger')?.focus(); } }, T('Späť')));
+  } else {
+    foot = h('div', { class: 'calbtns' },
+      h('button', { type: 'button', class: 'primary', onclick: () => { cal.detail = null; calOpen(i); calEditBox()?.querySelector('input[name=title]')?.focus(); } }, T('Upraviť')),
+      h('button', { type: 'button', class: 'ghost danger', onclick: () => { d.asking = true; render(); calDetailBox()?.querySelector('.calask button')?.focus(); } }, T('Zmazať')));
+  }
+  return h('div', { class: 'caledit caldetail', role: 'dialog', 'aria-label': title },
+    h('div', { class: 'caldband', style: { background: fill, color: inkOn(fill) } },
+      h('div', { class: 'caldtags' },
+        category ? h('span', { class: 'caltag', style: { background: category.color, color: inkOn(category.color) } }, category.name) : null,
+        h('span', { class: 'caltag plain' }, i.cal.name || T('Bez názvu')),
+        calStripe(i) ? h('span', { class: 'caltag-swatch', style: { background: calStripe(i) }, title: T('Druhá farba') }) : null),
+      h('button', { type: 'button', class: 'ghost', 'aria-pressed': String(d.coloring), title: T('Druhá farba'), onclick: () => { d.coloring = !d.coloring; render(); } }, icon('fill')),
+      h('button', { type: 'button', class: 'ghost caldetail-close', 'aria-label': T('Zavrieť'), title: T('Zavrieť (Esc)'), onclick: calCloseBox }, '×')),
+    h('h3', { class: cancelled ? 'cancelled' : '' }, title),
+    h('p', { class: 'calwhenline' }, calWhenLine(start, end, i.allDay), h('span', { class: `calfar ${far.kind}` }, far.text)),
+    !i.allDay ? h('p', { class: 'caltime' }, `${calHm(start)} – ${calHm(end)}`, h('span', {}, calDuration(end - start)),
+      parts.length > 1 ? h('span', {}, lessonsCount(parts.length)) : null) : null,
+    i.allDay && i.lastDay > i.firstDay ? h('p', { class: 'caltime' }, T('celý deň'), h('span', {}, calDuration((i.lastDay - i.firstDay + 1) * Cal.MS_DAY))) : null,
+    cancelled ? h('p', {}, h('span', { class: 'caltag err' }, T('Zrušené'))) : null,
+    d.coloring ? h('div', { class: 'calcoloring' }, h('p', {}, T`Druhá farba pre všetky udalosti s názvom „${title}“`),
+      h('div', { class: 'calaccent', role: 'group', 'aria-label': T('Druhá farba') },
+        h('button', { type: 'button', class: !pinned ? 'on none' : 'none', 'aria-pressed': String(!pinned), onclick: () => calSave([{ op: 'accent', cal: i.cal.id, key, color: null }], true) },
+          i.cal.autoAccent ?? i.cal.category === 'school' ? T('Automaticky') : T('Bez druhej farby')),
+        Cal.ACCENT_PALETTE.filter((c) => c !== i.color.toLowerCase()).map((c) => h('button', { type: 'button', class: pinned === c ? 'on' : '', title: colorName(c), 'aria-label': T`Druhá farba ${colorName(c)}`,
+          'aria-pressed': String(pinned === c), style: { background: c }, onclick: () => calSave([{ op: 'accent', cal: i.cal.id, key, color: c }], true) })))) : null,
+    h('div', { class: 'caldrows' },
+      parts.length > 1 ? row('alarm-clock', T('Hodiny'), parts.map((p) => `${calHm(p.start)} – ${calHm(p.end)}`).join(', ')) : null,
+      ev.location ? row('flag', T('Miesto'), calLinked(ev.location)) : null,
+      details.fields.map((f) => row(CAL_FIELD_ICONS[f.kind], f.label, calLinked(f.value))),
+      i.recurring ? row('calendar', T('Opakovanie'), calRepeatText(ev.rrule, Date.parse(ev.start))) : null,
+      ev.alarmMinutes !== '' && ev.alarmMinutes != null && Number.isFinite(+ev.alarmMinutes) ? row('bell', T('Pripomienka'), alarmLabel(+ev.alarmMinutes)) : null,
+      details.notes ? h('div', { class: 'calnotes' }, calLinked(details.notes)) : null),
+    at >= 0 && sameDay.length > parts.length ? h('div', { class: 'calaround' }, neighbour(T('Predtým'), before), neighbour(T('Potom'), after)) : null,
+    h('div', { class: 'caldetail-foot' }, foot));
+}
+
+// ---- finding events by what is written in them (Kalendarix's search: diacritics do not matter, a series is one result)
+
+function calOpenSearch() {
+  if (calKept()) return;
+  cal.edit = null;
+  cal.detail = null;
+  cal.search = { query: '', picked: 0, seq: -1, pool: [] };
+  render();
+  calSearchBox()?.querySelector('input')?.focus();
+}
+function calSearchBox() {
+  const sr = cal.search;
+  if (!sr.box) sr.box = () => [...document.querySelectorAll('.calsearch')].pop();
+  // A year back and two ahead: wide enough to find things, narrow enough to stay quick.
+  if (sr.seq !== cal.seq) { sr.seq = cal.seq; sr.pool = calExpand(Cal.addDays(Date.now(), -365).getTime(), Cal.addDays(Date.now(), 730).getTime()); }
+  const results = Files.search(sr.query, sr.pool, Date.now());
+  sr.picked = Math.min(sr.picked, Math.max(0, results.length - 1));
+  const go = (i) => { cal.cursor = Cal.startOfDay(i.start); cal.view = 'day'; calShow(i); calScroll(); };
+  return h('div', { class: 'caledit calsearch', role: 'dialog', 'aria-label': T('Hľadať v kalendári') },
+    h('input', { type: 'search', value: sr.query, placeholder: T('Hľadať udalosť…'), 'aria-label': T('Hľadať v kalendári'), 'data-root': '__calSearch',
+      role: 'combobox', 'aria-expanded': String(!!results.length), 'aria-controls': 'calsearch-list', 'aria-activedescendant': results.length ? `calsearch-${sr.picked}` : '',
+      oninput: (e) => { sr.query = e.target.value; sr.picked = 0; render(); },
+      onkeydown: (e) => {
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); sr.picked = Math.max(0, Math.min(results.length - 1, sr.picked + (e.key === 'ArrowDown' ? 1 : -1))); render(); }
+        else if (e.key === 'Enter' && results[sr.picked]) { e.preventDefault(); go(results[sr.picked]); }
+      } }),
+    h('ul', { class: 'calresults', id: 'calsearch-list', role: 'listbox', 'aria-label': T('Nájdené udalosti') },
+      results.map((i, n) => h('li', { role: 'option', id: `calsearch-${n}`, 'aria-selected': String(n === sr.picked), class: n === sr.picked ? 'on' : '', onclick: () => go(i), onmouseenter: () => { sr.picked = n; render(); } },
+        h('i', { style: { background: calFill(i) } }),
+        h('b', {}, Files.splitCancelled(i.event.title || '').title || T('Bez názvu')),
+        h('small', {}, `${i.cal.name} · ${calLongDate(i.start)}${i.allDay ? '' : ` ${calHm(i.start)}`}`))),
+      sr.query.trim() && !results.length ? h('li', { class: 'none' }, T('Nič sa nenašlo.')) : null));
+}
+
+// ---- files: .ics in and out, subscriptions, and the export to a feature phone (Kalendarix's data section)
+
+/** A file Weft offers to save: the browser downloads it, the desktop app asks where. */
+function calDownload(name, ext, text, type) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type }));
+  a.download = `${String(name || 'kalendar').replace(/[\\/:*?<>|\x22]+/g, '-').trim() || 'kalendar'}.${ext}`;
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+}
+const calExportOne = (c) => calDownload(c.name || c.id, 'ics', Files.generateIcs(c.name || '', c.events), 'text/calendar');
+/** Every calendar as an .ics of its own, one download after another. */
+function calExportAll() {
+  (cal.doc?.calendars || []).forEach((c, n) => setTimeout(() => calExportOne(c), n * 400));
+}
+
+/** A colour no calendar has yet, from the palette new calendars take. */
+function calFreeColor(doc = cal.doc) {
+  const cats = Cal.categoryColors(doc || {});
+  const used = new Set((doc?.calendars || []).map((c) => Cal.calendarColor(c, cats).toLowerCase()));
+  return Cal.ACCENT_PALETTE.find((c) => !used.has(c)) || Cal.ACCENT_PALETTE[(doc?.calendars || []).length % Cal.ACCENT_PALETTE.length];
+}
+/** A new calendar's fields: the category its name says it is (with that colour), else a free colour. */
+function calNewFields(name, doc = cal.doc) {
+  const category = Cal.guessCategory(name, Cal.categoryList(doc || {}));
+  return category ? { name, color: category.color, category: category.id } : { name, color: calFreeColor(doc) };
+}
+const calIsTests = (x) => String(x || '').trim().toLocaleLowerCase('sk') === 'testy';
+
+function calPickFiles() {
+  const input = Object.assign(document.createElement('input'), { type: 'file', multiple: true, accept: '.ics,.ical,.ifb,.icalendar,text/calendar' });
+  input.onchange = () => calImportFiles([...input.files]);
+  input.click();
+}
+/** Each .ics file a calendar of its own, named as the file names itself. */
+async function calImportFiles(files) {
+  const ops = [];
+  const doc = structuredClone(cal.doc || { schema: 2, calendars: [] });
+  const skipped = [];
+  for (const file of files) {
+    const text = await file.text().catch(() => '');
+    const parsed = Files.isCalendarText(text) ? Files.parseIcs(text) : null;
+    if (!parsed?.events.length) { skipped.push(file.name); continue; }
+    let name = (parsed.name || file.name.replace(/\.[^.]+$/, '')).trim() || T('Import');
+    // The EduPage bridge writes tests into the one calendar named Testy; a second one would split them.
+    if (calIsTests(name) && doc.calendars.some((c) => calIsTests(c.name))) name = T`${name} (import)`;
+    const op = { op: 'addcal', cal: Cal.newUid(), ...calNewFields(name, doc), events: parsed.events };
+    calApply(doc, op);
+    ops.push(op);
+  }
+  if (ops.length) calSave(ops, true);
+  const note = [ops.length ? T`Pridané kalendáre: ${ops.map((o) => `${o.name} (${o.events.length})`).join(', ')}.` : '', skipped.length ? T`Nie je to kalendár .ics: ${skipped.join(', ')}.` : ''].filter(Boolean).join(' ');
+  calNewCal.note = note;
+  render();
+  if (S.panel !== 'settings' && note) alert(note);
+}
+
+/** An .ics address through asus: the browser itself may not read another site (CORS). */
+async function calFetchIcs(url) {
+  const res = await call('GET', `/fetch?url=${encodeURIComponent(url)}`, undefined, '/_calendar', AbortSignal.timeout(30000));
+  if (!Files.isCalendarText(res.text || '')) throw new Error(T('na tej adrese nie je kalendár .ics'));
+  return Files.parseIcs(res.text);
+}
+async function calSubscribe() {
+  const url = calNewCal.url.trim().replace(/^webcal:\/\//i, 'https://');
+  if (!url) return;
+  if (!/^https?:\/\/\S+$/i.test(url)) { calNewCal.note = T('Adresa musí začínať https:// (alebo webcal://).'); return render(); }
+  calNewCal.busy = true;
+  calNewCal.note = '';
+  render();
+  try {
+    const parsed = await calFetchIcs(url);
+    const id = Cal.newUid();
+    const name = (parsed.name || new URL(url).hostname).trim();
+    calSave([{ op: 'addcal', cal: id, ...calNewFields(calIsTests(name) ? T`${name} (odber)` : name), sourceUrl: url }, { op: 'feed', cal: id, events: parsed.events }], true);
+    calNewCal.url = '';
+    calNewCal.note = T`Odoberám ${name}: ${eventsCount(parsed.events.length)}. Obnovuje sa každú pol hodinu, kým Weft beží.`;
+  } catch (err) {
+    calNewCal.note = T`Odber sa nepridal: ${err.message}`;
+  }
+  calNewCal.busy = false;
+  render();
+}
+const lessonsCount = (n) => `${n} ${LANG === 'en' ? (n === 1 ? 'lesson' : 'lessons') : calPlural(n, 'hodina', 'hodiny', 'hodín')}`; // i18n-ignore: each language's own plural
+const eventsCount = (n) => `${n} ${LANG === 'en' ? (n === 1 ? 'event' : 'events') : calPlural(n, 'udalosť', 'udalosti', 'udalostí')}`; // i18n-ignore: each language's own plural
+
+// Subscribed calendars are read again when Weft starts and every half hour while it runs (as in Kalendarix), by
+// whichever device gets there first: one read for all of them, by the calendar's fetchedAt.
+const CAL_FEED_EVERY = 30 * Cal.MS_MINUTE;
+let calFeedsBusy = false;
+async function calRefreshFeeds(only = null) {
+  if (calFeedsBusy || S.offline || !cal.doc) return;
+  const due = cal.doc.calendars.filter((c) => c.sourceUrl && (only ? c.id === only : !(Date.now() - Date.parse(c.fetchedAt || 0) < CAL_FEED_EVERY)));
+  if (!due.length) return;
+  calFeedsBusy = true;
+  const failed = [];
+  for (const c of due) {
+    try {
+      const parsed = await calFetchIcs(c.sourceUrl);
+      if (cal.doc?.calendars.some((x) => x.id === c.id)) calSave([{ op: 'feed', cal: c.id, events: parsed.events }], true);
+    } catch (err) { failed.push(`${c.name}: ${err.message}`); }
+  }
+  calFeedsBusy = false;
+  return failed;
+}
+setInterval(() => { if (!document.hidden || calRemindOn()) calRefreshFeeds(); }, 5 * Cal.MS_MINUTE);
+
+const calPhone = { open: false, profile: '', range: 'upcoming', chosen: null, alarm: null };
+function calPhoneItems() {
+  const chosen = calPhone.chosen || new Set((cal.doc?.calendars || []).filter(calShown).map((c) => c.id));
+  // A repeating event still has occurrences ahead, whenever it began.
+  return (cal.doc?.calendars || []).filter((c) => chosen.has(c.id)).flatMap((c) => c.events.map((event) => ({ event, calendarName: c.name })))
+    .filter(({ event }) => calPhone.range === 'all' || event.rrule?.FREQ || Date.parse(event.end || event.start) >= Date.now())
+    .sort((a, b) => Date.parse(a.event.start) - Date.parse(b.event.start));
+}
+function calPhoneExport() {
+  const saved = S.account[CAL_PREFS]?.phone || {};
+  const profile = Files.phoneProfile(calPhone.profile || saved.profile);
+  const alarm = calPhone.alarm ?? saved.alarm ?? 120;
+  const items = calPhoneItems();
+  calSetPrefs({ phone: { profile: profile.id, alarm } });
+  // The name the scripts in Kalendarix's gammu/ look for.
+  calDownload('kalendarix-export', profile.format === 'iCalendar 2.0' ? 'ics' : 'vcs', Files.generatePhoneFile(items, profile, { defaultAlarm: alarm }), 'text/calendar');
 }
 
 // ---- one event
@@ -10773,8 +11184,10 @@ function calSubmit(scope = null) {
     exdates: (old.exdates || []).map((d) => Cal.shiftDays(d, days)) }));
 }
 
-function calDelete(scope) {
-  const ed = cal.edit;
+const calDelete = (scope) => calDeleteOcc(cal.edit, scope);
+/** `ed`: { from: calendar id, uid, at: the occurrence's start, recurring }, from the editor or the detail. */
+function calDeleteOcc(ed, scope) {
+  cal.detail = null;
   const old = calEvent(ed.from, ed.uid);
   if (!old || scope === 'all' || !ed.recurring) return calSave([{ op: 'del', cal: ed.from, uid: ed.uid }]);
   if (scope === 'one') return calSave([{ op: 'put', cal: ed.from, event: { ...old, exdates: [...(old.exdates || []), new Date(ed.at).toISOString()] } }]);
@@ -10814,11 +11227,12 @@ const calOnDay = (day) => (e, d) => { const s = new Date(d.i.start); return new 
 // ---- Settings → Kalendár: calendars of Karchi's own added and removed (ops addcal and delcal, kept on asus like
 // events), and timetable subjects he does not want drawn (`sk.karchi.calendar` `hiddenSubjects`, this account only).
 
-const calNewCal = { name: '', color: '', asking: null }; // the new calendar being named, and the one whose removal is asked
+const calNewCal = { name: '', color: '', asking: null, editing: null, url: '', busy: false, note: '' }; // the new calendar being named, the one whose removal is asked, the one being edited, a subscription's address
 
 /** Why a calendar cannot be removed here (a program fills it and would fail or bring it back), else ''. Same rule as kalendar.py. */
 function calKeep(c) {
   if (c.id === TIMETABLE_CAL) return T('plní ho rozvrh');
+  if (c.sourceUrl) return ''; // a subscription may go: only a calendar that is there is refreshed
   if (Cal.isSynced({ events: [], ...c })) return T('plní ho synchronizácia');
   if (String(c.name || '').trim().toLocaleLowerCase('sk') === 'testy') return T('sem píše testy EduPage');
   return '';
@@ -10840,6 +11254,11 @@ const COLOR_NAMES = {
   '#ffe07a': T('žltá'), '#ff9de1': T('cyklámenová'), '#6fd0ff': T('blankytná'), '#e6a37a': T('hnedá'), '#b9c2ff': T('levanduľová'),
   '#d8e56a': T('limetková'), '#f58f6c': T('koralová'), '#8ee3d0': T('mätová'), '#d0a4e8': T('orgovánová'), '#c9b68a': T('béžová'),
   '#9be37a': T('zelená'),
+  // Calendars of their own colour, and categories of Karchi's own (Kalendarix's CALENDAR_PALETTE, CATEGORY_PALETTE).
+  '#628790': T('sivomodrá'), '#d98cb3': T('staroružová'), '#7fb8a4': T('šalviová'), '#c9a26b': T('okrová'), '#8fa3d9': T('nevädzová'),
+  '#c98f7a': T('terakotová'), '#9ab86a': T('olivová'), '#b79ad6': T('ametystová'), '#a374e0': T('purpurová'), '#2f55b0': T('kráľovská modrá'),
+  '#a8713f': T('škoricová'), '#6e4526': T('čokoládová'), '#e06c9f': T('malinová'), '#3aa6b9': T('petrolejová'), '#7d8a2e': T('machová'),
+  '#8d99ae': T('bridlicová'),
 };
 const colorName = (c) => COLOR_NAMES[c.toLowerCase()] || c;
 
@@ -10879,6 +11298,8 @@ function calKeepCalendar(id) {
 }
 function calDeleteCalendar(id) {
   calNewCal.asking = null;
+  if (calNewCal.editing?.id === id) calNewCal.editing = null;
+  if (cal.detail?.key.startsWith(`${id}|`)) cal.detail = null;
   // An event being edited in it goes with it; a new one being written moves to a calendar that stays.
   if (cal.edit?.from === id) cal.edit = null;
   else if (cal.edit?.cal === id) {
@@ -10921,7 +11342,8 @@ function calendarSettings() {
     const keep = calKeep(c);
     const n = (c.events || []).length;
     const asking = !keep && calNewCal.asking === c.id;
-    return h('div', { class: 'calsetrow', 'data-key': c.id },
+    const editing = calNewCal.editing?.id === c.id;
+    return [h('div', { class: 'calsetrow', 'data-key': c.id },
       h('label', { class: 'bcheck' },
         h('input', { type: 'checkbox', checked: calShown(c), 'data-focus': `shown:${c.id}`, onchange: calKeepFocus((e) => calSetShown(c.id, e.currentTarget.checked)) }),
         h('i', { style: { background: Cal.calendarColor(c, cats) } }), name),
@@ -10929,8 +11351,11 @@ function calendarSettings() {
         h('span', {}, n ? T`Zmazať aj s ${eventsWord(n)}?` : T('Zmazať?')),
         h('button', { type: 'button', class: 'ghost danger', 'data-focus': `del-yes:${c.id}`, onclick: () => calDeleteCalendar(c.id) }, T('Zmazať')),
         h('button', { type: 'button', class: 'ghost', 'data-focus': `del-no:${c.id}`, onclick: () => calKeepCalendar(c.id) }, T('Späť')))
-        : keep ? h('small', {}, keep)
-          : h('button', { type: 'button', class: 'ghost', 'aria-label': T`Zmazať kalendár ${name}`, 'data-focus': `del:${c.id}`, onclick: () => calAskDelete(c.id) }, T('Zmazať')));
+        : [c.sourceUrl ? h('small', { title: c.sourceUrl }, T('odber')) : null,
+          h('button', { type: 'button', class: 'ghost', 'aria-label': T`Upraviť kalendár ${name}`, 'aria-expanded': String(editing), 'data-focus': `edit:${c.id}`, onclick: () => (editing ? calStopEditing(c.id) : calEditCalendar(c)) }, T('Upraviť')),
+          keep ? h('small', {}, keep)
+            : h('button', { type: 'button', class: 'ghost', 'aria-label': T`Zmazať kalendár ${name}`, 'data-focus': `del:${c.id}`, onclick: () => calAskDelete(c.id) }, T('Zmazať'))]),
+    editing ? calCalendarEditor(c) : null];
   };
   return [
     h('h3', {}, T('Predvolené zobrazenie')),
@@ -10948,6 +11373,9 @@ function calendarSettings() {
           style: { background: c }, 'data-focus': `color:${c}`, onclick: calKeepFocus(() => { calNewCal.color = c; render(); }) }))),
       h('button', { type: 'submit', class: 'primary', 'data-focus': 'addcal' }, T('Pridať kalendár'))) : null,
     h('p', { class: 'hint' }, T('Odškrtnutý kalendár sa vo Wefte nekreslí a jeho udalosti ostávajú. Zmazaný zmizne aj s udalosťami.')),
+    cal.loaded ? calCategories() : null,
+    cal.loaded ? calFilesSettings() : null,
+    calLookSettings(),
     subjects.length ? h('h3', {}, T('Predmety v rozvrhu')) : null,
     subjects.length ? h('div', { class: 'calshown' }, subjects.map((s) => h('label', { class: 'bcheck', 'data-key': s.key },
       h('input', { type: 'checkbox', checked: !off.has(s.key), 'data-focus': `subject:${s.key}`, onchange: calKeepFocus((e) => calSetSubject(s.key, e.currentTarget.checked)) }),
@@ -10960,6 +11388,149 @@ function calendarSettings() {
     h('h3', {}, T('Návrhy zo správ')),
     h('label', { class: 'bcheck' }, h('input', { type: 'checkbox', checked: calSuggestOn(), 'data-focus': 'suggest', onchange: calKeepFocus((e) => calSetPrefs({ suggest: e.currentTarget.checked })) }),
       h('span', {}, T('Navrhovať udalosti zo správ'), h('small', {}, T('Pod správou s termínom ponúkne „Pridať do kalendára“. Čas číta toto zariadenie; či je to naozaj plán, posúdi malý model na asuse. Text nikam inam neodchádza.')))),
+  ];
+}
+
+// ---- Settings → Kalendár: a calendar edited (Kalendarix's CalendarEditor: name, category or own colour, second
+// colour by title, export, refresh of a subscription), categories of Karchi's own, the look of two-colour events,
+// and files in and out.
+
+/** The calendar being edited in Settings, as a draft: nothing is saved before Uložiť. */
+function calEditCalendar(c) {
+  const cats = Cal.categoryList(cal.doc);
+  calNewCal.editing = { id: c.id, name: c.name || '', category: cats.some((x) => x.id === c.category) ? c.category : '',
+    color: Cal.calendarColor(c, Cal.categoryColors(cal.doc)).toLowerCase(), autoAccent: c.autoAccent ?? c.category === 'school', note: '' };
+  calNewCal.asking = null;
+  render();
+  document.querySelector(`.setpane [data-focus="${CSS.escape(`ename:${c.id}`)}"]`)?.focus();
+}
+function calStopEditing(id) {
+  calNewCal.editing = null;
+  render();
+  document.querySelector(`.setpane [data-focus="${CSS.escape(`edit:${id}`)}"]`)?.focus();
+}
+function calSaveCalendar() {
+  const ed = calNewCal.editing;
+  const c = cal.doc?.calendars.find((x) => x.id === ed.id);
+  if (!c) return calStopEditing(ed.id);
+  const name = ed.name.trim() || c.name;
+  if (calIsTests(c.name) && !calIsTests(name)) { ed.note = T('Kalendár Testy sa nepremenuje: EduPage ho hľadá podľa mena.'); return render(); }
+  if (!calIsTests(c.name) && calIsTests(name) && cal.doc.calendars.some((x) => calIsTests(x.name))) { ed.note = T('Kalendár Testy už je: doň píše testy EduPage.'); return render(); }
+  // A category gives its colour; the colour fields stay equal to what is drawn, as Kalendarix keeps them.
+  const fixed = Cal.categoryList(cal.doc).find((x) => x.id === ed.category);
+  calSave([{ op: 'updcal', cal: c.id, name, category: ed.category, color: fixed ? fixed.color : ed.color, autoAccent: ed.autoAccent }], true);
+  calStopEditing(c.id);
+}
+async function calRefreshOne(c) {
+  const ed = calNewCal.editing;
+  ed.note = T('Obnovujem…');
+  render();
+  const failed = await calRefreshFeeds(c.id);
+  if (calNewCal.editing === ed) { ed.note = failed?.length ? T`Neobnovilo sa: ${failed[0]}` : T('Obnovené.'); render(); }
+}
+
+function calCalendarEditor(c) {
+  const ed = calNewCal.editing;
+  const cats = Cal.categoryList(cal.doc);
+  const fixed = cats.find((x) => x.id === ed.category);
+  const colors = [...new Set([...Cal.CALENDAR_PALETTE, ...Cal.ACCENT_PALETTE, ed.color])];
+  const shown = fixed ? fixed.color : ed.color;
+  const radio = (key, on, label, extra) => ({ type: 'button', role: 'radio', 'aria-checked': String(on), tabindex: on ? 0 : -1, class: on ? 'on' : '', 'data-focus': key, 'aria-label': label, ...extra });
+  return h('form', { class: 'calcaledit', 'aria-label': T`Upraviť kalendár ${c.name}`, onsubmit: (e) => { e.preventDefault(); calSaveCalendar(); } },
+    h('div', { class: 'calpreview', style: { background: shown, color: inkOn(shown) } }, ed.name.trim() || c.name, fixed ? h('small', {}, fixed.name) : null),
+    h('label', { class: 'calfield' }, T('Názov '), h('input', { value: ed.name, maxlength: 60, required: true, 'data-focus': `ename:${c.id}`, 'data-root': '__calEditName', oninput: (e) => { ed.name = e.target.value; } })),
+    h('h4', {}, T('Kategória')),
+    h('div', { class: 'calcats', role: 'radiogroup', 'aria-label': T('Kategória'), onkeydown: radioKeys },
+      cats.map((x) => h('button', radio(`ecat:${x.id}`, ed.category === x.id, x.name, { style: { '--fill': x.color, '--ink': inkOn(x.color) }, onclick: calKeepFocus(() => { ed.category = x.id; render(); }) }), x.name)),
+      h('button', radio('ecat:', !ed.category, T('Vlastná farba'), { class: `own${!ed.category ? ' on' : ''}`, onclick: calKeepFocus(() => { ed.category = ''; render(); }) }), T('Vlastná farba'))),
+    fixed ? null : h('div', { class: 'calaccent', role: 'radiogroup', 'aria-label': T('Farba kalendára'), onkeydown: radioKeys }, colors.map((x) =>
+      h('button', radio(`ecolor:${x}`, ed.color === x, colorName(x), { title: colorName(x), style: { background: x }, onclick: calKeepFocus(() => { ed.color = x; render(); }) })))),
+    h('label', { class: 'bcheck' }, h('input', { type: 'checkbox', checked: ed.autoAccent, 'data-focus': `eauto:${c.id}`, onchange: (e) => { ed.autoAccent = e.target.checked; } }),
+      h('span', {}, T('Druhá farba podľa názvu'), h('small', {}, T('Každý názov v tomto kalendári dostane vlastnú druhú farbu (napr. každý predmet rozvrhu).')))),
+    h('div', { class: 'calbtns caltools' }, h('small', {}, eventsCount(c.events.length)),
+      h('button', { type: 'button', class: 'ghost', onclick: () => calExportOne(c) }, T('Exportovať .ics')),
+      c.sourceUrl ? h('button', { type: 'button', class: 'ghost', disabled: calFeedsBusy, 'data-focus': `erefresh:${c.id}`, onclick: () => calRefreshOne(c) }, T('Obnoviť')) : null),
+    c.sourceUrl ? h('p', { class: 'hint calurl' }, T`Odber z ${c.sourceUrl}`) : null,
+    ed.note ? h('p', { class: 'hint', role: 'status' }, ed.note) : null,
+    h('div', { class: 'calbtns' }, h('button', { type: 'submit', class: 'primary' }, T('Uložiť')), h('button', { type: 'button', class: 'ghost', onclick: () => calStopEditing(c.id) }, T('Zrušiť'))));
+}
+
+/** Categories of Karchi's own: renamed, recoloured, removed; and a line to make another (Kalendarix's OwnCategories). */
+const calCat = { name: '', color: '', picking: null };
+function calCategories() {
+  const all = Cal.categoryList(cal.doc || {});
+  const own = all.filter((c) => c.own);
+  const color = calCat.color || Cal.CATEGORY_PALETTE.find((x) => !all.some((c) => c.color === x)) || Cal.CATEGORY_PALETTE[0];
+  const add = () => {
+    const name = calCat.name.trim();
+    if (!name) return;
+    calCat.name = '';
+    calCat.color = '';
+    calSave([{ op: 'addcat', id: Cal.categoryId(name, all), name, color }], true);
+  };
+  const palette = (current, label, pick, prefix) => h('div', { class: 'calaccent', role: 'radiogroup', 'aria-label': label, onkeydown: radioKeys },
+    [...new Set([...Cal.CATEGORY_PALETTE, current])].map((x) => h('button', { type: 'button', role: 'radio', 'aria-checked': String(current === x), tabindex: current === x ? 0 : -1, class: current === x ? 'on' : '',
+      title: colorName(x), 'aria-label': colorName(x), style: { background: x }, 'data-focus': `${prefix}${x}`, onclick: calKeepFocus(() => pick(x)) })));
+  return [
+    h('h3', {}, T('Kategórie')),
+    h('p', { class: 'hint' }, T('Kalendár alebo udalosť s kategóriou má jej farbu. Okrem kategórií Kalendarixu si tu robíš vlastné.')),
+    h('div', { class: 'calcatlist' }, own.map((c) => h('div', { class: 'calcatrow', 'data-key': c.id },
+      h('button', { type: 'button', class: 'calswatch', style: { background: c.color }, 'aria-label': T`Farba kategórie ${c.name}`, 'aria-expanded': String(calCat.picking === c.id),
+        'data-focus': `catcolor:${c.id}`, onclick: calKeepFocus(() => { calCat.picking = calCat.picking === c.id ? null : c.id; render(); }) }),
+      h('input', { value: c.name, 'aria-label': T`Názov kategórie ${c.name}`, 'data-focus': `catname:${c.id}`,
+        onchange: (e) => { const name = e.target.value.trim(); if (name && name !== c.name) calSave([{ op: 'updcat', id: c.id, name }], true); else e.target.value = c.name; } }),
+      h('button', { type: 'button', class: 'ghost', 'aria-label': T`Zmazať kategóriu ${c.name}`, onclick: () => { calSave([{ op: 'delcat', id: c.id }], true); document.querySelector('.calnewcat input')?.focus(); } }, T('Zmazať')),
+      calCat.picking === c.id ? palette(c.color, T`Farba kategórie ${c.name}`, (x) => calSave([{ op: 'updcat', id: c.id, color: x }], true), `catpick:${c.id}:`) : null))),
+    h('form', { class: 'calnewcal calnewcat', onsubmit: (e) => { e.preventDefault(); add(); } },
+      h('input', { value: calCat.name, required: true, maxlength: 40, placeholder: T('Nová kategória'), 'aria-label': T('Názov novej kategórie'), 'data-root': '__calNewCat', oninput: (e) => { calCat.name = e.target.value; } }),
+      palette(color, T('Farba novej kategórie'), (x) => { calCat.color = x; render(); }, 'catnew:'),
+      h('button', { type: 'submit', class: 'primary', 'data-focus': 'addcat-btn' }, T('Pridať kategóriu'))),
+    h('p', { class: 'hint' }, T('Zmazaná kategória nechá svojim kalendárom svoju farbu ako vlastnú.')),
+  ];
+}
+
+function calFilesSettings() {
+  const saved = S.account[CAL_PREFS]?.phone || {};
+  const profile = Files.phoneProfile(calPhone.profile || saved.profile);
+  const alarm = calPhone.alarm ?? saved.alarm ?? 120;
+  const chosen = calPhone.chosen || new Set((cal.doc?.calendars || []).filter(calShown).map((c) => c.id));
+  const n = calPhone.open ? calPhoneItems().length : 0;
+  return [
+    h('h3', {}, T('Súbory a odbery')),
+    h('div', { class: 'calbtns caltools' },
+      h('button', { type: 'button', class: 'ghost', onclick: calPickFiles }, T('Importovať .ics')),
+      h('button', { type: 'button', class: 'ghost', disabled: !cal.doc?.calendars.length, onclick: calExportAll }, T('Exportovať všetky kalendáre')),
+      h('button', { type: 'button', class: 'ghost', 'aria-expanded': String(calPhone.open), 'data-focus': 'phone', onclick: calKeepFocus(() => { calPhone.open = !calPhone.open; render(); }) }, T('Export do telefónu'))),
+    h('p', { class: 'hint' }, T('Importovaný súbor bude kalendárom so svojím menom. Súbor .ics sa dá pretiahnuť aj priamo na kalendár.')),
+    calPhone.open ? h('div', { class: 'calphone' },
+      h('p', { class: 'hint' }, T('Vyber rodinu telefónu; súbor dostane formát, kódovanie a dĺžky, ktoré zvláda.')),
+      h('div', { class: 'calprofiles', role: 'radiogroup', 'aria-label': T('Telefón'), onkeydown: radioKeys }, Files.PHONE_PROFILES.map((p) =>
+        h('button', { type: 'button', role: 'radio', 'aria-checked': String(p.id === profile.id), tabindex: p.id === profile.id ? 0 : -1, class: p.id === profile.id ? 'on' : '', 'data-focus': `profile:${p.id}`,
+          onclick: calKeepFocus(() => { calPhone.profile = p.id; render(); }) }, h('b', {}, p.name), h('small', {}, p.examples), h('small', {}, `${p.format} · ${p.charset}`)))),
+      h('div', { class: 'calshown', role: 'group', 'aria-label': T('Kalendáre do telefónu') }, (cal.doc?.calendars || []).map((c) => h('label', { class: 'bcheck' },
+        h('input', { type: 'checkbox', checked: chosen.has(c.id), 'data-focus': `pcal:${c.id}`, onchange: calKeepFocus((e) => { const next = new Set(chosen); if (e.currentTarget.checked) next.add(c.id); else next.delete(c.id); calPhone.chosen = next; render(); }) }),
+        c.name))),
+      h('label', { class: 'calfield' }, T('Obdobie '), h('select', { onchange: (e) => { calPhone.range = e.target.value; render(); } },
+        h('option', { value: 'upcoming', selected: calPhone.range === 'upcoming' }, T('Od dnes ďalej')), h('option', { value: 'all', selected: calPhone.range === 'all' }, T('Všetko')))),
+      profile.alarm ? h('label', { class: 'calfield' }, T('Pripomienka, keď udalosť žiadnu nemá '), h('select', { onchange: (e) => { calPhone.alarm = e.target.value === '' ? '' : +e.target.value; render(); } },
+        h('option', { value: '', selected: alarm === '' }, T('Žiadna')), CAL_ALARMS.map(([m, label]) => h('option', { value: String(m), selected: alarm === m }, label)))) : null,
+      h('div', { class: 'calbtns' }, h('small', {}, `${eventsCount(n)} · gammu/${profile.script}.sh`),
+        h('button', { type: 'button', class: 'primary', disabled: !n, onclick: calPhoneExport }, T('Stiahnuť súbor pre telefón')))) : null,
+    h('form', { class: 'calnewcal', onsubmit: (e) => { e.preventDefault(); calSubscribe(); } },
+      h('input', { type: 'url', value: calNewCal.url, required: true, placeholder: 'https://…/calendar.ics', 'aria-label': T('Adresa .ics kalendára na odber'), 'data-root': '__calSubUrl', oninput: (e) => { calNewCal.url = e.target.value; } }),
+      h('button', { type: 'submit', class: 'primary', disabled: calNewCal.busy, 'data-focus': 'subscribe' }, calNewCal.busy ? T('Načítavam…') : T('Odoberať z adresy'))),
+    calNewCal.note ? h('p', { class: 'hint', role: 'status' }, calNewCal.note) : null,
+  ];
+}
+
+function calLookSettings() {
+  const accent = calAccentFills();
+  const sample = (fill, stripe) => h('span', { class: 'caldual-sample', style: { background: fill, color: inkOn(fill), borderLeft: `6px solid ${stripe}` } }, T('Matematika'));
+  return [
+    h('h3', {}, T('Dvojfarebné udalosti')),
+    h('div', { class: 'caldual', role: 'radiogroup', 'aria-label': T('Dvojfarebné udalosti'), onkeydown: radioKeys }, [['category', '#4fae6b', '#7fb3ff', T('Výplň farbou kategórie, pásik druhej farby')], ['accent', '#7fb3ff', '#4fae6b', T('Výplň druhou farbou, pásik kategórie')]].map(([mode, fill, stripe, label]) =>
+      h('button', { type: 'button', role: 'radio', 'aria-checked': String(accent === (mode === 'accent')), tabindex: accent === (mode === 'accent') ? 0 : -1, class: accent === (mode === 'accent') ? 'on' : '', 'data-focus': `dual:${mode}`,
+        onclick: calKeepFocus(() => calSetPrefs({ dualFill: mode })) }, sample(fill, stripe), h('small', {}, label)))),
   ];
 }
 
@@ -13272,7 +13843,7 @@ function render() {
       S.caret = null;
     }
   }
-  if (calendarFocus && !S.panel && !S.overlay && !cal.edit) root.querySelector('.home-calendar')?.focus({ preventScroll: true });
+  if (calendarFocus && !S.panel && !S.overlay && !cal.edit && !cal.detail && !cal.search) root.querySelector('.home-calendar')?.focus({ preventScroll: true });
   if (S.view === 'main') { markRead(); if (!S.homeReady) { S.homeReady = true; cal.view = calDefault(); queueMicrotask(() => { loadCalendar(); if (S.surface === 'feed') feed.enter(); else feed.load(); }); } }
 }
 

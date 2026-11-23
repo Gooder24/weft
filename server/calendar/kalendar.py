@@ -6,10 +6,19 @@ same data shows in Weft, in Kalendarix on x270 and in its desktop widget. Two wa
 
   HTTP on 127.0.0.1:29327 behind Caddy /_calendar/ (Karchi's Matrix token):
     GET  /_calendar/doc            -> {"version", "doc"}  (doc is null until the first change or timetable round)
-    POST /_calendar/ops {"ops": [{"op": "put", "cal": id, "event": {...}} | {"op": "del", "cal": id, "uid": uid}
-                                 | {"op": "addcal", "cal": id, "name": text, "color": "#rrggbb"} | {"op": "delcal", "cal": id}]}
+    POST /_calendar/ops {"ops": [...]}, applied all or nothing, each one of:
+      {"op": "put", "cal": id, "event": {...}} | {"op": "del", "cal": id, "uid": uid}
+      {"op": "addcal", "cal": id, "name": text, "color": "#rrggbb"[, "category", "autoAccent", "events": [...] (an
+        imported .ics), "sourceUrl" (a subscription)]} | {"op": "updcal", "cal": id[, "name", "category", "color",
+        "autoAccent"]} | {"op": "delcal", "cal": id}
+      {"op": "accent", "cal": id, "key": titleKey, "color": "#rrggbb" | null}: the second colour of every event of
+        that title (Kalendarix's calendar.accents), also in the timetable
+      {"op": "addcat", "id", "name", "color"} | {"op": "updcat", "id"[, "name", "color"]} | {"op": "delcat", "id"}:
+        categories of Karchi's own, with Kalendarix's rules (src/core/document.ts)
+      {"op": "feed", "cal": id, "events": [...]}: a fresh download of a subscribed calendar in place of the last one
     Weft needs nothing else: without a file the first change starts one. addcal of an id that is there and delcal
     of one that is not change nothing, so a batch sent again after a lost answer does no harm.
+  GET  /_calendar/fetch?url=<http(s) address> -> {"text"}: an .ics a subscription reads; the browser may not (CORS).
   CLI, for a computer that keeps its own calendars.json (x270 runs it over ssh, see x270/):
     kalendar.py merge < {"base": what it last wrote from here (or null), "local": its calendars.json}
     -> the merged file on stdout, which is now also the master. A three-way merge per calendar and per event,
@@ -213,28 +222,86 @@ def managed(event, cal_id):
 TESTS_NAME = "Testy"  # the EduPage bridge finds the calendar it writes tests into by this name (TESTS_CALENDAR)
 
 def undeletable(cal):
-    """Why a calendar may not be removed, or None: a program fills it and would fail or bring it back."""
-    if cal["id"] == TIMETABLE_CAL or cal.get("sourceUrl") or any(isinstance(e, dict) and managed(e, cal["id"]) for e in cal.get("events") or []):
+    """Why a calendar may not be removed, or None: a program fills it and would fail or bring it back. A subscription
+    may go: Weft (or Kalendarix) refreshes only a calendar that is there."""
+    if cal["id"] == TIMETABLE_CAL: return "this calendar belongs to a sync program"
+    if cal.get("sourceUrl"): return None
+    if any(isinstance(e, dict) and managed(e, cal["id"]) for e in cal.get("events") or []):
         return "this calendar belongs to a sync program"
     if str(cal.get("name") or "").strip().casefold() == TESTS_NAME.casefold():
         return "the EduPage bridge writes tests into this calendar"
     return None
 
+HEX = re.compile(r"#[0-9a-fA-F]{6}")
+BUILT_IN_CATEGORIES = {"school", "school-events", "tests", "trips", "holidays", "family"}  # Kalendarix's own (categories.ts)
+FRESH = {"description": "", "notes": "", "location": "", "allDay": False, "rrule": None, "exdates": [], "alarmMinutes": ""}
+is_tests = lambda n: str(n or "").strip().casefold() == TESTS_NAME.casefold()
+
+def hex_color(v, what="color"):
+    if not isinstance(v, str) or not HEX.fullmatch(v): raise ValueError(f"{what} must be #rrggbb")
+    return v.lower()
+
+def new_events(events, remote=False):
+    """Events of an imported or subscribed .ics, checked as a put checks one."""
+    if not isinstance(events, list): raise ValueError("events must be a list")
+    out = []
+    for e in events:
+        if not isinstance(e, dict) or not isinstance(e.get("uid"), str) or not e["uid"]: raise ValueError("an event needs a uid")
+        for k in ("title", "start", "end"):
+            if not isinstance(e.get(k), str): raise ValueError(f"event.{k} must be text")
+        out.append({**FRESH, **e, **({"remote": True} if remote else {})})
+    return out
+
+def own_categories(doc):
+    """Categories of Karchi's own by id, as Kalendarix reads them: the file's list, then a category only a calendar names."""
+    out = {}
+    for c in doc.get("categories") or []:
+        if isinstance(c, dict) and isinstance(c.get("id"), str) and c["id"] and isinstance(c.get("color"), str) and HEX.fullmatch(c["color"]):
+            out[c["id"]] = {"id": c["id"], "name": str(c.get("name") or "").strip() or c["id"], "color": c["color"].lower()}
+    for cal in doc.get("calendars") or []:
+        cid = cal.get("category")
+        if not isinstance(cid, str) or not cid or cid in out or cid in BUILT_IN_CATEGORIES: continue
+        color = next((c for c in (cal.get("customColor"), cal.get("color")) if isinstance(c, str) and HEX.fullmatch(c)), None)
+        if color: out[cid] = {"id": cid, "name": str(cal.get("name") or "").strip() or cid, "color": color.lower()}
+    return out
+
+def calendar_fields(op, cal=None):
+    """name, category, colour and autoAccent of addcal and updcal; colour fields as Kalendarix keeps them (withColors)."""
+    out = {}
+    if "name" in op or cal is None:
+        name = op.get("name")
+        if not isinstance(name, str) or not name.strip(): raise ValueError("a calendar needs a name")
+        out["name"] = name.strip()
+    if "color" in op or cal is None:
+        color = hex_color(op.get("color"))
+        out["color"] = out["customColor"] = color
+    if "category" in op:
+        if not isinstance(op["category"], str): raise ValueError("category must be text")
+        out["category"] = op["category"]
+    if "autoAccent" in op:
+        if not isinstance(op["autoAccent"], bool): raise ValueError("autoAccent must be true or false")
+        out["autoAccent"] = op["autoAccent"]
+    return out
+
 def apply_ops(doc, ops):
     cals = by_key(doc.get("calendars"), "id")
     for op in ops:
-        if op.get("op") == "addcal":
-            cid, name, color = op.get("cal"), op.get("name"), op.get("color")
+        kind = op.get("op")
+        if kind == "addcal":
+            cid = op.get("cal")
             if not isinstance(cid, str) or not cid: raise ValueError("a calendar needs an id")
-            if not isinstance(name, str) or not name.strip(): raise ValueError("a calendar needs a name")
-            if not isinstance(color, str) or not re.fullmatch(r"#[0-9a-fA-F]{6}", color): raise ValueError("color must be #rrggbb")
+            fields = calendar_fields(op)
             if cid in cals: continue
-            tests = lambda n: str(n or "").strip().casefold() == TESTS_NAME.casefold()
-            if tests(name) and any(tests(c.get("name")) for c in cals.values()):
+            if is_tests(fields["name"]) and any(is_tests(c.get("name")) for c in cals.values()):
                 raise ValueError("there is a Testy calendar already: the EduPage bridge writes into one")
+            url = op.get("sourceUrl")
+            if url is not None and not (isinstance(url, str) and re.match(r"https?://", url)): raise ValueError("sourceUrl must be an http(s) address")
             # Kalendarix's fields for a calendar of one's own; the colour it shows is customColor.
-            cals[cid] = {"id": cid, "name": name.strip(), "color": color, "customColor": color, "visible": True, "events": []}
+            cals[cid] = {"id": cid, **fields, "visible": True, **({"sourceUrl": url} if url else {}), "events": new_events(op.get("events") or [])}
             doc.setdefault("calendars", []).append(cals[cid])
+            continue
+        if kind in ("addcat", "updcat", "delcat"):
+            cat_op(doc, op)
             continue
         if op.get("op") == "delcal":
             cal = cals.get(op.get("cal"))
@@ -246,6 +313,28 @@ def apply_ops(doc, ops):
             continue
         cal = cals.get(op.get("cal"))
         if cal is None: raise ValueError(f"no calendar {op.get('cal')!r}")
+        if kind == "updcal":
+            fields = calendar_fields(op, cal)
+            # The EduPage bridge finds the calendar it writes tests into by its name.
+            if "name" in fields and is_tests(cal.get("name")) and not is_tests(fields["name"]): raise ValueError("the EduPage bridge finds the Testy calendar by its name")
+            if "name" in fields and is_tests(fields["name"]) and not is_tests(cal.get("name")) and any(is_tests(c.get("name")) for c in cals.values()):
+                raise ValueError("there is a Testy calendar already: the EduPage bridge writes into one")
+            cal.update(fields)
+            continue
+        if kind == "accent":
+            key, color = op.get("key"), op.get("color")
+            if not isinstance(key, str) or not key: raise ValueError("an accent needs the title's key")
+            accents = dict(cal.get("accents") or {})
+            if color is None: accents.pop(key, None)
+            else: accents[key] = hex_color(color)
+            cal["accents"] = accents
+            continue
+        if kind == "feed":
+            if not cal.get("sourceUrl"): raise ValueError("only a subscribed calendar takes a download")
+            # Events added by hand stay; the last download goes.
+            cal["events"] = [e for e in cal.get("events") or [] if e.get("remote") is not True] + new_events(op.get("events"), remote=True)
+            cal["fetchedAt"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+            continue
         events = cal.setdefault("events", [])
         uid = op.get("uid") or (op.get("event") or {}).get("uid")
         if not isinstance(uid, str) or not uid: raise ValueError("an event needs a uid")
@@ -259,13 +348,70 @@ def apply_ops(doc, ops):
             for k in ("title", "start", "end"):
                 if not isinstance(event.get(k), str): raise ValueError(f"event.{k} must be text")
             # Fields Weft does not send (repetition, Kalendarix's colours, another program's) stay as they were.
-            fresh = {"description": "", "notes": "", "location": "", "allDay": False, "rrule": None, "exdates": [], "alarmMinutes": ""}
-            new = {**(old or fresh), **event}
+            new = {**(old or FRESH), **event}
             if old: events[events.index(old)] = new
             else: events.append(new)
         else:
             raise ValueError(f"unknown op {op.get('op')!r}")
     return doc
+
+def cat_op(doc, op):
+    """A category of Karchi's own added, renamed or recoloured, or removed (Kalendarix's addCategory, updateCategory,
+    deleteCategory): calendars of that kind follow; a removed one's calendars keep its colour as their own."""
+    cid = op.get("id")
+    if not isinstance(cid, str) or not cid: raise ValueError("a category needs an id")
+    stored = [c for c in doc.get("categories") or [] if isinstance(c, dict)]
+    own = own_categories(doc)
+    if op["op"] == "addcat":
+        name = op.get("name")
+        if not isinstance(name, str) or not name.strip(): raise ValueError("a category needs a name")
+        color = hex_color(op.get("color"))
+        if cid in BUILT_IN_CATEGORIES: raise ValueError("Kalendarix has a category of that id")
+        if not any(c.get("id") == cid for c in stored): doc["categories"] = [*stored, {"id": cid, "name": name.strip(), "color": color}]
+        return
+    cur = own.get(cid)
+    if cur is None: return  # gone already, or one that comes with Kalendarix
+    if op["op"] == "updcat":
+        nxt = dict(cur)
+        if "name" in op:
+            if not isinstance(op["name"], str) or not op["name"].strip(): raise ValueError("a category needs a name")
+            nxt["name"] = op["name"].strip()
+        if "color" in op: nxt["color"] = hex_color(op["color"])
+        doc["categories"] = [({**c, **nxt} if c.get("id") == cid else c) for c in stored] if any(c.get("id") == cid for c in stored) else [*stored, nxt]
+        for cal in doc.get("calendars") or []:
+            if cal.get("category") == cid: cal["color"] = cal["customColor"] = nxt["color"]
+        return
+    doc["categories"] = [c for c in stored if c.get("id") != cid]
+    for cal in doc.get("calendars") or []:
+        for e in cal.get("events") or []:
+            if isinstance(e, dict) and e.get("category") == cid: del e["category"]
+        if cal.get("category") == cid:
+            cal.update({"category": "", "color": cur["color"], "customColor": cur["color"]})
+
+FETCH_MAX = 10 * 1024 * 1024
+
+class PublicOnly(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        public_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+def public_url(url):
+    """An http(s) address on the internet: never asus itself or the home network, whatever the feed's server says."""
+    import ipaddress, socket
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.hostname: raise ValueError("an http(s) address is needed")
+    for info in socket.getaddrinfo(parts.hostname, parts.port or (443 if parts.scheme == "https" else 80)):
+        ip = ipaddress.ip_address(info[4][0])
+        if not ip.is_global: raise ValueError("that address is not on the internet")
+    return url
+
+def fetch_ics(url):
+    url = re.sub(r"^webcal://", "https://", url.strip(), flags=re.I)
+    req = urllib.request.Request(public_url(url), headers={"User-Agent": "Weft calendar", "Accept": "text/calendar, */*"})
+    with urllib.request.build_opener(PublicOnly).open(req, timeout=20) as r:
+        data = r.read(FETCH_MAX + 1)
+    if len(data) > FETCH_MAX: raise ValueError("the calendar is larger than 10 MB")
+    return data.decode("utf-8", "replace")
 
 
 # ------------------------------------------------------------------ the EduPage timetable
@@ -398,6 +544,11 @@ class Api(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if not self.karchi(): return self.send(401, {"error": "Karchi's token only"})
+        if self.path.split("?")[0] == "/_calendar/fetch":
+            url = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("url", [""])[0]
+            try: return self.send(200, {"text": fetch_ics(url)})
+            except ValueError as e: return self.send(400, {"error": str(e)})
+            except Exception as e: return self.send(422, {"error": f"{type(e).__name__}: {e}"})  # the feed's fault: not "offline" in Weft
         if self.path.split("?")[0] != "/_calendar/doc": return self.send(404, {"error": "not found"})
         doc = read(MASTER)
         v = version(doc)
