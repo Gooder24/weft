@@ -1321,6 +1321,22 @@ function callButtonTarget(r) {
   if (window.desktop && ['messenger', 'instagram'].includes(t.network) && !callWindow(t.network)) return null;
   return t;
 }
+// Settings → Prístupnosť → Prehliadač, per device: a person's profile on Instagram or Facebook opens in the system's
+// browser (default) or in the desktop app's follow window, which shows only the follow / add-friend button.
+const BROWSER_PREF = 'ep_browser';
+const canFollowWindow = () => !!window.desktop?.follow;
+const followWindow = (network) => canFollowWindow() && (window.desktop.followNetworks || []).includes(network) && localStorage.getItem(BROWSER_PREF) === 'weft';
+/** A link to a person's profile (`who`: an Instagram username, a Facebook profile id), named for where it goes. */
+function profileLink(network, who, href, attrs, external, inWeft) {
+  // A middle click (auxclick) goes the same way as a click.
+  const open = (e) => {
+    if (!followWindow(network) || (e.type === 'auxclick' && e.button !== 1)) return;
+    e.preventDefault();
+    window.desktop.follow({ network, who }).catch((err) => alert((LANG === 'sk' && String(err?.message || '').replace(/^.*Error: /, '')) || T('Okno sa neotvorilo.')));
+  };
+  return h('a', { ...attrs, href, target: '_blank', rel: 'noopener noreferrer', onclick: open, onauxclick: open }, followWindow(network) ? inWeft : external);
+}
+
 /** Opens the chat on its network (Karchi's own step out of Weft, so it works outside reading windows too). */
 function openCall(r) {
   const t = callButtonTarget(r);
@@ -8763,6 +8779,11 @@ const REMOTE = {
   whatsapp: { hint: T('Celé číslo s predvoľbou, napr. +421 900 123 456'), note: T('WhatsApp nájde človeka iba podľa celého čísla; mená a priateľstvá tu nie sú.') },
   teams: { hint: T('Meno alebo e-mail v škole či firme'), note: T('Teams nájde ľudí z adresára tvojej školy alebo firmy; ľudí mimo nej Weft nepridá.') },
 };
+// The same notes when profiles open in Weft's follow window (Settings → Prístupnosť).
+const FOLLOW_NOTE = {
+  instagram: T('Kto ťa nesleduje, dostane správu ako žiadosť o správu. Sledovať ho môžeš v okne Weftu: napíš jeho @používateľa a klikni na „Sledovať @…“.'),
+  messenger: T('Kto nie je tvoj priateľ, dostane správu ako žiadosť o správu, ak ju jeho súkromie pustí. Žiadosť o priateľstvo pošleš v okne Weftu cez „Pridať priateľa…“ pri človeku.'),
+};
 const REMOTE_TIMEOUT = 15e3;
 const REMOTE_TTL = 60e3; // the same question to the same login is answered from memory this long
 const REMOTE_MAX = 20;
@@ -8925,10 +8946,10 @@ function remoteView(o) {
             h('div', { class: 'rmeta' }, h('b', {}, c.name || c.id),
               h('small', {}, room ? T('Už máte chat · otvorí ho') : app.id === 'whatsapp' ? T('Nový chat') : T('Nový chat · môže prísť ako žiadosť o správu'))),
           ]),
-          link ? h('a', { class: 'rlink', href: link, target: '_blank', rel: 'noopener noreferrer', title: T('Profil na Facebooku') }, T('Profil ↗')) : null);
+          link ? profileLink('facebook', c.id, link, { class: 'rlink', title: T('Profil na Facebooku') }, T('Profil ↗'), T('Pridať priateľa…')) : null);
       })] : null,
-      typedUser ? h('a', { class: 'rnote rlink', href: `https://www.instagram.com/${encodeURIComponent(rem.user)}/`, target: '_blank', rel: 'noopener noreferrer' }, T`Profil @${rem.user} v Instagrame ↗`) : null,
-      h('div', { class: 'rnote dim' }, REMOTE[app.id].note)),
+      typedUser ? profileLink('instagram', rem.user, `https://www.instagram.com/${encodeURIComponent(rem.user)}/`, { class: 'rnote rlink' }, T`Profil @${rem.user} v Instagrame ↗`, T`Sledovať @${rem.user}…`) : null,
+      h('div', { class: 'rnote dim' }, (followWindow(app.id === 'messenger' ? 'facebook' : app.id) && FOLLOW_NOTE[app.id]) || REMOTE[app.id].note)),
   ];
 }
 
@@ -12041,7 +12062,7 @@ function linkView() {
 
 // Settings: one section at a time, chosen on the left (on a phone, tabs along the top). Arrow keys move
 // between sections; a disconnected account shows on its section's name.
-const SET_TABS = [['messages', T('Správy')], ['edupage', 'EduPage'], ['calendar', T('Kalendár')], ['feed', 'Feed'], ['accounts', T('Účty')]];
+const SET_TABS = [['messages', T('Správy')], ['edupage', 'EduPage'], ['calendar', T('Kalendár')], ['feed', 'Feed'], ['accounts', T('Účty')], ['access', T('Prístupnosť')]];
 function settingsTab(id) {
   S.setTab = id;
   render();
@@ -12050,7 +12071,7 @@ function settingsTab(id) {
 function settingsView() {
   const tab = SET_TABS.some(([id]) => id === S.setTab) ? S.setTab : 'messages';
   const down = downAccounts();
-  const pane = { messages: batchSettings, edupage: eduSettings, calendar: calendarSettings, feed: feed.settings, accounts: accountSettings }[tab]();
+  const pane = { messages: batchSettings, edupage: eduSettings, calendar: calendarSettings, feed: feed.settings, accounts: accountSettings, access: accessSettings }[tab]();
   const move = (ev) => {
     const step = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 }[ev.key];
     if (!step) return;
@@ -12274,6 +12295,24 @@ function accountSettings() {
     // Two Discord logins get plain rows; their servers stay listed below them.
     S.links.discord?.length > 1 ? discordServers() : null,
     callSettings(),
+  ];
+}
+
+/** Settings → Prístupnosť: where a person's profile opens (this device only; Weft's window only in the desktop app). */
+function accessSettings() {
+  const can = canFollowWindow();
+  const inWeft = can && localStorage.getItem(BROWSER_PREF) === 'weft';
+  const pick = (weft) => { if (weft) localStorage.setItem(BROWSER_PREF, 'weft'); else localStorage.removeItem(BROWSER_PREF); render(); };
+  // data-root: the panel is drawn anew on each change, and the choice keeps the keyboard.
+  const choice = (weft, label) => h('button', { type: 'button', role: 'radio', 'data-root': `browser:${weft ? 'weft' : 'external'}`, 'aria-checked': String(inWeft === weft), class: inWeft === weft ? 'on' : '',
+    disabled: weft && !can, onclick: () => pick(weft) }, label);
+  return [
+    h('h3', {}, T('Prehliadač')),
+    h('p', { class: 'hint' }, T('Kde sa otvorí profil človeka na Instagrame alebo Facebooku (Ctrl+N → Hľadať mimo kontaktov). Len na tomto zariadení.')),
+    h('div', { class: 'seg', role: 'radiogroup', 'aria-label': T('Prehliadač') }, choice(false, T('Externý prehliadač')), choice(true, T('Vo Wefte'))),
+    h('p', { class: 'hint' }, !can ? T('Vo Wefte to ide len v aplikácii Weft na počítači.')
+      : inWeft ? T('Okno Weftu ukáže len meno a tlačidlo Sledovať alebo Pridať priateľa; nič iné sa v ňom otvoriť nedá. Ide cez asus, takže ho blokovanie stránky na tomto počítači nezastaví. Prihlásenie zdieľa s oknom hovorov.')
+      : T('Profil sa otvorí celý v tvojom prehliadači.')),
   ];
 }
 

@@ -714,7 +714,10 @@ function callLost(network, t) {
   callSession(network).setProxy(callProxy(NO_ROUTE)).catch(() => {});
   const entry = calls.get(network);
   const chat = entry && !entry.win.isDestroyed() ? entry.win : null;
-  for (const w of callWindows(network)) if (w !== chat) w.destroy(); // the call's popups, also without a chat window
+  // A follow window on this session stays and says so, like the chat window.
+  const follow = [...follows].filter(([n, f]) => FOLLOW_NETS[n].session === network && !f.win.isDestroyed()).map(([, f]) => f);
+  for (const w of callWindows(network)) if (w !== chat && !follow.some((f) => f.win === w)) w.destroy(); // the call's popups, also without a chat window
+  for (const f of follow) { f.dead = true; showCallError(f.win.webContents, 'Spojenie cez asus spadlo, okno prestalo fungovať. Klikni na odkaz vo Wefte znova.'); }
   if (!chat) return;
   entry.dead = true;
   showCallError(chat.webContents, `Spojenie cez asus spadlo, ${CALL_NETS[network].name} v okne prestal fungovať. Klikni na hovor vo Wefte znova.`);
@@ -834,6 +837,192 @@ ipcMain.handle('call-forget', (event) => {
   return forgetCalls();
 });
 
+// ------------------------------------------------------------------ follow window
+// Settings → Prístupnosť → Prehliadač „vo Wefte“: a profile on Instagram or Facebook opens in a small window of the
+// shell that shows only the person's name and the follow / add-friend button; everything else of the page is hidden
+// and cannot be clicked, and the window never leaves the profile (signing in excepted). Like a call window it goes
+// out through asus (x270's browser blocks facebook.com) and keeps that network's call-window login.
+// Each network: `session` (the call window whose login it shares), `url(who)`, `home(u, who)` for the profile's own
+// address, `aliases` when its own load may land on another address of the profile, `allows(u)` for signing in,
+// `scope`/`nameAt` (CSS) for where the button and the person's name are, and `labels`, the button's text in the
+// languages Meta may speak to Karchi (a missing one shows the window's note instead).
+const FOLLOW_NETS = {
+  instagram: {
+    name: 'Instagram', title: 'Sledovať', session: 'instagram',
+    valid: /^[A-Za-z0-9._]{1,30}$/,
+    url: (who) => `https://www.instagram.com/${who}/`,
+    home: (u, who) => u.origin === 'https://www.instagram.com' && u.pathname.replace(/\/$/, '').toLowerCase() === `/${who.toLowerCase()}`,
+    allows: (u) => META_AUTH(u) || (u.origin === 'https://www.instagram.com' && /^\/(accounts\/(login|onetap|two_factor)|challenge|two_factor|auth_platform)(\/|$)/.test(u.pathname)),
+    scope: 'header', nameAt: 'header h2',
+    labels: ['Follow', 'Follow Back', 'Following', 'Requested', 'Sledovať', 'Sledovať tiež', 'Sledovať späť', 'Sledované', 'Sledujete', 'Sleduješ', 'Požiadané', 'Žiadosť odoslaná', 'Sledovat', 'Sledovat zpět', 'Sledováno', 'Požádáno'],
+  },
+  facebook: {
+    name: 'Facebook', title: 'Pridať priateľa', session: 'messenger',
+    aliases: true, // profile.php?id= goes on to the person's name
+    valid: /^\d{1,20}$/,
+    url: (who) => `https://www.facebook.com/profile.php?id=${who}`,
+    home: (u, who) => u.origin === 'https://www.facebook.com' && u.pathname === '/profile.php' && u.searchParams.get('id') === who,
+    allows: META_AUTH,
+    scope: '[role=main]', nameAt: '[role=main] h1',
+    labels: ['Add friend', 'Add Friend', 'Cancel request', 'Cancel Request', 'Friends', 'Respond', 'Confirm request', 'Follow', 'Following',
+      'Pridať priateľa', 'Pridať medzi priateľov', 'Zrušiť žiadosť', 'Priatelia', 'Odpovedať', 'Potvrdiť žiadosť', 'Sledovať', 'Sledujete',
+      'Přidat přítele', 'Přidat do přátel', 'Zrušit žádost', 'Přátelé', 'Odpovědět', 'Sledovat'],
+  },
+};
+// Everything but the kept name, the button and Meta's own dialogs (cookies, „Unfollow?“, the Friends menu) is hidden:
+// a hidden element is not drawn and takes no click. A user style wins over the page's own !important.
+const FOLLOW_CSS = `body * { visibility: hidden !important; }
+[data-weft-keep], [data-weft-keep] *, [role=dialog], [role=dialog] *, [role=menu], [role=menu] * { visibility: visible !important; }
+html, body { overflow: hidden !important; }`;
+const FOLLOW_WORLD = 1078;
+/** Marks the name and the button (again after the page redraws them), brings the button into sight, and after
+ *  `wait` ms without one shows the window's own note. Runs in a world of its own: the page never sees it. */
+const followScript = (net, note, wait) => `(() => {
+  if (window.__weftFollow) return; window.__weftFollow = 1;
+  const norm = (s) => (s || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+  const labels = new Set(${JSON.stringify(net.labels)}.map(norm));
+  let shown = false;
+  const mark = () => {
+    for (const n of document.querySelectorAll(${JSON.stringify(net.nameAt)})) { n.setAttribute('data-weft-keep', ''); break; }
+    let button = null;
+    for (const root of document.querySelectorAll(${JSON.stringify(net.scope)})) {
+      for (const b of root.querySelectorAll('button, [role=button]')) {
+        if (!labels.has(norm(b.getAttribute('aria-label'))) && !labels.has(norm(b.textContent))) continue;
+        const r = b.getBoundingClientRect();
+        if (r.width < 4 || r.height < 4) continue;
+        button = b; break;
+      }
+      if (button) break;
+    }
+    for (const old of document.querySelectorAll('[data-weft-button]')) if (old !== button) { old.removeAttribute('data-weft-button'); old.removeAttribute('data-weft-keep'); }
+    if (!button) return;
+    document.getElementById('weft-follow-note')?.remove();
+    button.setAttribute('data-weft-keep', ''); button.setAttribute('data-weft-button', '');
+    if (!shown) { shown = true; button.scrollIntoView({ block: 'center', inline: 'center' }); }
+  };
+  let queued = false;
+  new MutationObserver(() => { if (!queued) { queued = true; setTimeout(() => { queued = false; mark(); }, 150); } })
+    .observe(document.documentElement, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['aria-label'] });
+  mark();
+  setTimeout(() => {
+    if (shown || document.getElementById('weft-follow-note')) return;
+    const d = document.createElement('div');
+    d.id = 'weft-follow-note'; d.setAttribute('data-weft-keep', '');
+    d.style.cssText = 'position:fixed;z-index:2147483647;left:16px;right:16px;top:16px;padding:12px;font:14px sans-serif;background:#000a07;color:#f0f0eb;border-radius:8px';
+    d.textContent = ${JSON.stringify(note)};
+    document.body.append(d);
+  }, ${Number(wait)});
+})()`;
+// network -> { win, who, aliases, touched, bounces, bounceAt, ready, dead }: `aliases` are the addresses the profile's own
+// load landed on (Facebook sends profile.php?id= on to the person's name); `touched` is set once Karchi pressed
+// anything in the window, after which no new address counts as the profile.
+const follows = new Map();
+
+function lockFollow(contents, network, entry) {
+  const net = FOLLOW_NETS[network];
+  const parse = (url) => { try { return new URL(url); } catch { return null; } };
+  const home = (url) => { const u = parse(url); return !!u && (net.home(u, entry.who) || entry.aliases.has(`${u.origin}${u.pathname.replace(/\/$/, '')}`)); };
+  const signIn = (url) => { const u = parse(url); return !!u && net.allows(u); };
+  // The profile's own load, before Karchi touched anything, moving to one path of the same site: the same profile.
+  const alias = (url) => {
+    const u = parse(url);
+    const at = parse(net.url(entry.who));
+    if (!net.aliases || entry.touched || !u || !at || u.origin !== at.origin || !/^\/[^/]+\/?$/.test(u.pathname) || net.allows(u)) return false;
+    entry.aliases.add(`${u.origin}${u.pathname.replace(/\/$/, '')}`);
+    logLogin(`follow ${network} profile also ${u.pathname}`);
+    return true;
+  };
+  const back = (url) => {
+    try { const u = new URL(url); logLogin(`follow ${network} refused ${u.host}${u.pathname}`); } catch {}
+    // Refused before it left: the profile is still there as it was (a dialog open on it stays).
+    if (home(contents.getURL())) return;
+    entry.bounces = Date.now() - entry.bounceAt < 10000 ? entry.bounces + 1 : 1;
+    entry.bounceAt = Date.now();
+    if (entry.bounces > 10) { showCallError(contents, `${net.name} stále odchádza z profilu. Zavri okno a skús znova.`); return; }
+    contents.loadURL(net.url(entry.who)).catch(() => {});
+  };
+  contents.on('input-event', (_e, input) => { if (['mouseDown', 'rawKeyDown', 'keyDown', 'touchStart', 'gestureTapDown'].includes(input.type)) entry.touched = true; });
+  contents.on('will-navigate', (event, url) => { if (!home(url) && !signIn(url)) { event.preventDefault(); back(url); } });
+  contents.on('will-redirect', (event, url, _inPlace, isMainFrame) => {
+    if (!isMainFrame || home(url) || signIn(url) || alias(url)) return;
+    event.preventDefault();
+    back(url);
+  });
+  // The profile is stripped once in each page that shows it (a full load, or the page moving there itself after
+  // signing in); a sign-in page is left whole, and one the stripped page moves to is loaded afresh.
+  let stripped = false;
+  const strip = async () => {
+    if (stripped || !home(contents.getURL())) return;
+    stripped = true;
+    try {
+      await contents.insertCSS(FOLLOW_CSS, { cssOrigin: 'user' });
+      await contents.executeJavaScriptInIsolatedWorld(FOLLOW_WORLD, [{ code: followScript(net, `Tlačidlo ${net.title} som na stránke nenašiel (nie si prihlásený, súkromný účet, iný jazyk alebo nový vzhľad ${net.name}u). Nič iné tu nie je; zavri okno.`, entry.wait) }]);
+    } catch (err) { logLogin(`follow ${network} could not strip the page: ${err.message}`); }
+  };
+  contents.on('did-start-navigation', (_e, _url, inPlace, isMainFrame) => { if (isMainFrame && !inPlace) stripped = false; });
+  contents.on('dom-ready', strip);
+  contents.on('did-navigate-in-page', (_e, url, isMainFrame) => {
+    if (!isMainFrame) return;
+    if (home(url)) strip();
+    else if (signIn(url)) { if (stripped) contents.loadURL(url).catch(() => {}); }
+    else if (!alias(url)) back(url);
+    else strip();
+  });
+  // Signed in, a network goes to its start page (the feed): the window goes back to the profile.
+  contents.on('did-navigate', (_e, url) => { if (!url.startsWith('data:') && url !== 'about:blank' && !home(url) && !signIn(url)) back(url); });
+  contents.setWindowOpenHandler(({ url }) => {
+    try { const u = new URL(url); logLogin(`follow ${network} refused popup ${u.host}${u.pathname}`); } catch {}
+    return { action: 'deny' };
+  });
+}
+
+/** Opens (or turns) the network's follow window to one person: an Instagram username or a Facebook profile id. */
+async function openFollow(network, who) {
+  const net = Object.hasOwn(FOLLOW_NETS, network) ? FOLLOW_NETS[network] : null;
+  if (!net || typeof who !== 'string' || !net.valid.test(who)) throw new Error('Tento profil sa v okne Weftu otvoriť nedá.');
+  const open = follows.get(network);
+  if (open && !open.win.isDestroyed() && !open.dead) {
+    if (open.who !== who) {
+      Object.assign(open, { who, aliases: new Set(), touched: false, bounces: 0 });
+      if (open.ready) open.win.webContents.loadURL(net.url(who)).catch(() => {});
+    }
+    open.win.show();
+    open.win.focus();
+    return;
+  }
+  if (open && !open.win.isDestroyed()) open.win.destroy();
+  const ses = lockSession(net.session);
+  const win = new BrowserWindow({
+    width: 420, height: 560, title: `${net.title} · ${net.name}`, autoHideMenuBar: true,
+    webPreferences: { session: ses, contextIsolation: true, sandbox: true }, // no preload: the page gets no window.desktop
+  });
+  // `wait`: how long the page may take to draw the button before the note (the self-test shortens it).
+  const entry = { win, who, aliases: new Set(), touched: false, bounces: 0, bounceAt: 0, ready: false, dead: false, wait: Number(process.env.SPRAVY_FOLLOW_WAIT) || 12000 };
+  win.removeMenu(); // no menu (Alt): its reload and developer tools would undo the window's narrowing
+  follows.set(network, entry);
+  lockFollow(win.webContents, network, entry);
+  win.on('page-title-updated', (event) => event.preventDefault());
+  win.on('closed', () => { if (follows.get(network) === entry) follows.delete(network); });
+  const up = await callTunnel(net.session);
+  if (win.isDestroyed()) return;
+  if (!up) {
+    entry.dead = true;
+    showCallError(win.webContents, `Okno ide cez asus a tunel na asus sa nepodaril. ${net.name} sa preto neotvoril; skús to znova, keď asus beží.`);
+    return;
+  }
+  await win.loadURL('about:blank').catch(() => {});
+  if (win.isDestroyed() || entry.dead) return;
+  await presentAs(win.webContents, CHROME_UA);
+  if (win.isDestroyed() || entry.dead) return;
+  entry.ready = true;
+  await win.loadURL(net.url(entry.who), { userAgent: CHROME_UA }).catch(() => {});
+}
+ipcMain.on('follow-networks', (event) => { event.returnValue = fromApp(event) ? Object.keys(FOLLOW_NETS) : []; });
+ipcMain.handle('follow', (event, spec) => {
+  if (!fromApp(event)) throw new Error('Not allowed');
+  return openFollow(spec?.network, spec?.who);
+});
+
 ipcMain.handle('collect', (event, spec) => {
   if (event.senderFrame?.origin !== APP_ORIGIN) throw new Error('Not allowed');
   return collect(spec);
@@ -870,6 +1059,9 @@ app.whenReady().then(() => {
   if (!primary) return;
   if (process.env.SPRAVY_SELFTEST?.startsWith('call')) {
     return require('./selftest-call.js')({ APP_URL, APP_ORIGIN, CALL_NETS, calls, callSession, openCall, forgetCalls, fromApp, cursorPath, tunnels, callTunnels, callWindows, setMain: (w) => { main = w; } });
+  }
+  if (process.env.SPRAVY_SELFTEST?.startsWith('follow')) {
+    return require('./selftest-follow.js')({ APP_URL, APP_ORIGIN, FOLLOW_NETS, follows, openFollow, callSession, callWindows, forgetCalls, fromApp, tunnels, setMain: (w) => { main = w; } });
   }
   if (process.env.SPRAVY_SELFTEST) return selftest();
   if (!APP_URL) {

@@ -10,4 +10,7 @@ contextBridge.exposeInMainWorld('desktop', {
   callNetworks: ipcRenderer.sendSync('call-networks'),
   call: (spec) => ipcRenderer.invoke('call', spec),
   forgetCalls: () => ipcRenderer.invoke('call-forget'),
+  // The follow window (main.js): a profile on Instagram or Facebook with only its follow / add-friend button.
+  followNetworks: ipcRenderer.sendSync('follow-networks'),
+  follow: (spec) => ipcRenderer.invoke('follow', spec),
 });

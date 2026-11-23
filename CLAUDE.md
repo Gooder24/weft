@@ -131,9 +131,14 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
 - New chats (Ctrl+N): Weft's own people first; a full number typed there goes to WhatsApp at once, and „Hľadať mimo
   kontaktov“ asks one network (Messenger and Instagram by name, WhatsApp by number, Teams in the directory). „Nová
   skupina na WhatsAppe“ (also Ctrl+J) makes a group through the bridge's `POST /v3/create_group/group` after Karchi
-  confirms; whom WhatsApp would not add gets the bridge's invitation in their chat only on a second yes. Following
-  on Instagram and friend requests on Facebook or Discord stay in those apps (no bridge API, a ban risk). Check:
-  `overenie/whatsapp-skupina/run.sh` (the bridge faked).
+  confirms; whom WhatsApp would not add gets the bridge's invitation in their chat only on a second yes. Check:
+  `overenie/whatsapp-skupina/run.sh` (the bridge faked). Following on Instagram and friend requests on Facebook have
+  no bridge API (a ban risk): the profile link (a typed @username, a person found on Messenger) opens the page in the
+  system's browser, or with Settings → Prístupnosť → Prehliadač „Vo Wefte“ (per device, desktop app only) in the
+  shell's follow window (`FOLLOW_NETS` in `desktop/main.js`): only the name and the follow / add-friend button, the
+  rest hidden and unclickable, locked to the profile, out through asus and with the call window's login like a call
+  window. Discord friends stay in Discord. Checks: `overenie/sledovat/` (`run.sh` the app, `selftest.sh` the window
+  against stand-ins).
 - Mentions (like Beeper): „@“ in a Messenger, Instagram, WhatsApp or Discord chat lists its people; a picked or fully
   typed „@Name“ goes out as a Matrix mention (`formatted_body` matrix.to link + `m.mentions`), which the mautrix
   bridges turn into the network's own. A picked name stays that person (two of the same name, text typed after it,
