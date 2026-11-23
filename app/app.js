@@ -907,7 +907,7 @@ function stashAskView(o) {
   o.flat = [() => go(0), ...choices.map(([, ts]) => () => go(ts))];
   return [
     h('div', { class: 'rsec' }, T`Odložiť koncept a pripomenúť: ${entryOf(o.room)?.title || ''}`),
-    h('div', { class: 'results', tabindex: -1, 'data-root': '__overlay', onkeydown: (ev) => {
+    h('div', { class: 'results', ...listScroll(o), tabindex: -1, 'data-root': '__overlay', onkeydown: (ev) => {
       const n = Number(ev.key);
       if (n >= 1 && n <= choices.length) { ev.preventDefault(); o.flat[n](); }
       else if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') { ev.preventDefault(); o.index = (o.index + (ev.key === 'ArrowDown' ? 1 : -1) + o.flat.length) % o.flat.length; render(); }
@@ -2656,7 +2656,7 @@ function gifView(o) {
     o.error ? h('div', { class: 'empty' }, o.error)
       : !o.gifs ? h('div', { class: 'empty' }, T('Načítavam…'))
         : !gifs.length ? h('div', { class: 'empty' }, T('Nič sa nenašlo.'))
-          : h('div', { class: 'gifs' }, gifs.map((g, i) => h('button', {
+          : h('div', { class: 'gifs', ...listScroll(o) }, gifs.map((g, i) => h('button', {
             class: `gifcell${i === o.index ? ' on' : ''}`, title: g.content_description || g.title || 'GIF',
             onmousemove: (ev) => { if (pointerMoved(o, ev) && o.index !== i) { o.index = i; render(); } },
             onclick: () => o.flat[i](),
@@ -3131,7 +3131,7 @@ function laterView(o) {
   const what = [files ? `${files} ${files === 1 ? T('príloha') : files < 5 ? T('prílohy') : T('príloh')}` : '', text].filter(Boolean).join(', ');
   return [
     h('div', { class: 'rsec' }, T`Odoslať neskôr: ${what.length > 70 ? `${what.slice(0, 70)}…` : what}`),
-    h('div', { class: 'results', tabindex: -1, 'data-root': '__overlay', onkeydown: (ev) => {
+    h('div', { class: 'results', ...listScroll(o), tabindex: -1, 'data-root': '__overlay', onkeydown: (ev) => {
       if (ev.target.tagName === 'INPUT') { if (ev.key === 'Enter') { ev.preventDefault(); own(); } return; }
       const n = Number(ev.key);
       if (n >= 1 && n <= o.flat.length) { ev.preventDefault(); o.flat[n - 1](); }
@@ -3195,7 +3195,7 @@ function forwardPickView(o) {
   return [
     cmdInput(o, T('Preposlať do… (meno)')),
     h('div', { class: 'fwdlink' }, h('span', {}, o.link), h('button', { class: 'ghost', onclick: () => copyLink(o.link) }, T('Kopírovať'))),
-    h('div', { class: 'results' }, list.length ? list.map((x, i) => chatPickRow(o, x, i)) : h('div', { class: 'empty' }, T('Taký chat sa nenašiel.'))),
+    h('div', { class: 'results', ...listScroll(o) }, list.length ? list.map((x, i) => chatPickRow(o, x, i)) : h('div', { class: 'empty' }, T('Taký chat sa nenašiel.'))),
   ];
 }
 function forwardTo(link, id) {
@@ -3231,7 +3231,7 @@ function relayPickView(o) {
       type: 'button', class: `chip${o[key] ? ' on' : ''}`, 'aria-pressed': String(!!o[key]), title: keys,
       onclick: () => { relayToggle(o, key); document.querySelector('.cmd .cmdinput')?.focus(); },
     }, key === 'draft' ? T('Len koncept') : T('Ukázať meno a fotku')))),
-    h('div', { class: 'results' }, list.length ? list.map((x, i) => chatPickRow(o, x, i)) : h('div', { class: 'empty' }, T('Taký chat sa nenašiel.'))),
+    h('div', { class: 'results', ...listScroll(o) }, list.length ? list.map((x, i) => chatPickRow(o, x, i)) : h('div', { class: 'empty' }, T('Taký chat sa nenašiel.'))),
   ];
 }
 /** The picker's two choices: by default the picture is sent at once and hides the other side's name and photo. */
@@ -4138,7 +4138,7 @@ function mergePickView(o) {
   if (o.index >= o.flat.length) o.index = 0;
   return [
     cmdInput(o, T`Spojiť ${g ? T('spojený chat') : roomTitle(r)} s… (meno alebo sieť)`),
-    h('div', { class: 'results' }, list.length
+    h('div', { class: 'results', ...listScroll(o) }, list.length
       ? list.map((x, i) => resultRow(o, null, i, [avatar(roomAvatar(x), roomTitle(x), 28),
         h('div', { class: 'rmeta' }, h('b', {}, highlighted(roomTitle(x), o.query)), h('small', {}, hints.includes(x) ? T`${appOf(x.app)?.name} · asi ten istý človek` : appOf(x.app)?.name)),
         h('img', { class: 'rnet', src: appOf(x.app)?.icon, alt: '' })]))
@@ -4159,7 +4159,7 @@ function nickView(o) {
   o.flat = [() => { S.overlay = null; saveNick(o.ids, name); }];
   return [
     cmdInput(o, T`Prezývka pre ${o.was}`),
-    h('div', { class: 'results' }, h('div', { class: 'empty' }, name
+    h('div', { class: 'results', ...listScroll(o) }, h('div', { class: 'empty' }, name
       ? T`Enter: „${name}“ namiesto ${o.was}. Vidíš ju len ty, vo Wefte.`
       : T`Enter s prázdnym poľom vráti meno zo siete: ${o.was}`)),
   ];
@@ -5018,6 +5018,10 @@ function openMenu(ev, e) {
   S.overlay = { kind: 'menu', key: e.key, x: ev.clientX, y: ev.clientY };
   render();
 }
+// Every scrolling list stays where Karchi left it when the window is drawn again (the mouse picking a row, a setting
+// changed, a sync): render() keeps the place of each element with a data-scroll key. Typing a new query starts at the
+// top again (cmdInput), the keyboard's choice is brought into sight (overlayMark).
+const listScroll = (o) => ({ 'data-scroll': `list:${o.kind}` });
 // A list that opens under a resting mouse ignores it until it really moves, so the keyboard keeps the choice.
 // The browser also sends mouse events when the list is redrawn under the cursor; those carry the same position.
 let pointerAt = null;
@@ -8532,7 +8536,7 @@ function snippet(text, query, lead = 16) {
 }
 
 function resultRow(o, x, i, body, extra = '') {
-  return h('button', { class: `res${extra}${i === o.index ? ' on' : ''}`, onmousemove: (ev) => { if (pointerMoved(o, ev) && o.index !== i) { o.index = i; overlayMark(o); } }, onclick: () => o.flat[i]() }, body);
+  return h('button', { class: `res${extra}${i === o.index ? ' on' : ''}`, onmousemove: (ev) => { if (pointerMoved(o, ev) && o.index !== i) { o.index = i; overlayMark(o, true); } }, onclick: () => o.flat[i]() }, body);
 }
 
 /** One redraw of Ctrl+K's results for any number of renders under it; until then typing searches what it had. */
@@ -8554,15 +8558,16 @@ function overlayRedraw(o) {
   o.drawn = o.query;
   if (was) { if (searchRest) searchDrawRest(); box.querySelector('.results').scrollTop = was; }
 }
-/** Moves the highlighted result without redrawing anything else. */
-function overlayMark(o) {
-  if (S.overlay !== o || o.kind !== 'search') return render();
+/** Moves the highlighted result: Ctrl+K's and Ctrl+J's rows without redrawing anything else, other lists by a render.
+ *  The keyboard's choice comes into sight; the mouse's is under the pointer already, so the list never moves under it. */
+function overlayMark(o, mouse = false) {
+  const own = S.overlay === o && (o.kind === 'search' || o.kind === 'tools');
   // The rows past the first screenful are drawn once the highlight reaches them.
-  if (searchRest && document.querySelectorAll('.cmd.search .res').length <= o.index) searchDrawRest();
-  const rows = document.querySelectorAll('.cmd.search .res');
-  if (!rows[o.index]) return render();
-  rows.forEach((el, i) => el.classList.toggle('on', i === o.index));
-  rows[o.index].scrollIntoView({ block: 'nearest' });
+  if (own && o.kind === 'search' && searchRest && document.querySelectorAll('.cmd.search .res').length <= o.index) searchDrawRest();
+  const rows = own ? document.querySelectorAll(`.cmd.${o.kind} .res`) : [];
+  if (rows[o.index]) rows.forEach((el, i) => el.classList.toggle('on', i === o.index));
+  else render();
+  if (!mouse) document.querySelector('.cmd .res.on')?.scrollIntoView({ block: 'nearest' });
 }
 
 function cmdInput(o, placeholder) {
@@ -8572,7 +8577,7 @@ function cmdInput(o, placeholder) {
     value: o.query,
     'data-root': '__overlay',
     // Typing in Ctrl+N only filters what Weft has; the network mode asks its network on Enter alone.
-    oninput: (e) => { o.query = e.target.value; o.index = 0; if (o.kind === 'search') serverSearch(o); if (o.kind === 'gif') searchGifs(o); if (o.kind === 'search') overlayRedraw(o); else render(); },
+    oninput: (e) => { o.query = e.target.value; o.index = 0; e.target.closest('.cmd')?.querySelectorAll('[data-scroll]').forEach((el) => { el.scrollTop = 0; }); if (o.kind === 'search') serverSearch(o); if (o.kind === 'gif') searchGifs(o); if (o.kind === 'search') overlayRedraw(o); else render(); },
     onkeydown: (e) => {
       const opt = o.kind === 'relay' && e.altKey && !e.ctrlKey && relayOpts.find(([, keys]) => e.code === `Key${keys.at(-1)}`);
       if (opt) { e.preventDefault(); return relayToggle(o, opt[0]); }
@@ -8593,7 +8598,7 @@ function cmdInput(o, placeholder) {
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
         e.preventDefault();
         const n = o.flat?.length || 0;
-        if (n) { o.index = (o.index + (e.key === 'ArrowDown' ? 1 : -1) + n) % n; if (o.kind === 'search') overlayMark(o); else render(); }
+        if (n) { o.index = (o.index + (e.key === 'ArrowDown' ? 1 : -1) + n) % n; overlayMark(o); }
       } else if (e.key === 'Enter') {
         e.preventDefault();
         o.flat?.[o.index]?.();
@@ -8886,7 +8891,7 @@ function remoteView(o) {
     h('div', { class: 'chips' }, targets.map((x) => h('button', {
       class: `chip${targetKey(x) === rem.target ? ' on' : ''}`, onclick: () => { remoteSwitch(o, targetKey(x)); document.querySelector('.cmd.new .cmdinput')?.focus(); },
     }, label(x))), h('button', { class: 'chip go', disabled: rem.state === 'loading' && fresh, onclick: () => { remoteSearch(o); document.querySelector('.cmd.new .cmdinput')?.focus(); } }, T('Hľadať'))),
-    h('div', { class: 'results' },
+    h('div', { class: 'results', ...listScroll(o) },
       status,
       rows.length ? [h('div', { class: 'rsec' }, T`Na ${where}`), rows.map((c, i) => {
         const room = c.dm_room_mxid || dms.get(`${app.id}:${c.id}`);
@@ -9049,7 +9054,7 @@ function groupView(o) {
     g.picked.length ? h('div', { class: 'chips' }, g.picked.map((p) => h('button', {
       class: 'chip on', 'data-key': p.key, title: T('Odobrať zo skupiny'), disabled: busy, onclick: () => groupToggle(o, p),
     }, `${p.name} ×`))) : null,
-    h('div', { class: 'results' },
+    h('div', { class: 'results', ...listScroll(o) },
       number ? resultRow(o, null, 0, [
         h('div', { class: 'avwrap' }, h('div', { class: 'icon grpicon' }, icon('plus')), h('img', { class: 'badge', src: app.icon, alt: '' })),
         h('div', { class: 'rmeta' }, h('b', {}, T`Pridať +${number}`),
@@ -9134,7 +9139,7 @@ function newChatView(o) {
   const waIcon = LINKS.find((a) => a.id === 'whatsapp').icon;
   return [
     cmdInput(o, o.link ? T`Kto je ${S.rooms.get(o.link)?.bridgeName || 'to'}? Jeho stará história pôjde s ním` : T('Komu chceš napísať?')),
-    h('div', { class: 'results' },
+    h('div', { class: 'results', ...listScroll(o) },
       number ? resultRow(o, null, 0, [
         h('div', { class: 'avwrap' }, h('div', { class: 'icon grpicon' }, icon('search')), h('img', { class: 'badge', src: waIcon, alt: '' })),
         h('div', { class: 'rmeta' }, h('b', {}, T`Napísať na WhatsApp +${number}`), h('small', {}, T('WhatsApp najprv overí, či toto číslo má'))),
@@ -9285,7 +9290,7 @@ function remindView(o) {
   if (e?.remind) o.flat.push(() => remindAt(e, null));
   return [
     h('div', { class: 'rsec' }, T`Pripomenúť: ${e?.title || ''}`),
-    h('div', { class: 'results', tabindex: -1, 'data-root': '__overlay', onkeydown: (ev) => {
+    h('div', { class: 'results', ...listScroll(o), tabindex: -1, 'data-root': '__overlay', onkeydown: (ev) => {
       const n = Number(ev.key);
       if (n >= 1 && n <= o.flat.length) { ev.preventDefault(); o.flat[n - 1](); }
       else if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') { ev.preventDefault(); o.index = (o.index + (ev.key === 'ArrowDown' ? 1 : -1) + o.flat.length) % o.flat.length; render(); }
@@ -9792,7 +9797,7 @@ function toolsView(o) {
   if (o.index >= o.flat.length) o.index = 0;
   return [
     cmdInput(o, T('Nástroj alebo akcia, napr. známky, mapa, hlasovka')),
-    h('div', { class: 'results' }, tools.length
+    h('div', { class: 'results', ...listScroll(o) }, tools.length
       ? tools.map(([name, , key, , can], i) => resultRow(o, null, i, [
         h('div', { class: 'rmeta' }, h('b', {}, highlighted(name, o.query)), can ? null : h('small', {}, T('Najprv otvor chat'))),
         key ? h('kbd', {}, key) : null], can ? '' : ' dim'))
@@ -9815,7 +9820,7 @@ function overlayView() {
   if (live?._o === o) { if (!o.base || !sameSig(o.base.sig, searchSig())) searchRedrawSoon(o); return live; }
   const body = o.kind === 'search' ? searchView(o) : o.kind === 'new' ? newChatView(o) : o.kind === 'remind' ? remindView(o) : o.kind === 'stashask' ? stashAskView(o)
     : o.kind === 'gif' ? gifView(o) : o.kind === 'emoji' ? emojiView(o) : o.kind === 'later' ? laterView(o) : o.kind === 'tools' ? toolsView(o) : o.kind === 'merge' ? mergePickView(o) : o.kind === 'relay' ? relayPickView(o) : o.kind === 'forward' ? forwardPickView(o) : o.kind === 'nick' ? nickView(o)
-    : [h('div', { class: 'rsec' }, T('Klávesové skratky')), h('div', { class: 'results keys' }, SHORTCUTS.map(([k, label]) => h('div', { class: 'krow' }, h('kbd', {}, k), label)))];
+    : [h('div', { class: 'rsec' }, T('Klávesové skratky')), h('div', { class: 'results keys', ...listScroll(o) }, SHORTCUTS.map(([k, label]) => h('div', { class: 'krow' }, h('kbd', {}, k), label)))];
   const veil = h('div', { class: `veil${o.kind === 'search' || o.kind === 'tools' || o.kind === 'merge' || o.kind === 'relay' || o.kind === 'forward' ? ' search' : ''}`, onclick: (e) => onVeil(e) && close() }, h('div', { class: `cmd ${o.kind}`, onclick: (e) => e.stopPropagation() },
     h('button', { class: 'pclose', title: T('Zavrieť'), onclick: close }, icon('close')), body));
   if (o.kind === 'search') {
@@ -11938,7 +11943,7 @@ function settingsView() {
         type: 'button', role: 'tab', 'data-tab': id, 'aria-selected': String(id === tab), tabindex: id === tab ? 0 : -1,
         class: id === tab ? 'on' : '', onclick: () => settingsTab(id),
       }, h('span', {}, label), id === 'accounts' && down.length ? h('small', { class: 'setwarn' }, T`odpojené: ${down.length}`) : null))),
-    h('div', { class: 'form inpanel setpane', role: 'tabpanel', 'aria-label': SET_TABS.find(([id]) => id === tab)[1] }, pane));
+    h('div', { class: 'form inpanel setpane', 'data-scroll': `settings:${tab}`, role: 'tabpanel', 'aria-label': SET_TABS.find(([id]) => id === tab)[1] }, pane));
 }
 
 // Settings → EduPage: how each type of school notice is made and shown, and which subjects are Karchi's. The bridge

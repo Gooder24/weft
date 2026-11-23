@@ -23,7 +23,10 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   (`patchChildren`), keeping focus, caret and scroll. A handler must not use an element built in the same render
   (the patch may keep the old one): find it from the event (`e.currentTarget`, `closest`). Views that wire
   elements by hand are wrapped in `opaque()` and replaced whole. Lists pair children by `data-key`/`data-event`.
-  The inbox draws only rows in sight. Checks: `overenie/rewrite/behave.cjs`, `noop-mutations.cjs`.
+  The inbox draws only rows in sight. Every scrolling list and pane carries a `data-scroll` key (overlay lists
+  `listScroll(o)`, Settings `settings:<tab>`), so a render keeps its place; the mouse marking a row never scrolls,
+  the keyboard's choice comes into sight, a new query starts at the top. Checks: `overenie/rewrite/behave.cjs`,
+  `noop-mutations.cjs`, `overenie/scroll/run.sh`.
 - Look: Weft wears Karchi's desktop (karchi-os `DESIGN.md`, desktop-future palette, Departure Mono 11 px),
   the same theme Kalendarix takes, with Kalendarix's rounding. New CSS uses the tokens at the top of `app.css`
   (`--accent` is a fill with `--accent-text` on it, `--link` the accent as text), no other colours, no shadows.
