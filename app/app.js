@@ -6368,9 +6368,9 @@ function viewerView(o) {
     shareLink(c) ? h('button', { class: 'vbtn', title: T('Preposlať…'), onclick: () => openForward(shareLink(c)) }, icon('forward')) : null,
     h('button', { class: 'vbtn', title: T('Stiahnuť (Ctrl+S)'), onclick: () => viewerDownload(o) }, icon('download')),
     h('button', { class: 'vbtn', title: T('Zavrieť (Esc)'), onclick: close }, icon('close'))),
-  h('div', { class: 'vstage' }, stage),
-  i > 0 ? h('button', { class: 'vnav vprev', title: T('Predošlý (←)'), onclick: (e) => { stop(e); stepViewer(-1); } }, icon('chevron-left')) : null,
-  i < list.length - 1 ? h('button', { class: 'vnav vnext', title: T('Ďalší (→)'), onclick: (e) => { stop(e); stepViewer(1); } }, icon('chevron-right')) : null);
+  h('div', { class: 'vstage' }, stage, o.fast ? h('span', { class: 'vfast' }, '2×') : null),
+  i > 0 ? h('button', { class: 'vnav vprev', title: T('Predošlý (Ctrl+←)'), onclick: (e) => { stop(e); stepViewer(-1); } }, icon('chevron-left')) : null,
+  i < list.length - 1 ? h('button', { class: 'vnav vnext', title: T('Ďalší (Ctrl+→)'), onclick: (e) => { stop(e); stepViewer(1); } }, icon('chevron-right')) : null);
 }
 
 function viewerDownload(o) {
@@ -6439,13 +6439,18 @@ function panViewer(e, o) {
 }
 
 /** The viewer's keys: arrows page, + - 0 zoom, Ctrl+S downloads. True when the key was the viewer's. */
+/** Keys in the viewer: Ctrl+← → page through the files; on a video ← → move 5 s and Space plays or pauses, held down
+ *  it plays twice as fast until let go (viewerSpaceUp); on a picture ← → page too. */
 function viewerKey(e) {
   const o = S.overlay;
   const mod = e.ctrlKey || e.metaKey;
   const img = document.querySelector('.vimg');
+  const video = document.querySelector('.veil.viewer video');
   const middle = () => { const b = img.getBoundingClientRect(); return [b.left + b.width / 2, b.top + b.height / 2]; };
-  if (!mod && e.key === 'ArrowLeft') stepViewer(-1);
-  else if (!mod && e.key === 'ArrowRight') stepViewer(1);
+  const arrow = e.altKey || e.shiftKey ? 0 : e.key === 'ArrowLeft' ? -1 : e.key === 'ArrowRight' ? 1 : 0;
+  if (arrow && (mod || !video)) stepViewer(arrow);
+  else if (arrow) video.currentTime = Math.max(0, Math.min(video.duration || Infinity, video.currentTime + arrow * 5));
+  else if (video && e.key === ' ' && !mod && !e.altKey) { if (!e.repeat && !spaceHold) holdSpace(o, video); }
   else if (mod && e.key.toLowerCase() === 's') viewerDownload(o);
   else if (!mod && img && ['+', '='].includes(e.key)) zoomAt(o, img, o.zoom * 1.5, ...middle());
   else if (!mod && img && e.key === '-') zoomAt(o, img, o.zoom / 1.5, ...middle());
@@ -6455,6 +6460,33 @@ function viewerKey(e) {
   return true;
 }
 addEventListener('resize', () => S.overlay?.kind === 'image' && render());
+
+let spaceHold = null; // { timer, rate }: Space down over the viewer's video; `rate` once it went fast
+function holdSpace(o, video) {
+  spaceHold = { timer: setTimeout(() => {
+    if (!spaceHold) return;
+    spaceHold.rate = video.playbackRate;
+    video.playbackRate = 2;
+    video.play().catch(() => {});
+    o.fast = true;
+    render();
+  }, 300) };
+}
+/** Space let go: a short press plays or pauses, after holding the video goes back to its speed and plays on. */
+function viewerSpaceUp(e, toggle = true) {
+  if (!spaceHold) return;
+  const { timer, rate } = spaceHold;
+  spaceHold = null;
+  clearTimeout(timer);
+  e?.preventDefault();
+  const video = document.querySelector('.veil.viewer video');
+  if (S.overlay?.fast) { S.overlay.fast = false; render(); }
+  if (!video) return;
+  if (rate) video.playbackRate = rate;
+  else if (toggle) { if (video.paused) video.play().catch(() => {}); else video.pause(); }
+}
+document.addEventListener('keyup', (e) => { if (e.key === ' ') viewerSpaceUp(e); });
+addEventListener('blur', () => viewerSpaceUp(null, false)); // the window lost the key: never stuck fast
 
 function jumpTo(r, eventId) {
   S.focusEvent = eventId;
@@ -6941,9 +6973,9 @@ function galleryViewerView(o) {
     h('button', { class: 'vbtn', title: T('Ukázať v chate (J)'), onclick: () => { g.sel = o.index; galJump(); } }, icon('arrow-right')),
     h('button', { class: 'vbtn', title: T('Stiahnuť (Ctrl+S)'), onclick: () => viewerDownload(o) }, icon('download')),
     h('button', { class: 'vbtn', title: T('Späť do galérie (Esc)'), onclick: back }, icon('close'))),
-  h('div', { class: 'vstage' }, stage),
-  o.index > 0 ? h('button', { class: 'vnav vprev', title: T('Predošlý (←)'), onclick: (e) => { stop(e); stepViewer(-1); } }, icon('chevron-left')) : null,
-  o.index < g.total - 1 ? h('button', { class: 'vnav vnext', title: T('Ďalší (→)'), onclick: (e) => { stop(e); stepViewer(1); } }, icon('chevron-right')) : null);
+  h('div', { class: 'vstage' }, stage, o.fast ? h('span', { class: 'vfast' }, '2×') : null),
+  o.index > 0 ? h('button', { class: 'vnav vprev', title: T('Predošlý (Ctrl+←)'), onclick: (e) => { stop(e); stepViewer(-1); } }, icon('chevron-left')) : null,
+  o.index < g.total - 1 ? h('button', { class: 'vnav vnext', title: T('Ďalší (Ctrl+→)'), onclick: (e) => { stop(e); stepViewer(1); } }, icon('chevron-right')) : null);
 }
 
 function bubbleView(r, m, ev, grouped, group, sug = null) {
@@ -9675,7 +9707,7 @@ const SHORTCUTS = [
   ['Ctrl+Shift+Space', T('Hlasovka: prehrať / pozastaviť (v chate prvú nevypočutú)')], ['← →', T('Na hlasovke: o 5 s späť a dopredu (Space prehrá, Ctrl+S stiahne)')],
   ['↑', T('Upraviť svoju poslednú správu (v prázdnom poli)')], ['Shift+Enter', T('Nový riadok')], ['Ctrl+Shift+S', T('Len neprečítané / všetky')], ['Ctrl+S', T('Odložiť koncept (spýta sa, kedy pripomenúť; Ctrl+S znova = bez pripomienky); v prázdnom poli vziať odložený')], ['Ctrl+G', T('Známky (Tab prepína)')], ['Ctrl+M', T('Ľudia: mapa, koho odkiaľ poznáš')], ['Ctrl+D', T('Kalendár (D T M Z zobrazenie, ← → posun, N nová)')],
   ['Ctrl+,', T('Nastavenia')], ['Esc', T('Zavrieť, zrušiť odpoveď, zavrieť chat')],
-  ['Ctrl+V', T('Vložiť obrázok do správy')], ['← →, koliesko', T('Obrázky: predošlý a ďalší')], ['Ctrl+koliesko', T('Obrázky: priblížiť (aj dvojklik, + − 0)')],
+  ['Ctrl+V', T('Vložiť obrázok do správy')], ['Ctrl+← →, koliesko', T('Obrázky a videá: predošlý a ďalší (na obrázku aj ← →)')], ['← → / Space', T('Video: o 5 s späť a dopredu / prehrať; podržať Space = 2× rýchlo')], ['Ctrl+koliesko', T('Obrázky: priblížiť (aj dvojklik, + − 0)')],
   ['Ctrl+S', T('Obrázky: stiahnuť')], ['Ctrl+P', T('Galéria chatu: fotky a videá (šípky, Enter, PageUp/PageDown po mesiacoch, J ukáže v chate)')], ['Ctrl+Shift+Enter', T('Odoslať neskôr (aj /sendlater, pravý klik na odoslať)')], ['/gif', T('Poslať GIF')],
   [':srdce', T('Emoji podľa mena (Tab alebo Enter vloží)')],
 ];

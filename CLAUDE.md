@@ -216,6 +216,9 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   anywhere plays or pauses the one in hand (else the open chat's first unheard; heard ones are kept per device in
   localStorage `ep_voice_heard`). The one in hand keeps playing in other chats under a bar above the inbox (pause,
   speed, download, ×) and in the system's media controls (`navigator.mediaSession`). Check: `overenie/hlasovky/run.sh`.
+- The viewer (any photo or video of a chat, also from Ctrl+P): Ctrl+← → page through the files; on a video ← → move
+  5 s, Space plays or pauses, and Space held plays 2× until let go (a „2×“ mark); on a picture ← → page too.
+  Check: `overenie/prehravac/run.sh`.
 - GIFs (`/gif`, the GIF button) come from KLIPY with one key for the whole server, asus
   `~/matrix-spike/app/gifs.json` `{"klipy": "<key>"}` (not in git; a test key allows 100 requests an hour; a
   production key, asked for on partner.klipy.com, has no limit and no published price). KLIPY's terms want the browser to call it and load its media
