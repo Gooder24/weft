@@ -12305,10 +12305,16 @@ function setLook(key, patch) {
   if (Object.keys(next).length) people[key] = next; else delete people[key];
   saveLook({ ...data, people });
 }
-let lookKeys = { idx: null, size: -1, map: new Map(), dm: new Set() };
+/** Who wears a merged chat's look and who has a one-to-one chat with Karchi. Rebuilt when any room changes (its
+ *  version or members: a DM's person may arrive after the room) or Discord's channel list comes. */
+let lookKeys = { idx: null, sig: '', channels: null, map: new Map(), dm: new Set() };
 function lookIndex() {
   const idx = mergeIndex();
-  if (lookKeys.idx !== idx || lookKeys.size !== S.rooms.size) {
+  let versions = 0;
+  let members = 0;
+  for (const r of S.rooms.values()) { versions += r.version; members += r.members?.size || 0; }
+  const sig = `${S.rooms.size}|${versions}|${members}`;
+  if (lookKeys.idx !== idx || lookKeys.sig !== sig || lookKeys.channels !== dc.channels) {
     const map = new Map();
     const dm = new Set();
     for (const r of S.rooms.values()) {
@@ -12318,7 +12324,7 @@ function lookIndex() {
       const g = idx.get(r.id);
       if (g) map.set(p[0], mergeKey(g));
     }
-    lookKeys = { idx, size: S.rooms.size, map, dm };
+    lookKeys = { idx, sig, channels: dc.channels, map, dm };
   }
   return lookKeys;
 }
