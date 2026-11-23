@@ -13734,6 +13734,8 @@ function render() {
   // The DOM is rebuilt: keep what is being typed and where each pane was scrolled.
   const active = document.activeElement;
   const calendarFocus = active?.matches('.home-calendar');
+  // A control in the calendar the redraw took away (an editor or detail closed, an event deleted): the keys go back to the calendar.
+  const inCalendar = !calendarFocus && active?.closest('.home-calendar');
   const schoolFocus = active?.closest('.detail')
     ? (active.dataset.eduAction ? { action: active.dataset.eduAction } : active.matches('.back') ? { back: true } : null) : null;
   const typing = active?.dataset?.root ? { root: active.dataset.root, at: active.selectionStart, end: active.selectionEnd } : null;
@@ -13864,6 +13866,7 @@ function render() {
     }
   }
   if (calendarFocus && !S.panel && !S.overlay && !cal.edit && !cal.detail && !cal.search) root.querySelector('.home-calendar')?.focus({ preventScroll: true });
+  else if (inCalendar && !S.panel && !S.overlay && (!document.activeElement || document.activeElement === document.body)) root.querySelector('.home-calendar')?.focus({ preventScroll: true });
   if (S.view === 'main') { markRead(); if (!S.homeReady) { S.homeReady = true; cal.view = calDefault(); queueMicrotask(() => { loadCalendar(); if (S.surface === 'feed') feed.enter(); else feed.load(); }); } }
 }
 
