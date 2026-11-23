@@ -634,7 +634,7 @@ def search(mx, rooms, text, limit, room=None):
 
 def cal_doc(mx):
     r = http(CALENDAR, "GET", "/_calendar/doc", token=mx.token)
-    if not r.get("doc"): raise Fail("kalendár je zatiaľ prázdny (x270 ho ešte neposlal)")
+    if not r.get("doc"): raise Fail("kalendár je zatiaľ prázdny (kalendár sa pridá vo Wefte: Nastavenia → Kalendár)")
     return r["doc"]
 
 

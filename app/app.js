@@ -9647,6 +9647,7 @@ function answerTime(ms) {
   return min < 1 ? '<1 min' : min < 60 ? `${min} min` : `${Math.round(min / 60)} h`;
 }
 const daysWord = (n) => `${n.toLocaleString(LOCALE)} ${n === 1 ? T('deň') : n >= 2 && n <= 4 ? T('dni') : T('dní')}`;
+const eventsWord = (n) => `${n} ${n === 1 ? T('udalosťou') : T('udalosťami')}`;
 const messagesWord = (n) => (n === 1 ? T('správa') : n >= 2 && n <= 4 ? T('správy') : T('správ'));
 
 function personCardView(o) {
@@ -9894,12 +9895,12 @@ function homeView() {
 }
 
 // ------------------------------------------------------------------ calendar
-// Kalendarix's calendars, kept on asus (server/calendar/kalendar.py) and in sync with Kalendarix on x270, so the
-// same events show in both. Ctrl+D opens it on the view chosen in Settings (a week unless changed). Offline the
+// Weft's own calendars, kept on asus (server/calendar/kalendar.py) in Kalendarix's calendars.json layout; Settings
+// adds and deletes them, no Kalendarix needed. Ctrl+D opens it on the view chosen in Settings (a week unless changed). Offline the
 // last copy shows and edits wait in ep_cal_out, the way messages do. Events of a sync program (the EduPage
 // timetable) are shown and not edited.
 
-const CAL_PREFS = 'sk.karchi.calendar'; // { view: 'day' | 'week' | 'month' | 'list', shown: { [calendar id]: bool }, suggest: bool, dismissed: [event id] }
+const CAL_PREFS = 'sk.karchi.calendar'; // { view: 'day' | 'week' | 'month' | 'list', shown: { [calendar id]: bool }, hiddenSubjects: [titleKey], suggest: bool, dismissed: [event id] }
 const CAL_VIEWS = [['day', T('Deň'), 'D'], ['week', T('Týždeň'), 'T'], ['month', T('Mesiac'), 'M'], ['list', T('Zoznam'), 'Z']];
 const DAYS_SHORT = [T('Ne'), T('Po'), T('Ut'), T('St'), T('Št'), T('Pi'), T('So')];
 const CAL_START_HOUR = 5;
@@ -9922,7 +9923,12 @@ function calSetShown(id, on) {
   putAccount(CAL_PREFS, { ...prefs, shown: { ...prefs.shown, [id]: on } }).catch(() => alert(T('Nastavenie sa neuložilo.')));
   render();
 }
-const calExpand = (from, to) => Cal.expand(cal.doc, from, to, calShown);
+/** Without the lessons of timetable subjects turned off in Settings → Kalendár: they are not drawn and do not remind. */
+function calSubjectsShown(items) {
+  const off = new Set(S.account[CAL_PREFS]?.hiddenSubjects || []);
+  return off.size ? items.filter((i) => !(i.cal.id === TIMETABLE_CAL && !i.event.allDay && off.has(Cal.titleKey(i.event.title || '')))) : items;
+}
+const calExpand = (from, to) => calSubjectsShown(Cal.expand(cal.doc, from, to, calShown));
 
 function toggleCalendar() {
   if (S.surface === 'feed') closeFeed();
@@ -9973,8 +9979,13 @@ function setCalDoc(res, keep = true) {
 /** The same change kalendar.py makes, done here first. */
 function calApply(doc, op) {
   cal.seq++;
+  if (op.op === 'addcal') {
+    if (!doc.calendars.some((x) => x.id === op.cal)) doc.calendars.push({ id: op.cal, name: op.name, color: op.color, customColor: op.color, visible: true, events: [] });
+    return;
+  }
   const c = doc.calendars.find((x) => x.id === op.cal);
   if (!c) return;
+  if (op.op === 'delcal') { doc.calendars = doc.calendars.filter((x) => x !== c); return; }
   const uid = op.uid || op.event.uid;
   const old = c.events.find((e) => e.uid === uid);
   if (op.op === 'del') c.events = c.events.filter((e) => e.uid !== uid);
@@ -9983,6 +9994,7 @@ function calApply(doc, op) {
 }
 
 function calSave(ops, keepEdit = false) {
+  cal.doc ||= { schema: 2, calendars: [] }; // nothing on asus yet: the first change starts the file there too
   for (const op of ops) calApply(cal.doc, op);
   localStorage.setItem('ep_cal_out', JSON.stringify([...calOut(), ...ops]));
   calRemindCheck();
@@ -9998,7 +10010,7 @@ async function recheckCalendar() {
   // Hidden, it still follows while reminders are on: the desktop app keeps running with its window closed.
   const busy = () => S.offline || (document.hidden && !calRemindOn()) || cal.edit || calDrag || calFlushing || calOut().length;
   if (!cal.loaded || busy()) return;
-  if (!cal.doc) return loadCalendar(); // still nothing (x270 had not sent the calendars): ask again whole
+  if (!cal.doc) return loadCalendar(); // still nothing on asus: ask again whole
   const token = S.token;
   const writes = ++calWrites;
   try {
@@ -10026,7 +10038,7 @@ function calAlarms(now) {
   const out = [];
   let ahead = Cal.MS_DAY; // as far ahead as the earliest reminder reaches, at most a month (a longer one rings a month before)
   for (const c of cal.doc.calendars || []) for (const e of c.events || []) if (Number.isFinite(+e.alarmMinutes)) ahead = Math.max(ahead, Math.min(+e.alarmMinutes * Cal.MS_MINUTE, 31 * Cal.MS_DAY));
-  for (const i of Cal.expand(cal.doc, now - Cal.MS_DAY, now + ahead + Cal.MS_DAY, calShown)) {
+  for (const i of calExpand(now - Cal.MS_DAY, now + ahead + Cal.MS_DAY)) {
     const m = i.event.alarmMinutes;
     if (m === '' || m == null || !Number.isFinite(+m) || +m < 0 || i.start < now - CAL_REMIND_LATE) continue;
     out.push({ i, at: i.start - +m * Cal.MS_MINUTE, key: `${i.key}|${+m}` });
@@ -10183,7 +10195,7 @@ function calendarView() {
   let body;
   if (!cal.doc) {
     body = h('div', { class: 'empty' }, !cal.loaded ? T('Načítavam kalendár…') : cal.error
-      || (S.offline ? T('Offline a kalendár ešte nie je uložený na tomto počítači.') : T('Kalendár ešte nemá dáta: prídu z Kalendarixu na x270, keď sa zapne jeho zladenie s Weftom.')));
+      || (S.offline ? T('Offline a kalendár ešte nie je uložený na tomto počítači.') : T('Kalendár je zatiaľ prázdny: kalendár si pridáš v Nastaveniach → Kalendár.')));
   } else if (cal.view === 'month') body = calMonth();
   else if (cal.view === 'list') body = calList();
   else body = calGrid(calDays());
@@ -10641,21 +10653,98 @@ const calDropTarget = (at) => ({
 /** Dropped on a day: the same time of day, and a bar picked up by its Wednesday puts that Wednesday there. */
 const calOnDay = (day) => (e, d) => { const s = new Date(d.i.start); return new Date(day.getFullYear(), day.getMonth(), day.getDate() - d.days, s.getHours(), s.getMinutes(), s.getSeconds()).getTime(); };
 
+// ---- Settings → Kalendár: calendars of Karchi's own added and removed (ops addcal and delcal, kept on asus like
+// events), and timetable subjects he does not want drawn (`sk.karchi.calendar` `hiddenSubjects`, this account only).
+
+const calNewCal = { name: '', color: '', asking: null }; // the new calendar being named, and the one whose removal is asked
+
+/** Why a calendar cannot be removed here (a program fills it and would fail or bring it back), else ''. Same rule as kalendar.py. */
+function calKeep(c) {
+  if (c.id === TIMETABLE_CAL || (c.events || []).some((e) => Cal.isManaged(e, c.id))) return T('plní ho rozvrh');
+  if (String(c.name || '').trim().toLocaleLowerCase('sk') === 'testy') return T('sem píše testy EduPage');
+  return '';
+}
+
+function calAddCalendar(color) {
+  const name = calNewCal.name.trim();
+  if (!name) return;
+  calNewCal.name = '';
+  calNewCal.color = '';
+  calSave([{ op: 'addcal', cal: Cal.newUid(), name, color }], true);
+}
+
+function calAskDelete(id) {
+  calNewCal.asking = id;
+  render();
+  // Onto Späť: a second Enter must not delete.
+  document.querySelector(`.calsetrow[data-key="${CSS.escape(id || '')}"] button:not(.danger)`)?.focus();
+}
+
+/** The subjects of the timetable, each once by its titleKey, named as an ordinary lesson of it is (not „Odpadlo: …“). */
+function calSubjects() {
+  const tt = cal.doc?.calendars?.find((c) => c.id === TIMETABLE_CAL);
+  const out = new Map();
+  for (const e of tt?.events || []) {
+    const key = !e.allDay && Cal.titleKey(e.title || '');
+    if (!key) continue;
+    const plain = !Cal.lessonChange(e);
+    if (!out.has(key) || (plain && !out.get(key).plain)) out.set(key, { key, plain, name: (plain ? e.title : e.title.replace(/^[^:]*:/, '')).trim() });
+  }
+  return [...out.values()].sort((a, b) => a.name.localeCompare(b.name, 'sk'));
+}
+function calSetSubject(key, on) {
+  const off = new Set(S.account[CAL_PREFS]?.hiddenSubjects || []);
+  if (on) off.delete(key); else off.add(key);
+  calSetPrefs({ hiddenSubjects: [...off].sort() });
+}
+
 function calendarSettings() {
   const v = calDefault();
   const cals = cal.doc?.calendars || [];
   const cats = Cal.categoryColors(cal.doc || {});
+  const used = new Set(cals.map((c) => Cal.calendarColor(c, cats).toLowerCase()));
+  const color = calNewCal.color || Cal.ACCENT_PALETTE.find((c) => !used.has(c)) || Cal.ACCENT_PALETTE[0];
+  const subjects = calSubjects();
+  const off = new Set(S.account[CAL_PREFS]?.hiddenSubjects || []);
+  const paint = subjects.length ? Cal.subjectColors(cal.doc, TIMETABLE_CAL) : null;
+  const back = (id) => () => { calNewCal.asking = null; render(); document.querySelector(`.calsetrow[data-key="${CSS.escape(id)}"] button`)?.focus(); };
+  const row = (c) => {
+    const name = c.name || T('Bez názvu');
+    const keep = calKeep(c);
+    const n = (c.events || []).length;
+    const asking = calNewCal.asking === c.id;
+    return h('div', { class: 'calsetrow', 'data-key': c.id },
+      h('label', { class: 'bcheck' },
+        h('input', { type: 'checkbox', checked: calShown(c), onchange: (e) => calSetShown(c.id, e.currentTarget.checked) }),
+        h('i', { style: { background: Cal.calendarColor(c, cats) } }), name),
+      asking ? h('span', { class: 'calconfirm', role: 'group', 'aria-label': T`Zmazať kalendár ${name}` },
+        h('span', {}, n ? T`Zmazať aj s ${eventsWord(n)}?` : T('Zmazať?')),
+        h('button', { type: 'button', class: 'ghost danger', onclick: () => { calNewCal.asking = null; calSave([{ op: 'delcal', cal: c.id }], true); document.querySelector('.calnewcal input')?.focus(); } }, T('Zmazať')),
+        h('button', { type: 'button', class: 'ghost', onclick: back(c.id) }, T('Späť')))
+        : keep ? h('small', {}, keep)
+          : h('button', { type: 'button', class: 'ghost', 'aria-label': T`Zmazať kalendár ${name}`, onclick: () => calAskDelete(c.id) }, T('Zmazať')));
+  };
   return [
     h('h3', {}, T('Predvolené zobrazenie')),
     h('div', { class: 'seg', role: 'radiogroup', 'aria-label': T('Kalendár sa otvorí na') }, CAL_VIEWS.map(([id, label]) =>
       h('button', { type: 'button', role: 'radio', 'aria-checked': String(v === id), class: v === id ? 'on' : '',
         onclick: () => { if (v === id) return; cal.view = id; cal.scrolled = false; putAccount(CAL_PREFS, { ...S.account[CAL_PREFS], view: id }).catch(() => alert(T('Nastavenie sa neuložilo.'))); render(); } }, label))),
     h('p', { class: 'hint' }, T('Takto sa kalendár ukáže na úvodnej ploche aj na Ctrl+D.')),
-    cals.length ? h('h3', {}, T('Zobrazené kalendáre')) : null,
-    cals.length ? h('div', { class: 'calshown' }, cals.map((c) => h('label', { class: 'bcheck', 'data-key': c.id },
-      h('input', { type: 'checkbox', checked: calShown(c), onchange: (e) => calSetShown(c.id, e.currentTarget.checked) }),
-      h('i', { style: { background: Cal.calendarColor(c, cats) } }), c.name || T('Bez názvu')))) : null,
-    cals.length ? h('p', { class: 'hint' }, T('Skrytý kalendár sa vo Wefte nekreslí; jeho udalosti ostávajú.')) : null,
+    h('h3', {}, T('Kalendáre')),
+    cals.length ? h('div', { class: 'calshown calsetlist' }, cals.map(row)) : null,
+    cal.loaded ? h('form', { class: 'calnewcal', onsubmit: (e) => { e.preventDefault(); calAddCalendar(color); } },
+      h('input', { value: calNewCal.name, required: true, maxlength: 60, placeholder: T('Nový kalendár'), 'aria-label': T('Názov nového kalendára'),
+        oninput: (e) => { calNewCal.name = e.target.value; }, 'data-root': '__calNewName' }),
+      h('div', { class: 'calaccent', role: 'radiogroup', 'aria-label': T('Farba nového kalendára') }, Cal.ACCENT_PALETTE.map((c) =>
+        h('button', { type: 'button', role: 'radio', class: color === c ? 'on' : '', title: c, 'aria-label': T`Farba ${c}`, 'aria-checked': String(color === c),
+          style: { background: c }, onclick: () => { calNewCal.color = c; render(); } }))),
+      h('button', { type: 'submit', class: 'primary' }, T('Pridať kalendár'))) : null,
+    h('p', { class: 'hint' }, T('Odškrtnutý kalendár sa vo Wefte nekreslí a jeho udalosti ostávajú. Zmazaný zmizne aj s udalosťami.')),
+    subjects.length ? h('h3', {}, T('Predmety v rozvrhu')) : null,
+    subjects.length ? h('div', { class: 'calshown' }, subjects.map((s) => h('label', { class: 'bcheck', 'data-key': s.key },
+      h('input', { type: 'checkbox', checked: !off.has(s.key), onchange: (e) => calSetSubject(s.key, e.currentTarget.checked) }),
+      h('i', { style: { background: paint.get(s.key) } }), s.name))) : null,
+    subjects.length ? h('p', { class: 'hint' }, T('Odškrtnutý predmet sa v kalendári nekreslí ani nepripomína, ani keď odpadne alebo sa supluje.')) : null,
     h('h3', {}, T('Pripomienky')),
     h('label', { class: 'bcheck' }, h('input', { type: 'checkbox', checked: calRemindOn(), onchange: (e) => calSetRemind(e.currentTarget.checked) }),
       h('span', {}, T('Upozorniť v čase pripomienky'), h('small', {}, T('Udalosť s pripomienkou ukáže notifikáciu na zariadení, kde Weft beží (desktopová appka beží aj so zatvoreným oknom), a klik ju otvorí. Kalendarix dáva každej udalosti pripomienku 2 hodiny vopred pre telefón, takže zapnuté pípne aj pri nich.')))),

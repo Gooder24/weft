@@ -961,6 +961,13 @@ a.rnote.rlink { color: var(--link); text-decoration: none; }
 .calshown { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
 .calshown label { display: flex; align-items: center; gap: 8px; }
 .calshown i { width: 10px; height: 10px; border-radius: 50%; }
+.calsetrow { display: flex; align-items: center; gap: 8px; min-height: 28px; }
+.calsetrow label { flex: 1; min-width: 0; }
+.calsetrow small, .calsetrow button, .calconfirm { font: inherit; }
+.calsetrow small { color: var(--muted); }
+.calconfirm { display: flex; align-items: center; gap: 8px; }
+.calnewcal { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+.calnewcal input { flex: 1 1 180px; min-width: 0; }
 .calev[draggable=true], .calchip[draggable=true] { cursor: grab; }
 @media (max-width: 700px) {
   .calhead .caltitle { order: -1; flex-basis: 100%; margin: 0 0 4px; }

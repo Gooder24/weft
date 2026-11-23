@@ -5,8 +5,11 @@ The file keeps Kalendarix's layout (docs/calendars-json.md in github.com/Gooder2
 same data shows in Weft, in Kalendarix on x270 and in its desktop widget. Two ways in:
 
   HTTP on 127.0.0.1:29327 behind Caddy /_calendar/ (Karchi's Matrix token):
-    GET  /_calendar/doc            -> {"version", "doc"}  (doc is null until a computer has sent its calendars)
-    POST /_calendar/ops {"ops": [{"op": "put", "cal": id, "event": {...}} | {"op": "del", "cal": id, "uid": uid}]}
+    GET  /_calendar/doc            -> {"version", "doc"}  (doc is null until the first change or timetable round)
+    POST /_calendar/ops {"ops": [{"op": "put", "cal": id, "event": {...}} | {"op": "del", "cal": id, "uid": uid}
+                                 | {"op": "addcal", "cal": id, "name": text, "color": "#rrggbb"} | {"op": "delcal", "cal": id}]}
+    Weft needs nothing else: without a file the first change starts one. addcal of an id that is there and delcal
+    of one that is not change nothing, so a batch sent again after a lost answer does no harm.
   CLI, for a computer that keeps its own calendars.json (x270 runs it over ssh, see x270/):
     kalendar.py merge < {"base": what it last wrote from here (or null), "local": its calendars.json}
     -> the merged file on stdout, which is now also the master. A three-way merge per calendar and per event,
@@ -20,7 +23,7 @@ Events a sync program owns (uid ending in @name, see isManaged) are not changed 
 timetable is one: with TIMETABLE_URL set, the service itself keeps it in step with Kalendarix EduPage's backend
 (see mirror_timetable).
 """
-import fcntl, hashlib, json, os, sys, threading, time, urllib.parse, urllib.request
+import fcntl, hashlib, json, os, re, sys, threading, time, urllib.parse, urllib.request
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -58,6 +61,10 @@ def write(path, doc):
     with open(tmp, "w", encoding="utf-8") as f: f.write(dump(doc))
     os.chmod(tmp, 0o600)
     os.replace(tmp, path)
+
+def empty():
+    """A calendars.json with nothing in it yet, in Kalendarix's current schema."""
+    return {"schema": 2, "calendars": []}
 
 def version(doc):
     return hashlib.sha1(dump(doc).encode()).hexdigest()[:12] if doc is not None else ""
@@ -203,9 +210,37 @@ def managed(event, cal_id):
     at = uid.rfind("@")
     return 0 <= at < len(uid) - 1 and cal_id.startswith(uid[at + 1:] + "-")
 
+TESTS_NAME = "Testy"  # the EduPage bridge finds the calendar it writes tests into by this name (TESTS_CALENDAR)
+
+def undeletable(cal):
+    """Why a calendar may not be removed, or None: a program fills it and would fail or bring it back."""
+    if cal["id"] == TIMETABLE_CAL or any(isinstance(e, dict) and managed(e, cal["id"]) for e in cal.get("events") or []):
+        return "this calendar belongs to a sync program"
+    if str(cal.get("name") or "").strip().casefold() == TESTS_NAME.casefold():
+        return "the EduPage bridge writes tests into this calendar"
+    return None
+
 def apply_ops(doc, ops):
     cals = by_key(doc.get("calendars"), "id")
     for op in ops:
+        if op.get("op") == "addcal":
+            cid, name, color = op.get("cal"), op.get("name"), op.get("color")
+            if not isinstance(cid, str) or not cid: raise ValueError("a calendar needs an id")
+            if not isinstance(name, str) or not name.strip(): raise ValueError("a calendar needs a name")
+            if not isinstance(color, str) or not re.fullmatch(r"#[0-9a-fA-F]{6}", color): raise ValueError("color must be #rrggbb")
+            if cid in cals: continue
+            # Kalendarix's fields for a calendar of one's own; the colour it shows is customColor.
+            cals[cid] = {"id": cid, "name": name.strip(), "color": color, "customColor": color, "visible": True, "events": []}
+            doc.setdefault("calendars", []).append(cals[cid])
+            continue
+        if op.get("op") == "delcal":
+            cal = cals.get(op.get("cal"))
+            if cal is None: continue
+            why = undeletable(cal)
+            if why: raise ValueError(why)
+            doc["calendars"] = [c for c in doc["calendars"] if c is not cal]
+            del cals[cal["id"]]
+            continue
         cal = cals.get(op.get("cal"))
         if cal is None: raise ValueError(f"no calendar {op.get('cal')!r}")
         events = cal.setdefault("events", [])
@@ -302,8 +337,7 @@ def mirror_timetable(url=TIMETABLE_URL):
     events, fresh = fetch_timetable(url)
     if fresh is None: return None, None  # never read EduPage yet: an empty list says nothing
     with locked():
-        doc = read(MASTER)
-        if doc is None: return None, fresh  # the first calendars come from x270
+        doc = read(MASTER) or empty()
         if not put_timetable(doc, events, datetime.now(LOCAL_TZ).date()): return None, fresh
         write(MASTER, doc)
     return len(events), fresh
@@ -375,9 +409,7 @@ class Api(BaseHTTPRequestHandler):
         try:
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
             with locked():
-                doc = read(MASTER)
-                if doc is None: return self.send(409, {"error": "no calendars yet: x270 has not sent them"})
-                doc = apply_ops(doc, body.get("ops") or [])
+                doc = apply_ops(read(MASTER) or empty(), body.get("ops") or [])
                 write(MASTER, doc)
             self.send(200, {"version": version(doc), "doc": doc})
         except (ValueError, KeyError, TypeError) as e:
