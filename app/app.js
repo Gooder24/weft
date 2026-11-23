@@ -1030,13 +1030,17 @@ function stashRow(r, it, on) {
 }
 
 const accountOut = () => readJson('ep_account_out', {});
+/** Type → the content last sent and not answered yet: sync's echo of an older one must not undo it (quick clicks). */
+const accountSending = new Map();
 /** Saves account data; offline the change stays here and goes out once the server answers. */
 function putAccount(type, content) {
   S.account[type] = content;
   // Online before the first sync the copy's account data may be old: the change goes out once sync has brought the
   // server's (applySync), so it never overwrites what another device changed meanwhile.
   if (preview()) { (S.previewOut ||= new Map()).set(type, content); return Promise.resolve(); }
-  return call('PUT', `/user/${q(S.userId)}/account_data/${type}`, content).then(() => {
+  accountSending.set(type, content);
+  const answered = () => { if (accountSending.get(type) === content) accountSending.delete(type); };
+  return call('PUT', `/user/${q(S.userId)}/account_data/${type}`, content).finally(answered).then(() => {
     const out = accountOut();
     if (JSON.stringify(out[type]) !== JSON.stringify(content)) return;
     delete out[type];
@@ -1091,7 +1095,7 @@ function applySync(data, first = false) {
   // A change made offline wins over the server's older copy until it is sent.
   for (const ev of data.account_data?.events || []) {
     if (ev.type === WINDOW) takeWindow(ev.content);
-    else if (!(ev.type in accountOut())) S.account[ev.type] = ev.content;
+    else if (!(ev.type in accountOut()) && !accountSending.has(ev.type)) S.account[ev.type] = ev.content;
     if (ev.type === NICKS) namesChanged();
     if (ev.type === CALLS) ringRecheck(); // chosen on another device: what rings now follows it
     if (ev.type === CAL_PREFS) calRemindCheck(); // reminders switched on here or elsewhere ring what is due now
@@ -5052,7 +5056,7 @@ function togglePanel(name, tab) {
   S.panel = S.panel === name && !tab ? null : name; // a section asked for opens, never closes
   S.menu = false;
   S.overlay = null;
-  if (S.panel === 'settings') { refreshLinks(); if (S.links.discord?.length) loadDiscordServers(); }
+  if (S.panel === 'settings') { calNewCal.asking = null; refreshLinks(); if (S.links.discord?.length) loadDiscordServers(); }
   render();
   // With a mouse the cursor waits in the search; on a phone that would pop the keyboard over the map.
   if (S.panel === 'people' && matchMedia('(pointer: fine)').matches) pm.input?.focus();
@@ -5276,6 +5280,7 @@ document.addEventListener('keydown', (e) => {
   else if (key === 'escape' && S.panel === 'people' && pm.naming) run(() => setNaming(false));
   else if (key === 'escape' && S.panel === 'people' && (pm.sel || pm.query)) run(clearPeople);
   else if (key === 'escape' && (!S.panel || S.panel === 'calendar') && cal.edit) run(() => { cal.edit = null; render(); });
+  else if (key === 'escape' && S.panel === 'settings' && calNewCal.asking) run(() => calKeepCalendar(calNewCal.asking));
   else if (key === 'escape' && (S.panel || S.menu)) run(() => { S.panel = null; S.menu = false; render(); });
   else if ((S.panel === 'calendar' || (!S.panel && document.activeElement?.closest('.home-calendar'))) && !typing && !mod && !e.altKey && calendarKey(e)) e.preventDefault();
   else if (S.overlay || S.panel) return;
@@ -10121,7 +10126,9 @@ function setCalDoc(res, keep = true) {
   cal.doc = res.doc;
   cal.version = res.version;
   // What still waits is laid over the server's copy, so nothing jumps back while it goes out.
-  if (cal.doc) for (const op of calOut()) calApply(cal.doc, op);
+  const waiting = calOut();
+  if (!cal.doc && waiting.length) cal.doc = { schema: 2, calendars: [] }; // nothing on asus yet, a first calendar waits
+  if (cal.doc) for (const op of waiting) calApply(cal.doc, op);
   if (keep) kvDo('readwrite', (st) => st.put({ doc: res.doc, version: res.version }, 'calendar')).catch(() => {});
   calRemindCheck();
 }
@@ -10258,26 +10265,27 @@ async function flushCal() {
   const ops = calOut();
   if (calFlushing || S.offline || !ops.length) return;
   calFlushing = true;
-  let sent = false;
+  let next = null;
   try {
     const res = await call('POST', '/ops', { ops }, '/_calendar', AbortSignal.timeout(15000));
     calWrites++;
     localStorage.setItem('ep_cal_out', JSON.stringify(calOut().slice(ops.length)));
     setCalDoc(res);
-    sent = true;
+    next = flushCal;
   } catch (err) {
     if (isNetErr(err)) goOffline();
     else {
       localStorage.setItem('ep_cal_out', JSON.stringify(calOut().slice(ops.length)));
       alert(T`Kalendár zmenu neprijal: ${err.message}`);
       cal.doc = null;
-      loadCalendar();
+      // What was made after the refused batch goes out over asus's copy, once it is here.
+      next = () => loadCalendar().then(flushCal);
     }
   }
   calFlushing = false;
   refresh();
   // An edit made while this one was on its way goes right after it.
-  if (sent && calOut().length) flushCal();
+  if (next && calOut().length) next();
 }
 
 // ---- moving around
@@ -10404,7 +10412,7 @@ function calChip(i, label, day = i.firstDay) {
 }
 
 /** A day's lessons from one timetable become one line: a school day is one thing, not seven. */
-/** A folded school day with a substitution, a cancelled or a moved lesson in it: the line says so. */
+/** A folded school day with a substitution or a moved lesson in it: the line says so. */
 const calRunChanged = (run) => run.parts.some((p) => Cal.lessonChange(p.event));
 
 function calFold(items) {
@@ -10656,7 +10664,7 @@ function calEditor() {
         ed.category && !cats.some((c) => c.id === ed.category) ? h('option', { value: ed.category, selected: true }, ed.category) : null)),
       h('div', { class: 'calaccent', role: 'group', 'aria-label': T('Druhá farba') },
         h('button', { type: 'button', class: !ed.accent ? 'on none' : 'none', 'aria-pressed': String(!ed.accent), onclick: () => { ed.accent = ''; render(); } }, T('Žiadna')),
-        Cal.ACCENT_PALETTE.map((c) => h('button', { type: 'button', class: ed.accent === c ? 'on' : '', title: c, 'aria-label': T`Druhá farba ${c}`, 'aria-pressed': String(ed.accent === c), style: { background: c }, onclick: () => { ed.accent = c; render(); } })))];
+        Cal.ACCENT_PALETTE.map((c) => h('button', { type: 'button', class: ed.accent === c ? 'on' : '', title: colorName(c), 'aria-label': T`Druhá farba ${colorName(c)}`, 'aria-pressed': String(ed.accent === c), style: { background: c }, onclick: () => { ed.accent = c; render(); } })))];
   const recurring = ed.recurring && !ed.isNew;
   const first = !recurring || calFirstOccurrence(ed);
   let buttons;
@@ -10811,7 +10819,7 @@ const calNewCal = { name: '', color: '', asking: null }; // the new calendar bei
 /** Why a calendar cannot be removed here (a program fills it and would fail or bring it back), else ''. Same rule as kalendar.py. */
 function calKeep(c) {
   if (c.id === TIMETABLE_CAL) return T('plní ho rozvrh');
-  if ((c.events || []).some((e) => Cal.isManaged(e, c.id))) return T('plní ho synchronizácia');
+  if (Cal.isSynced({ events: [], ...c })) return T('plní ho synchronizácia');
   if (String(c.name || '').trim().toLocaleLowerCase('sk') === 'testy') return T('sem píše testy EduPage');
   return '';
 }
@@ -10819,14 +10827,39 @@ function calKeep(c) {
 /** Settings is drawn again whole after a change: the keys stay on the control that made it (data-focus). */
 const calKeepFocus = (fn) => (e) => {
   const id = e.currentTarget.dataset.focus;
-  const back = () => document.querySelector(`.setpane [data-focus="${CSS.escape(id)}"]`)?.focus();
-  Promise.resolve(fn(e)).then(back, back);
+  const back = () => document.querySelector(`.setpane [data-focus="${CSS.escape(id)}"]`)?.focus({ preventScroll: true });
+  const done = fn(e);
   back();
+  // A choice that waits (the browser asking about notifications) takes the keys back only when nothing else has them.
+  if (done instanceof Promise) done.finally(() => { if (document.activeElement === document.body) back(); });
 };
+
+/** The accent colours by name, as a screen reader says them. */
+const COLOR_NAMES = {
+  '#7fb3ff': T('modrá'), '#ffb86b': T('oranžová'), '#ff8fa3': T('ružová'), '#c49bff': T('fialová'), '#5fd4c8': T('tyrkysová'),
+  '#ffe07a': T('žltá'), '#ff9de1': T('cyklámenová'), '#6fd0ff': T('blankytná'), '#e6a37a': T('hnedá'), '#b9c2ff': T('levanduľová'),
+  '#d8e56a': T('limetková'), '#f58f6c': T('koralová'), '#8ee3d0': T('mätová'), '#d0a4e8': T('orgovánová'), '#c9b68a': T('béžová'),
+  '#9be37a': T('zelená'),
+};
+const colorName = (c) => COLOR_NAMES[c.toLowerCase()] || c;
+
+/** Arrow keys move the choice of a radiogroup; Tab stops once, on the chosen one. */
+function radioKeys(ev) {
+  const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[ev.key];
+  const all = [...ev.currentTarget.querySelectorAll('[role=radio]')];
+  const at = all.indexOf(document.activeElement);
+  if (!step || at < 0) return;
+  ev.preventDefault();
+  const to = all[(at + step + all.length) % all.length];
+  to.click();
+  document.querySelector(`.setpane [data-focus="${CSS.escape(to.dataset.focus)}"]`)?.focus({ preventScroll: true });
+}
 
 function calAddCalendar(color) {
   const name = calNewCal.name.trim();
   if (!name) return;
+  const tests = (x) => String(x || '').trim().toLocaleLowerCase('sk') === 'testy';
+  if (tests(name) && cal.doc?.calendars?.some((c) => tests(c.name))) return alert(T('Kalendár Testy už je: doň píše testy EduPage.'));
   calNewCal.name = '';
   calNewCal.color = '';
   calSave([{ op: 'addcal', cal: Cal.newUid(), name, color }], true);
@@ -10836,7 +10869,24 @@ function calAskDelete(id) {
   calNewCal.asking = id;
   render();
   // Onto Späť: a second Enter must not delete.
-  document.querySelector(`.calsetrow[data-key="${CSS.escape(id || '')}"] button:not(.danger)`)?.focus();
+  document.querySelector(`.setpane [data-focus="${CSS.escape(`del-no:${id}`)}"]`)?.focus();
+}
+/** Späť (or Esc): the calendar stays, the keys go back to its Zmazať. */
+function calKeepCalendar(id) {
+  calNewCal.asking = null;
+  render();
+  document.querySelector(`.setpane [data-focus="${CSS.escape(`del:${id}`)}"]`)?.focus();
+}
+function calDeleteCalendar(id) {
+  calNewCal.asking = null;
+  // An event being edited in it goes with it; a new one being written moves to a calendar that stays.
+  if (cal.edit?.from === id) cal.edit = null;
+  else if (cal.edit?.cal === id) {
+    const to = calWritable().find((c) => c.id !== id);
+    if (to) cal.edit.cal = to.id; else cal.edit = null;
+  }
+  calSave([{ op: 'delcal', cal: id }], true);
+  document.querySelector('.calnewcal input')?.focus();
 }
 
 /** The subjects of the timetable, each once by its titleKey, named as an ordinary lesson of it is (not „Odpadlo: …“). */
@@ -10866,27 +10916,26 @@ function calendarSettings() {
   const subjects = calSubjects();
   const off = new Set(S.account[CAL_PREFS]?.hiddenSubjects || []);
   const paint = subjects.length ? Cal.subjectColors(cal.doc, TIMETABLE_CAL) : null;
-  const back = (id) => () => { calNewCal.asking = null; render(); document.querySelector(`.calsetrow[data-key="${CSS.escape(id)}"] button`)?.focus(); };
   const row = (c) => {
     const name = c.name || T('Bez názvu');
     const keep = calKeep(c);
     const n = (c.events || []).length;
-    const asking = calNewCal.asking === c.id;
+    const asking = !keep && calNewCal.asking === c.id;
     return h('div', { class: 'calsetrow', 'data-key': c.id },
       h('label', { class: 'bcheck' },
         h('input', { type: 'checkbox', checked: calShown(c), 'data-focus': `shown:${c.id}`, onchange: calKeepFocus((e) => calSetShown(c.id, e.currentTarget.checked)) }),
         h('i', { style: { background: Cal.calendarColor(c, cats) } }), name),
       asking ? h('span', { class: 'calconfirm', role: 'group', 'aria-label': T`Zmazať kalendár ${name}` },
         h('span', {}, n ? T`Zmazať aj s ${eventsWord(n)}?` : T('Zmazať?')),
-        h('button', { type: 'button', class: 'ghost danger', onclick: () => { calNewCal.asking = null; calSave([{ op: 'delcal', cal: c.id }], true); document.querySelector('.calnewcal input')?.focus(); } }, T('Zmazať')),
-        h('button', { type: 'button', class: 'ghost', onclick: back(c.id) }, T('Späť')))
+        h('button', { type: 'button', class: 'ghost danger', 'data-focus': `del-yes:${c.id}`, onclick: () => calDeleteCalendar(c.id) }, T('Zmazať')),
+        h('button', { type: 'button', class: 'ghost', 'data-focus': `del-no:${c.id}`, onclick: () => calKeepCalendar(c.id) }, T('Späť')))
         : keep ? h('small', {}, keep)
-          : h('button', { type: 'button', class: 'ghost', 'aria-label': T`Zmazať kalendár ${name}`, onclick: () => calAskDelete(c.id) }, T('Zmazať')));
+          : h('button', { type: 'button', class: 'ghost', 'aria-label': T`Zmazať kalendár ${name}`, 'data-focus': `del:${c.id}`, onclick: () => calAskDelete(c.id) }, T('Zmazať')));
   };
   return [
     h('h3', {}, T('Predvolené zobrazenie')),
-    h('div', { class: 'seg', role: 'radiogroup', 'aria-label': T('Kalendár sa otvorí na') }, CAL_VIEWS.map(([id, label]) =>
-      h('button', { type: 'button', role: 'radio', 'aria-checked': String(v === id), class: v === id ? 'on' : '',
+    h('div', { class: 'seg', role: 'radiogroup', 'aria-label': T('Kalendár sa otvorí na'), onkeydown: radioKeys }, CAL_VIEWS.map(([id, label]) =>
+      h('button', { type: 'button', role: 'radio', 'aria-checked': String(v === id), tabindex: v === id ? 0 : -1, class: v === id ? 'on' : '',
         'data-focus': `view:${id}`, onclick: calKeepFocus(() => { if (v === id) return; cal.view = id; cal.scrolled = false; putAccount(CAL_PREFS, { ...S.account[CAL_PREFS], view: id }).catch(() => alert(T('Nastavenie sa neuložilo.'))); render(); }) }, label))),
     h('p', { class: 'hint' }, T('Takto sa kalendár ukáže na úvodnej ploche aj na Ctrl+D.')),
     h('h3', {}, T('Kalendáre')),
@@ -10894,16 +10943,16 @@ function calendarSettings() {
     cal.loaded ? h('form', { class: 'calnewcal', onsubmit: (e) => { e.preventDefault(); calAddCalendar(color); } },
       h('input', { value: calNewCal.name, required: true, maxlength: 60, placeholder: T('Nový kalendár'), 'aria-label': T('Názov nového kalendára'),
         oninput: (e) => { calNewCal.name = e.target.value; }, 'data-root': '__calNewName' }),
-      h('div', { class: 'calaccent', role: 'radiogroup', 'aria-label': T('Farba nového kalendára') }, Cal.ACCENT_PALETTE.map((c) =>
-        h('button', { type: 'button', role: 'radio', class: color === c ? 'on' : '', title: c, 'aria-label': T`Farba ${c}`, 'aria-checked': String(color === c),
+      h('div', { class: 'calaccent', role: 'radiogroup', 'aria-label': T('Farba nového kalendára'), onkeydown: radioKeys }, Cal.ACCENT_PALETTE.map((c) =>
+        h('button', { type: 'button', role: 'radio', class: color === c ? 'on' : '', title: colorName(c), 'aria-label': colorName(c), 'aria-checked': String(color === c), tabindex: color === c ? 0 : -1,
           style: { background: c }, 'data-focus': `color:${c}`, onclick: calKeepFocus(() => { calNewCal.color = c; render(); }) }))),
-      h('button', { type: 'submit', class: 'primary' }, T('Pridať kalendár'))) : null,
+      h('button', { type: 'submit', class: 'primary', 'data-focus': 'addcal' }, T('Pridať kalendár'))) : null,
     h('p', { class: 'hint' }, T('Odškrtnutý kalendár sa vo Wefte nekreslí a jeho udalosti ostávajú. Zmazaný zmizne aj s udalosťami.')),
     subjects.length ? h('h3', {}, T('Predmety v rozvrhu')) : null,
     subjects.length ? h('div', { class: 'calshown' }, subjects.map((s) => h('label', { class: 'bcheck', 'data-key': s.key },
       h('input', { type: 'checkbox', checked: !off.has(s.key), 'data-focus': `subject:${s.key}`, onchange: calKeepFocus((e) => calSetSubject(s.key, e.currentTarget.checked)) }),
       h('i', { style: { background: paint.get(s.key) } }), s.name))) : null,
-    subjects.length ? h('p', { class: 'hint' }, T('Odškrtnutý predmet sa v kalendári nekreslí ani nepripomína, ani keď odpadne alebo sa supluje.')) : null,
+    subjects.length ? h('p', { class: 'hint' }, T('Odškrtnutý predmet sa v kalendári nekreslí ani nepripomína, ani keď sa supluje. Odpadnutá hodina sa nekreslí nikdy.')) : null,
     h('h3', {}, T('Pripomienky')),
     h('label', { class: 'bcheck' }, h('input', { type: 'checkbox', checked: calRemindOn(), 'data-focus': 'remind', onchange: calKeepFocus((e) => calSetRemind(e.currentTarget.checked)) }),
       h('span', {}, T('Upozorniť v čase pripomienky'), h('small', {}, T('Udalosť s pripomienkou ukáže notifikáciu na zariadení, kde Weft beží (desktopová appka beží aj so zatvoreným oknom), a klik ju otvorí. Kalendarix dáva každej udalosti pripomienku 2 hodiny vopred pre telefón, takže zapnuté pípne aj pri nich.')))),
@@ -13212,7 +13261,7 @@ function render() {
     const target = schoolFocus.back ? root.querySelector('.detail .back')
       : root.querySelector(`[data-edu-action="${CSS.escape(schoolFocus.action)}"]`);
     target?.focus({ preventScroll: true });
-  } else if (setFocus) {
+  } else if (setFocus && !S.overlay) {
     root.querySelector(setFocus)?.focus({ preventScroll: true });
   } else if (S.focusComposer) {
     const box = root.querySelector('.ccompose textarea, .compose textarea');

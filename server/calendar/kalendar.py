@@ -214,7 +214,7 @@ TESTS_NAME = "Testy"  # the EduPage bridge finds the calendar it writes tests in
 
 def undeletable(cal):
     """Why a calendar may not be removed, or None: a program fills it and would fail or bring it back."""
-    if cal["id"] == TIMETABLE_CAL or any(isinstance(e, dict) and managed(e, cal["id"]) for e in cal.get("events") or []):
+    if cal["id"] == TIMETABLE_CAL or cal.get("sourceUrl") or any(isinstance(e, dict) and managed(e, cal["id"]) for e in cal.get("events") or []):
         return "this calendar belongs to a sync program"
     if str(cal.get("name") or "").strip().casefold() == TESTS_NAME.casefold():
         return "the EduPage bridge writes tests into this calendar"
@@ -229,6 +229,9 @@ def apply_ops(doc, ops):
             if not isinstance(name, str) or not name.strip(): raise ValueError("a calendar needs a name")
             if not isinstance(color, str) or not re.fullmatch(r"#[0-9a-fA-F]{6}", color): raise ValueError("color must be #rrggbb")
             if cid in cals: continue
+            tests = lambda n: str(n or "").strip().casefold() == TESTS_NAME.casefold()
+            if tests(name) and any(tests(c.get("name")) for c in cals.values()):
+                raise ValueError("there is a Testy calendar already: the EduPage bridge writes into one")
             # Kalendarix's fields for a calendar of one's own; the colour it shows is customColor.
             cals[cid] = {"id": cid, "name": name.strip(), "color": color, "customColor": color, "visible": True, "events": []}
             doc.setdefault("calendars", []).append(cals[cid])
