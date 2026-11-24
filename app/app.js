@@ -128,6 +128,8 @@ const S = {
   replyTo: null, // { room, event } the composer answers
   editing: null, // { room, event, draft } own message being edited in the composer; `draft` comes back after
   focusEvent: null, // event id to scroll to and highlight in the open chat
+  pick: null, // { chat, event } the message the keyboard picked in the open chat (chatKey)
+  pickScroll: null, // 'top' | 'near': render brings the picked message into sight
   focusComposer: false,
 };
 
@@ -5324,6 +5326,7 @@ document.addEventListener('keydown', (e) => {
   else if (key === 'escape' && (S.panel || S.menu)) run(() => { S.panel = null; S.menu = false; render(); });
   else if ((S.panel === 'calendar' || (!S.panel && document.activeElement?.closest('.home-calendar'))) && !typing && !mod && !e.altKey && calendarKey(e)) e.preventDefault();
   else if (S.overlay || S.panel) return;
+  else if (chatKey(e, key, typing)) e.preventDefault();
   else if (mod && !e.shiftKey && key === 'e') run(() => toggleArchive(selectedEntry()));
   else if (mod && e.shiftKey && key === 'e') run(archiveAllRead);
   else if (mod && e.shiftKey && key === 'u') run(() => toggleRead(selectedEntry()));
@@ -7179,7 +7182,7 @@ function bubbleView(r, m, ev, grouped, group, sug = null) {
   const acts = !(gone || ev.pending || ev.archived);
   const fail = mine && !gone ? (ev.pending ? (ev.failed ? { reason: ev.failed, sure: true } : null) : m.failed?.get(ev.event_id)) : null;
   return h('div', {
-    class: `msg${mine ? ' mine' : lookClass(r, ev.sender)}${grouped ? ' grouped' : ''}${ev.pending && !fail ? ' pending' : ''}${fail ? ' failed' : ''}${S.focusEvent === ev.event_id ? ' focus' : ''}${S.actsFor === ev.event_id ? ' acts' : ''}`,
+    class: `msg${mine ? ' mine' : lookClass(r, ev.sender)}${grouped ? ' grouped' : ''}${ev.pending && !fail ? ' pending' : ''}${fail ? ' failed' : ''}${S.focusEvent === ev.event_id ? ' focus' : ''}${S.actsFor === ev.event_id ? ' acts' : ''}${S.pick?.event === ev.event_id ? ' picked' : ''}`,
     'data-event': ev.event_id,
     oncontextmenu: (e) => {
       // Someone else's name or picture in a group: the menu offers a nickname for them.
@@ -7215,7 +7218,7 @@ function bubbleView(r, m, ev, grouped, group, sug = null) {
       bubbleBody(r, m, ev),
       inDiscordThread(r, ev.event_id) ? h('small', { class: 'mthread' }, T('vo vlákne · odpovedať sa dá len v appke Discord')) : null,
       h('span', { class: 'mtime' }, m.edits.has(ev.event_id) && !m.edits.get(ev.event_id).content?.['com.beeper.dont_render_edited'] && !gone && !POLL_START.includes(ev.type) && !pollIn(ev, ev.content) ? T('upravené · ') : '', fail ? (fail.sure ? T('neodoslané') : T('možno neodoslané')) : ev.waiting ? T('čaká na sieť') : ev.pending ? 'odosielam' : timeLabel(ev.origin_server_ts))),
-    acts && (hoverMsg === ev.event_id || S.actsFor === ev.event_id) ? msgActs(r, m, ev, mine) : null),
+    acts && (hoverMsg === ev.event_id || S.actsFor === ev.event_id || S.pick?.event === ev.event_id) ? msgActs(r, m, ev, mine) : null),
   sug ? calSuggestion(r, ev, sug) : null,
   fail ? h('div', { class: 'lateracts failacts' },
     h('span', { class: 'failwhy' }, fail.reason),
@@ -7243,7 +7246,7 @@ function bubbleKept(r, m, ev, grouped, group, sug = null) {
   // old bubbles and the history their handlers hold.
   if (bubbleMemoRoom !== r.id || bubbleMemoSeq !== seq) { bubbleMemo.clear(); bubbleMemoRoom = r.id; bubbleMemoSeq = seq; }
   const id = ev.event_id;
-  const sig = `${seq}|${lookClass(r, ev.sender)}|${grouped}|${group}|${S.focusEvent === id}|${S.actsFor === id}|${hoverMsg === id}|${hoverMsg === id || S.actsFor === id ? receiptSeq : ''}|${S.focusEvent === id ? S.findQuery || '' : ''}|${!!ev.pending}|${!!ev.waiting}|${linkVer.get(id) || 0}|${sug ? calSugKey(sug) : ''}`;
+  const sig = `${seq}|${lookClass(r, ev.sender)}|${grouped}|${group}|${S.focusEvent === id}|${S.actsFor === id}|${S.pick?.event === id}|${hoverMsg === id}|${hoverMsg === id || S.actsFor === id || S.pick?.event === id ? receiptSeq : ''}|${S.focusEvent === id ? S.findQuery || '' : ''}|${!!ev.pending}|${!!ev.waiting}|${linkVer.get(id) || 0}|${sug ? calSugKey(sug) : ''}`;
   const hit = bubbleMemo.get(id);
   if (hit?.sig === sig && hit.el.isConnected) return ref(hit.el);
   mediaAwaited = false;
@@ -7489,12 +7492,7 @@ async function sendLocal(r, type, content, failed) {
   r.version++;
   render();
 }
-/** Karchi's last message that can still be edited: the ↑ key in an empty message box takes it. */
-function lastEditable(r) {
-  const m = roomModel(r);
-  return [...m.messages].reverse().find((ev) => canEdit(r, m, ev)) || null;
-}
-/** Karchi's last editable message in the open chat, a merged one included: [its room, the message]. */
+/** Karchi's last editable message in the open chat, a merged one included: [its room, the message] (Ctrl+J). */
 function lastEditableIn(r) {
   const t = timelineOf(r);
   const ev = t.msgs.findLast((x) => { const xr = t.roomOf(x); return canEdit(xr, roomModel(xr), x); });
@@ -7520,7 +7518,7 @@ function msgMenuView(o) {
   const c = contentOf(m, ev);
   return ctxMenu(o, [
     [c.msgtype === 'm.audio' && c.url ? item(icon('download'), T('Stiahnuť hlasovku'), 'Ctrl+S', () => downloadVoice(r, ev, c)) : null],
-    [canEdit(r, m, ev) ? item(icon('pencil'), T('Upraviť'), lastEditable(r) === ev ? '↑' : null, () => startEdit(r, ev)) : null,
+    [canEdit(r, m, ev) ? item(icon('pencil'), T('Upraviť'), S.pick?.event === ev.event_id ? 'E' : null, () => startEdit(r, ev)) : null,
       !r.archiveOnly && !shareLink(c) && forwardContent(m, ev) ? item(icon('forward'), T('Preposlať…'), null, () => forwardMessage(r, ev)) : null,
       ev.sender === S.userId && !r.archiveOnly && !ev.archived ? item(icon('eye'), T('Keď odpíše, ukázať kamošovi…'), null, () => openRelay(r, ev)) : null,
       ev.sender !== S.userId && !isBot(ev.sender) && !dmPartner(r) ? item(icon('label'), T`Prezývka pre ${memberName(r, ev.sender)}…`, null, () => openNickFor([ev.sender], networkName(r, ev.sender))) : null],
@@ -7644,6 +7642,207 @@ function chatAwayCheck(box) {
   if (b) b.hidden = !away;
 }
 
+// ------------------------------------------------------------------ blocks, the rail beside a chat, the keyboard's message
+
+// A chat falls into blocks: each day, and within a day whatever comes after an hour of silence. A block starts under
+// its separator (the day, or the time), has a tick on the rail at the chat's right edge, and Ctrl+↑ ↓ step by them.
+const BLOCK_GAP = 60 * 60e3;
+const dayOf = (ts) => { const d = new Date(ts); return d.getFullYear() * 400 + d.getMonth() * 32 + d.getDate(); };
+/** Indices of the messages of `msgs` that start a block, each with whether it starts a day: [[i, day]]. */
+const blocksMemo = new WeakMap();
+function blocksOf(msgs) {
+  let out = blocksMemo.get(msgs);
+  if (out && out.n === msgs.length) return out.list;
+  const list = [];
+  for (let i = 0; i < msgs.length; i++) {
+    const ts = msgs[i].origin_server_ts;
+    const prev = msgs[i - 1]?.origin_server_ts;
+    const day = i === 0 || dayOf(ts) !== dayOf(prev);
+    if (day || ts - prev >= BLOCK_GAP) list.push([i, day]);
+  }
+  blocksMemo.set(msgs, (out = { n: msgs.length, list }));
+  return list;
+}
+const startsBlock = (msgs, i) => i === 0 || dayOf(msgs[i].origin_server_ts) !== dayOf(msgs[i - 1].origin_server_ts)
+  || msgs[i].origin_server_ts - msgs[i - 1].origin_server_ts >= BLOCK_GAP;
+
+/** The rail: one tick per block of the loaded chat, a day's longer. Resting on one shows its day, time and first
+ *  message; a click picks that message (pickAt). The tick of the block at the top of the view is lit (railMark). */
+let railMemo = { msgs: null, n: 0, lang: '', el: null };
+function chatRail(t) {
+  const list = blocksOf(t.msgs);
+  if (list.length < 2) return null;
+  if (railMemo.msgs === t.msgs && railMemo.n === t.msgs.length && railMemo.el?.isConnected) return ref(railMemo.el);
+  const el = h('div', { class: 'crail', 'aria-hidden': 'true' }, h('div', { class: 'rlist' }, list.map(([i, day]) => {
+    const ev = t.msgs[i];
+    const er = t.roomOf(ev);
+    const who = ev.sender === S.userId ? T('Ty') : firstName(memberName(er, ev.sender));
+    return h('button', { class: `rtick${day ? ' day' : ''}`, type: 'button', tabindex: -1, 'data-key': ev.event_id, onmouseenter: placeRailCard, onclick: () => railJump(ev.event_id) },
+      h('span', { class: 'rcard' }, h('b', {}, `${dayLabel(ev.origin_server_ts)} ${timeLabel(ev.origin_server_ts)}`),
+        h('span', {}, `${who}: ${messageSummary(roomModel(er), ev).slice(0, 160)}`)));
+  })));
+  railMemo = { msgs: t.msgs, n: t.msgs.length, el };
+  el._live = (live) => { if (railMemo.el === el) railMemo.el = live; };
+  return el;
+}
+/** The card of the tick under the mouse goes to its left, beside it, inside the window. */
+function placeRailCard(e) {
+  const tick = e.currentTarget;
+  const card = tick.querySelector('.rcard');
+  const at = tick.getBoundingClientRect();
+  card.style.left = `${Math.max(8, at.left - card.offsetWidth - 8)}px`;
+  card.style.top = `${Math.max(8, Math.min(at.top + at.height / 2 - card.offsetHeight / 2, innerHeight - card.offsetHeight - 8))}px`;
+}
+function railJump(id) {
+  const r = S.rooms.get(S.selected);
+  if (!r) return;
+  const t = timelineOf(r);
+  const i = t.msgs.findIndex((ev) => ev.event_id === id);
+  if (i >= 0) pickAt(r, t, i, 'top');
+}
+/** Lights the tick of the block at the top of the open chat's view and keeps it in sight on the rail. */
+let railFrame = 0;
+function railMark(box) {
+  if (railFrame) return;
+  railFrame = requestAnimationFrame(() => {
+    railFrame = 0;
+    const rail = box.isConnected && box.parentNode.querySelector(':scope > .crail');
+    if (!rail) return;
+    const top = box.getBoundingClientRect().top + parseFloat(getComputedStyle(box).paddingTop) + 8;
+    let cur = null;
+    for (const sep of box.querySelectorAll('.cday[data-block]')) { if (sep.getBoundingClientRect().top <= top) cur = sep.dataset.block; else break; }
+    // No separator above the view: the block of the first message drawn.
+    if (!cur) {
+      const r = S.rooms.get(S.selected);
+      const first = box.querySelector('.msg[data-event]')?.dataset.event;
+      const t = r && timelineOf(r);
+      const i = t ? t.msgs.findIndex((ev) => ev.event_id === first) : -1;
+      if (i >= 0) cur = t.msgs[blocksOf(t.msgs).findLast(([b]) => b <= i)?.[0] ?? 0]?.event_id;
+    }
+    let lit = null;
+    for (const tick of rail.querySelectorAll('.rtick')) { const on = tick.dataset.key === cur; tick.classList.toggle('on', on); if (on) lit = tick; }
+    if (lit) {
+      const a = lit.getBoundingClientRect(), b = rail.getBoundingClientRect();
+      if (a.top < b.top) rail.scrollTop -= b.top - a.top + 8;
+      else if (a.bottom > b.bottom) rail.scrollTop += a.bottom - b.bottom + 8;
+    }
+  });
+}
+
+// The keyboard's message (Beeper's): ↑ in an empty message box picks the newest, ↑ ↓ move by one, Ctrl+↑ ↓ by blocks,
+// → to Karchi's previous message, ← to the previous one of someone else; R answers it, F forwards it, E edits his own,
+// Tab walks its bar (reactions, reply, forward, ⋯), Esc or ↓ past the newest gives the keys back to the message box.
+// S.pick = { chat: inbox key, event }; the message box taking the keys drops it.
+function pickedIn() {
+  const r = S.rooms.get(S.selected);
+  if (!r || !S.pick || S.pick.chat !== selKey()) return null;
+  const t = timelineOf(r);
+  const i = t.msgs.findIndex((ev) => ev.event_id === S.pick.event);
+  return i < 0 ? null : { r, t, i, ev: t.msgs[i], er: t.roomOf(t.msgs[i]) };
+}
+/** Picks message `i` of the open chat, drawing older messages first when it is above the drawn ones. `where`: 'top'
+ *  brings it under the header, otherwise only as far as it takes to see it. */
+function pickAt(r, t, i, where = 'near') {
+  const ev = t.msgs[i];
+  if (!ev) return;
+  S.pick = { chat: selKey(), event: ev.event_id };
+  S.pickScroll = where;
+  spotWant = null;
+  let from = t.holder.drawFrom ? t.msgs.findIndex((x) => x.event_id === t.holder.drawFrom) : -1;
+  if (from < 0) from = Math.max(0, t.msgs.length - CHAT_FIRST);
+  if (i < from) t.holder.drawFrom = t.msgs[Math.max(0, i - 10)].event_id;
+  const box = document.querySelector('[data-scroll=chat]');
+  if (box && document.activeElement !== box) box.focus({ preventScroll: true }); // the keys leave the message box
+  render();
+}
+/** The picked message comes into sight (after render has placed the chat). */
+function pickScroll(box) {
+  const how = S.pickScroll;
+  S.pickScroll = null;
+  const el = how && box.querySelector('.msg.picked');
+  if (!el) return;
+  const a = el.getBoundingClientRect(), b = box.getBoundingClientRect();
+  const top = b.top + parseFloat(getComputedStyle(box).paddingTop) + 34; // its bar shows above it
+  const bottom = b.bottom - 8;
+  if (how === 'top' || a.top < top || a.height > bottom - top) box.scrollTop -= top - a.top;
+  else if (a.bottom > bottom) box.scrollTop += a.bottom - bottom;
+  chatAwayCheck(box);
+  railMark(box);
+}
+/** Gives the keys back to the message box, at the newest messages when `toEnd`. */
+function unpick(toEnd) {
+  S.pick = null;
+  S.focusComposer = true;
+  render();
+  if (toEnd) chatToNew();
+}
+const pickable = (ev) => !ev.pending;
+/** The chat's keys while a message is picked, and ↑ / Ctrl+↑ that pick one; true when the key was used. */
+function chatKey(e, key, typing) {
+  const r = S.rooms.get(S.selected);
+  const pane = document.querySelector('[data-scroll=chat]');
+  if (!r || !pane || e.defaultPrevented || e.isComposing || e.altKey) return false;
+  const ctrl = e.ctrlKey || e.metaKey;
+  const p = pickedIn();
+  if (!p) {
+    if (key !== 'arrowup' || e.shiftKey) return false;
+    // From an empty message box, or with the keys nowhere in particular (the chat itself, the page).
+    const el = document.activeElement;
+    const box = el?.matches('.ccompose textarea') ? el : null;
+    if (box ? box.value || (S.attach.get(r.id) || []).length || S.editing : typing || !(el === document.body || el?.closest('.detail.chat'))) return false;
+    const t = timelineOf(r);
+    let last = t.msgs.findLastIndex(pickable);
+    if (last < 0) return false;
+    // From the chat itself (scrolled up and clicked): the lowest message in sight, so the view does not jump.
+    if (!box) {
+      const b = pane.getBoundingClientRect();
+      const top = b.top + parseFloat(getComputedStyle(pane).paddingTop);
+      const low = [...pane.querySelectorAll('.msg[data-event]')].findLast((x) => { const a = x.getBoundingClientRect(); return a.bottom <= b.bottom + 1 && a.top >= top; });
+      const j = low ? t.msgs.findIndex((x) => x.event_id === low.dataset.event) : -1;
+      if (j >= 0 && j < last && pickable(t.msgs[j])) last = j;
+    }
+    if (ctrl) pickAt(r, t, blocksOf(t.msgs).findLast(([b]) => b <= last)[0], 'top');
+    else pickAt(r, t, last);
+    return true;
+  }
+  if (typing) return false;
+  const { t, i, ev, er } = p;
+  const m = roomModel(er);
+  const older = () => { if (t.parts.some((x) => !x.historyDone)) chatNearTop(r); }; // nothing above yet: load more
+  const go = (j, where) => { if (j >= 0) pickAt(r, t, j, where); else older(); };
+  const before = (test) => { for (let j = i - 1; j >= 0; j--) if (test(t.msgs[j])) return j; return -1; };
+  if (key === 'arrowup' && !e.shiftKey) {
+    if (ctrl) go(blocksOf(t.msgs).findLast(([b]) => b < i)?.[0] ?? -1, 'top');
+    else go(before(pickable));
+  } else if (key === 'arrowdown' && !e.shiftKey) {
+    const j = ctrl ? blocksOf(t.msgs).find(([b]) => b > i)?.[0] ?? -1 : t.msgs.findIndex((x, k) => k > i && pickable(x));
+    if (j >= 0 && pickable(t.msgs[j])) pickAt(r, t, j, ctrl ? 'top' : 'near');
+    else unpick(true);
+  } else if (key === 'arrowright' && !ctrl && !e.shiftKey) go(before((x) => x.sender === S.userId));
+  else if (key === 'arrowleft' && !ctrl && !e.shiftKey) go(before((x) => x.sender !== S.userId && pickable(x)));
+  else if (key === 'escape') {
+    // From its bar back to the message; from the message back to the message box.
+    if (document.activeElement?.closest('.macts')) pane.focus({ preventScroll: true });
+    else unpick(false);
+  } else if (key === 'tab' && !ctrl) {
+    const bar = [...pane.querySelectorAll('.msg.picked .macts button')];
+    if (!bar.length) return true; // nothing to walk: the keys stay on the message
+    const at = bar.indexOf(document.activeElement);
+    bar[at < 0 ? (e.shiftKey ? bar.length - 1 : 0) : (at + (e.shiftKey ? -1 : 1) + bar.length) % bar.length].focus();
+  } else if (key === 'r' && !e.shiftKey) { // R, or Ctrl+R as for the newest message
+    if (er.archiveOnly || ev.archived || isRedacted(m, ev)) return true;
+    if (inDiscordThread(er, ev.event_id)) { alert(threadNote()); return true; }
+    writeIn(er); // a merged chat answers through the chat the message came in
+    S.replyTo = { room: er.id, event: ev.event_id };
+    unpick(false);
+  } else if (key === 'f' && !ctrl && !e.shiftKey) {
+    if (!er.archiveOnly && ((shareLink(contentOf(m, ev)) && !isRedacted(m, ev)) || forwardContent(m, ev))) forwardMessage(er, ev);
+  } else if (key === 'e' && !ctrl && !e.shiftKey) {
+    if (canEdit(er, m, ev)) { S.pick = null; startEdit(er, ev); }
+  } else return false;
+  return true;
+}
+
 /** `e`: the open chat's inbox entry; a merged one shows all of its chats and writes to `r`. */
 function chatView(r, e = null) {
   const t = timelineOf(r);
@@ -7687,9 +7886,10 @@ function chatView(r, e = null) {
       day = '';
     }
     const label = dayLabel(ev.origin_server_ts);
-    if (label !== day) { items.push(h('div', { class: 'cday' }, label)); prev = null; }
-    // An hour of silence within a day starts a new block, headed by its time.
-    else if (prev && ev.origin_server_ts - prev.origin_server_ts >= 60 * 60e3) { items.push(h('div', { class: 'cday' }, timeLabel(ev.origin_server_ts))); prev = null; }
+    // A block (blocksOf) starts under its separator: the day, or after an hour of silence its time. railMark finds them.
+    const block = startsBlock(msgs, i) ? ev.event_id : null;
+    if (label !== day) { items.push(h('div', { class: 'cday', 'data-block': block }, label)); prev = null; }
+    else if (block) { items.push(h('div', { class: 'cday', 'data-block': block }, timeLabel(ev.origin_server_ts))); prev = null; }
     day = label;
     // A merged chat says where the conversation goes on whenever the network changes, and where it starts.
     if (merged && er !== lastRoom) {
@@ -7719,7 +7919,8 @@ function chatView(r, e = null) {
   const apps = merged ? t.parts.map((x) => appOf(x.app)).filter((a, i, all) => a && all.indexOf(a) === i) : app ? [app] : [];
   const hint = !r.archiveOnly && mergeHints(r)[0];
   const call = callButtonTarget(r);
-  return h('div', { class: `detail chat${hint ? ' hinted' : ''}` },
+  const rail = chatRail(t);
+  return h('div', { class: `detail chat${hint ? ' hinted' : ''}${rail ? ' railed' : ''}` },
     // No header bar, as in Beeper: the chat's picture and name float centered above the messages.
     h('div', { class: 'chead float' },
       h('button', { class: 'back', title: T('Späť'), onclick: closeThread }, '‹'),
@@ -7743,11 +7944,13 @@ function chatView(r, e = null) {
         h('button', { class: 'ghost', title: T('Neponúkať znova'), onclick: () => dismissHint(r.id, hint.id) }, T('Nie'))) : null,
       call ? h('button', { class: 'callbtn', type: 'button', title: callWhere(call.network), 'aria-label': callWhere(call.network), onclick: () => openCall(r) }, icon('phone')) : null,
       h('button', { class: 'more', title: T('Možnosti'), onclick: (ev) => openMenu(ev, entryOf(r.id)) }, '⋯')),
-    h('div', { class: `msgs${chatTint(r)}`, 'data-scroll': 'chat', onscroll: (ev) => { chatAwayCheck(ev.target); if (ev.target.scrollTop < 300) chatNearTop(r); } },
+    // tabindex: the chat itself holds the keys while a message is picked.
+    h('div', { class: `msgs${chatTint(r)}`, 'data-scroll': 'chat', tabindex: -1, onscroll: (ev) => { chatAwayCheck(ev.target); railMark(ev.target); if (ev.target.scrollTop < 300) chatNearTop(r); } },
       from > 0 ? h('div', { class: 'cstart' }) : done ? chatIntro(r, app, group) : h('div', { class: 'cstart' }, t.parts.some((x) => x.loading) ? T('Načítavam staršie správy…') : ''),
       items,
       heldBar(r, held === m.held ? m : { held }),
       h('div', { class: 'tonew', 'data-key': '__tonew' }, h('button', { type: 'button', title: T('Na najnovšie správy (Ctrl+↓)'), 'aria-label': T('Na najnovšie správy'), hidden: !S.chatAway, onclick: chatToNew }, icon('arrow-down'), h('kbd', {}, 'Ctrl+↓')))),
+    rail,
     forwardBar(t.parts),
     r.archiveOnly ? archiveCompose(r) : chatCompose(r, m, merged ? t : null));
 }
@@ -8217,6 +8420,7 @@ function chatCompose(r, m, t = null) {
     },
     // A list opening under the box (@names, :emoji) blurs it for a moment; only a box that stays without the keys stops.
     onblur: () => setTimeout(() => { if (typingOut && (!document.hasFocus() || document.activeElement?.dataset?.root !== typingOut.room)) typingStop(); }),
+    onfocus: () => { if (S.pick) { S.pick = null; renderSoon(); } }, // the keys are back in the box: no message is picked
     onkeydown: (e) => {
       const draft = S.drafts.get(r.id) || '';
       const found = colonHits(r);
@@ -8237,12 +8441,8 @@ function chatCompose(r, m, t = null) {
       }
       const hits = slashHits(draft);
       if (e.key === 'Tab' && hits.length) { e.preventDefault(); useSlash(r, hits[0]); return; }
-      // ↑ in an empty box edits Karchi's last message, as in Beeper.
-      if (e.key === 'ArrowUp' && !e.target.value && !files.length && !S.editing) {
-        const [lr, last] = lastEditableIn(r);
-        if (last) { e.preventDefault(); startEdit(lr, last); }
-        return;
-      }
+      // ↑ in an empty box picks the newest message (chatKey); E then edits Karchi's own.
+      if (e.key === 'ArrowUp' && !e.target.value && !files.length && !S.editing) return;
       if (e.key !== 'Enter' || (e.shiftKey && !e.ctrlKey && !e.metaKey) || e.altKey) return;
       e.preventDefault();
       if (e.repeat) return; // a held Enter (one that picked a chat a moment ago) sends nothing
@@ -9911,7 +10111,9 @@ const SHORTCUTS = [
   ['Ctrl+L', T('Pripomenúť neskôr')], ['Ctrl+R', T('Odpovedať na poslednú správu')], ['Ctrl+Enter', T('Odoslať a archivovať')],
   ['Ctrl+Shift+A', T('Nahrať hlasovku (Enter odošle, Esc zahodí)')],
   ['Ctrl+Shift+Space', T('Hlasovka: prehrať / pozastaviť (v chate prvú nevypočutú)')], ['← →', T('Na hlasovke: o 5 s späť a dopredu (Space prehrá, Ctrl+S stiahne)')],
-  ['↑', T('Upraviť svoju poslednú správu (v prázdnom poli)')], ['Shift+Enter', T('Nový riadok')], ['Ctrl+Shift+S', T('Len neprečítané / všetky')], ['Ctrl+S', T('Odložiť koncept (spýta sa, kedy pripomenúť; Ctrl+S znova = bez pripomienky); v prázdnom poli vziať odložený')], ['Ctrl+G', T('Známky (Tab prepína)')], ['Ctrl+M', T('Ľudia: mapa, koho odkiaľ poznáš')], ['Ctrl+D', T('Kalendár (D T M Z zobrazenie, ← → posun, N nová)')],
+  ['↑ ↓', T('Označiť správu v chate (↑ v prázdnom poli; ↓ za najnovšou a Esc späť do poľa)')], ['Ctrl+↑ ↓', T('Označená správa: o deň alebo dlhú pauzu (čiarky na pravom okraji chatu)')],
+  ['→ ←', T('Označená správa: tvoja predošlá / predošlá od niekoho iného')], ['R  F  E', T('Označená správa: odpovedať, preposlať, upraviť svoju')], ['Tab', T('Označená správa: reakcie a akcie nad ňou (Enter vyberie)')],
+  ['Shift+Enter', T('Nový riadok')], ['Ctrl+Shift+S', T('Len neprečítané / všetky')], ['Ctrl+S', T('Odložiť koncept (spýta sa, kedy pripomenúť; Ctrl+S znova = bez pripomienky); v prázdnom poli vziať odložený')], ['Ctrl+G', T('Známky (Tab prepína)')], ['Ctrl+M', T('Ľudia: mapa, koho odkiaľ poznáš')], ['Ctrl+D', T('Kalendár (D T M Z zobrazenie, ← → posun, N nová)')],
   ['Ctrl+,', T('Nastavenia')], ['Esc', T('Zavrieť, zrušiť odpoveď, zavrieť chat')],
   ['Ctrl+V', T('Vložiť obrázok do správy')], ['Ctrl+← →, koliesko', T('Obrázky a videá: predošlý a ďalší (na obrázku aj ← →)')], ['← → / Space', T('Video: o 5 s späť a dopredu / prehrať; podržať Space = 2× rýchlo')], ['Ctrl+koliesko', T('Obrázky: priblížiť (aj dvojklik, + − 0)')],
   ['Ctrl+S', T('Obrázky: stiahnuť')], ['Ctrl+P', T('Galéria chatu: fotky a videá (šípky, Enter, PageUp/PageDown po mesiacoch, J ukáže v chate)')], ['Ctrl+Shift+Enter', T('Odoslať neskôr (aj /sendlater, pravý klik na odoslať)')], ['/gif', T('Poslať GIF')],
@@ -9951,7 +10153,7 @@ function toolList() {
     [e?.unread ? T('Označiť ako prečítané') : T('Označiť ako neprečítané'), 'read unread precitane neprecitane', 'Ctrl+Shift+U', () => toggleRead(e), !!e],
     [T('Pripomenúť chat neskôr'), 'remind snooze pripomienka', 'Ctrl+L', () => openRemind(e), !!e],
     [T('Odpovedať na poslednú správu'), 'reply odpoved', 'Ctrl+R', replyToLast, !!r],
-    [T('Upraviť svoju poslednú správu'), 'edit opravit', '↑', () => { const [lr, ev] = r ? lastEditableIn(r) : []; if (ev) startEdit(lr, ev); render(); }, !!r],
+    [T('Upraviť svoju poslednú správu'), 'edit opravit', null, () => { const [lr, ev] = r ? lastEditableIn(r) : []; if (ev) startEdit(lr, ev); render(); }, !!r],
     [T('Nahrať hlasovku'), 'voice hlasova sprava audio nahravka mikrofon', 'Ctrl+Shift+A', toggleRecording, !!r],
     [T('Prehrať / pozastaviť hlasovku'), 'voice hlasovka prehrat pustit pozastavit audio play pause', 'Ctrl+Shift+Space', voiceShortcut, !!voice.event || !!r],
     [T('Odoslať neskôr'), 'send later sendlater naplanovat', 'Ctrl+Shift+Enter', () => openLater(r), !!r],
@@ -13776,6 +13978,7 @@ function render() {
   // Leaving the chat throws its unsent voice message away, as Messenger does.
   if (rec && rec.room !== S.selected) { rec.stop(); rec = null; }
   if (bubbleMemoRoom && bubbleMemoRoom !== S.selected) { bubbleMemo.clear(); bubbleMemoRoom = null; } // the chat was left
+  if (S.pick && S.pick.chat !== (S.selected ? selKey() : null)) S.pick = null; // the picked message stays in its chat
   // An edit left unsaved in another chat is dropped; what was written before it comes back.
   if (S.editing && S.editing.room !== S.selected) {
     const { room, draft } = S.editing;
@@ -13882,6 +14085,8 @@ function render() {
     chatAwayCheck(chatNew);
     const focus = S.focusEvent && S.focusScrolled !== S.focusEvent && chatNew.querySelector(`[data-event="${CSS.escape(S.focusEvent)}"]`);
     if (focus) { focus.scrollIntoView({ block: 'center' }); S.focusScrolled = S.focusEvent; }
+    if (S.pickScroll) pickScroll(chatNew);
+    railMark(chatNew);
     // Drawn messages too few to scroll up to the older ones: draw more of them.
     const open = S.rooms.get(S.selected);
     const t = open && timelineOf(open);

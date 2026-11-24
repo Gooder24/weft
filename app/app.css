@@ -1452,3 +1452,24 @@ button.prof-status:hover { background: var(--hover); }
 @keyframes pc-rise { from { transform: scaleY(0); } }
 @media (prefers-reduced-motion: reduce) { .pc-spark i { animation: none; } }
 .item.person .avwrap { cursor: pointer; }
+/* The keyboard's message (↑ from an empty message box): ringed, with its bar of reactions and actions shown. */
+.msgs:focus { outline: none; }
+.msg.picked .bubble { outline: var(--bw) solid var(--link); outline-offset: 2px; }
+.msg.picked .macts { visibility: visible; }
+.macts button:focus-visible { outline: var(--bw) solid var(--link); outline-offset: -2px; }
+/* The rail at the chat's right edge: a tick per day (longer) and per block after an hour of silence. */
+.detail.chat.railed .msgs { padding-right: 34px; }
+.crail { position: absolute; right: 12px; top: 96px; bottom: 96px; z-index: 2; display: flex; flex-direction: column; width: 18px; overflow-y: auto; scrollbar-width: none; }
+.crail::-webkit-scrollbar { display: none; }
+.rlist { margin: auto 0; display: flex; flex-direction: column; align-items: flex-end; }
+.rtick { flex: none; width: 18px; height: 7px; padding: 0; display: flex; align-items: center; justify-content: flex-end; border: 0; background: none; cursor: pointer; }
+.rtick::before { content: ''; width: 6px; height: 2px; border-radius: 1px; background: var(--line-strong); }
+.rtick.day::before { width: 12px; }
+.rtick.on::before { width: 16px; background: var(--link); }
+.rtick:hover::before { background: var(--text); }
+.rcard { position: fixed; left: -9999px; top: 0; z-index: 30; width: max-content; max-width: 260px; display: flex; flex-direction: column; gap: 2px; padding: 6px 10px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); color: var(--text); font: inherit; font-size: var(--fs); line-height: var(--lh); text-align: left; visibility: hidden; pointer-events: none; }
+.rcard b { color: var(--muted); font-weight: 600; }
+.rcard span { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.rtick:hover .rcard { visibility: visible; }
+/* A phone has no pointer to rest on the ticks: no rail. */
+@media (hover: none) { .crail { display: none; } .detail.chat.railed .msgs { padding-right: 10px; } }
