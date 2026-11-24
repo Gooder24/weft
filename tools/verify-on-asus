@@ -18,9 +18,11 @@ tar -c --exclude=node_modules --exclude='overenie/20*' . | ssh asus "mkdir ~/wef
 ssh asus "cat > ~/weft-verify/$run/.verifier-brief.md" < "$brief"
 echo "verify-on-asus: overovateľ beží na asuse v ~/weft-verify/$run (jednotka weft-verify-$run)" >&2
 # A user unit, not a child of this ssh: a dropped connection does not kill the verifier. Capped so it cannot hurt
-# the live Weft server on asus. verify.sh (skill overenie) starts Codex, then Claude when Codex leaves no verdict.
+# the live Weft server on asus. verify.sh (skill overenie) runs one verifier, the first of its chain to write a verdict;
+# OVERENIE_KTO picks others.
+kto=; [ -n "${OVERENIE_KTO:-}" ] && kto="-E 'OVERENIE_KTO=$OVERENIE_KTO'"
 ssh asus "cd ~/weft-verify/$run && systemd-run --user --quiet --wait --collect --same-dir --unit=weft-verify-$run \
-  -p MemoryMax=4G -E PATH=\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin ${OVERENIE_CLAUDE_FIRST:+-E OVERENIE_CLAUDE_FIRST=1} \
+  -p MemoryMax=4G -E PATH=\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin $kto \
   \$HOME/.work/karchi-skills/overenie/verify.sh .verifier-brief.md '$verdict'" || true
 ssh asus "cd ~/weft-verify/$run && tar -c --ignore-failed-read '$verdict' overenie/verifier-output.txt 2>/dev/null" | tar -x
 if [ -s "$verdict" ]; then echo "verify-on-asus: verdikt v $verdict" >&2
