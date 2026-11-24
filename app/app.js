@@ -2452,6 +2452,7 @@ function typingStop() {
 }
 document.addEventListener('visibilitychange', () => { if (document.hidden) typingStop(); });
 addEventListener('pagehide', typingStop);
+addEventListener('blur', (e) => { if (e.target === window) typingStop(); }); // another window took the keys, Weft may stay in sight
 
 /** Sends the attachments, each as its own message as Messenger does, then the text. `given`: a stashed text sent
  *  as it is („Poslať“ in the stash); the message box, its files and its reply stay. */
@@ -8215,7 +8216,7 @@ function chatCompose(r, m, t = null) {
       if (slashWord(e.target.value) !== was || word !== colonWas || who !== whoWas) render();
     },
     // A list opening under the box (@names, :emoji) blurs it for a moment; only a box that stays without the keys stops.
-    onblur: () => setTimeout(() => { if (typingOut && document.activeElement?.dataset?.root !== typingOut.room) typingStop(); }),
+    onblur: () => setTimeout(() => { if (typingOut && (!document.hasFocus() || document.activeElement?.dataset?.root !== typingOut.room)) typingStop(); }),
     onkeydown: (e) => {
       const draft = S.drafts.get(r.id) || '';
       const found = colonHits(r);
