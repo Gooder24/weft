@@ -923,6 +923,10 @@ class Bridge:
         The chats themselves stay on the other homeserver; Weft's copies are left by everyone, Karchi included."""
         if (denied := await self.guard(request)):
             return denied
+        async with self.login_lock:  # never in the middle of a sign-in, which may be putting keys back
+            return await self.sign_out(request)
+
+    async def sign_out(self, request: web.Request) -> web.Response:
         r = self.remote
         if not r or r.id != request.match_info["login"]:
             return self.error(404, "M_NOT_FOUND", "Taký účet tu nie je.")
