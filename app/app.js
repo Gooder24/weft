@@ -8671,28 +8671,6 @@ function serverSearch(o) {
   }, 250);
 }
 
-// Search filters, as the chips under Beeper's search field: [key, label, [[value, label], ...]].
-const SEARCH_FILTERS = [
-  ['app', T('Účty'), [['', T('Všetky')], ...APPS.map((a) => [a.id, a.name])]],
-  ['sender', T('Typ správy'), [['', T('Všetky')], ['me', T('Moje')], ['others', T('Od iných')]]],
-  ['since', T('Obdobie'), [['', T('Kedykoľvek')], ['1', T('Dnes')], ['7', T('Posledný týždeň')], ['30', T('Posledný mesiac')], ['365', T('Posledný rok')]]],
-  ['media', T('Médiá'), [['', T('Všetko')], ['image', T('Obrázky')], ['video', T('Videá')], ['file', T('Súbory')], ['link', T('Odkazy')]]],
-];
-const MEDIA_TYPES = { image: ['m.image'], video: ['m.video'], file: ['m.file', 'm.audio'] };
-
-/** Whether a message passes the message filters (who sent it, when, what kind). */
-function messageAllowed(f, ev, content) {
-  if (f.sender === 'me' && ev.sender !== S.userId) return false;
-  if (f.sender === 'others' && ev.sender === S.userId) return false;
-  if (f.since) {
-    const from = f.since === '1' ? new Date().setHours(0, 0, 0, 0) : Date.now() - Number(f.since) * 864e5;
-    if (ev.origin_server_ts < from) return false;
-  }
-  if (f.media === 'link') return /https?:\/\//.test(content?.body || '');
-  if (f.media) return MEDIA_TYPES[f.media].includes(content?.msgtype);
-  return true;
-}
-
 // Each chat's messages as search sees them (summary, its words, resolved content), built once per room model:
 // a keystroke then only compares words instead of summarising and splitting every message again.
 const searchRowsOf = new WeakMap();
@@ -8723,18 +8701,17 @@ let lastBase = null; // Ctrl+K opened again with nothing changed starts from wha
 /** What search needs of every chat, gathered once while Weft's data stays the same: typing redraws only the
  *  overlay, so each keystroke just compares words. `recent`: only what the empty field lists (recent chats). */
 function searchBase(o, recent = false) {
-  const app = o.f?.app || '';
   const sig = searchSig();
-  const fits = (b) => b?.app === app && (b.all || recent) && (o.redrawSoon && b === o.base || sameSig(b.sig, sig));
+  const fits = (b) => b && (b.all || recent) && (o.redrawSoon && b === o.base || sameSig(b.sig, sig));
   if (fits(o.base)) return o.base;
   if (fits(lastBase)) return (o.base = lastBase);
   const hidden = hiddenApps();
   // Each chat of a merged person on its own (its name and messages); `onePerPerson` shows the person as one row.
   // The empty field needs no old chat only the archive has, except one opened lately.
   const both = recent ? entryLists(false, new Set(opened())) : entryLists(true);
-  const list = both.flat.filter((e) => !hidden.has(e.app) && (!app || e.app === app));
+  const list = both.flat.filter((e) => !hidden.has(e.app));
   const merged = new Map(both.merged.map((e) => [e.merged.id, e]));
-  o.base = lastBase = { sig, all: !recent, app, list, merged, get items() { return (this.built ||= searchItems(list)); } };
+  o.base = lastBase = { sig, all: !recent, list, merged, get items() { return (this.built ||= searchItems(list)); } };
   return o.base;
 }
 /** Per chat: its names, a group's members and its messages for search (the costly part, built on first need). */
@@ -8777,18 +8754,16 @@ function warmSearch() {
 
 function searchResults(o) {
   const query = norm(o.query).trim();
-  const f = o.f || {};
-  const byMessage = !!(f.sender || f.since || f.media);
-  const base = searchBase(o, !query && !byMessage);
+  const base = searchBase(o, !query);
   const { list } = base;
-  if (!query && !byMessage) {
+  if (!query) {
     // The chats you had open last come first (even archived ones, Ctrl+Enter archives), the open one is skipped,
     // then the rest by their last message.
     const byKey = new Map(list.map((e) => [e.key, e]));
     const recent = opened().filter((k) => k !== S.selected).map((k) => byKey.get(k)).filter(Boolean);
     const rest = list.filter((e) => !e.archived && !e.room?.archiveOnly && e.key !== S.selected && !recent.includes(e));
     const open = (x) => x.e.merged?.rooms.includes(S.selected);
-    return [[T('Nedávne'), onePerPerson([...recent, ...rest].map((e) => ({ e })), f.app, base.merged).filter((x) => !open(x)).slice(0, o.more ? 20 : 5)]];
+    return [[T('Nedávne'), onePerPerson([...recent, ...rest].map((e) => ({ e })), base.merged).filter((x) => !open(x)).slice(0, o.more ? 20 : 5)]];
   }
   const tokens = query ? query.split(/\s+/) : [];
   // Chats whose name matches, then chats with someone whose name matches, then messages. Among the chats a person
@@ -8812,74 +8787,68 @@ function searchResults(o) {
   const add = (e, ev, text) => { if (!seen.has(ev.event_id)) { seen.add(ev.event_id); messages.push({ e, ev, text }); } };
   // Typing on narrows: what matches the longer query matched the shorter one too, so only the chats and messages
   // that matched it are looked at again. Not across three to four letters, where a typo starts to be forgiven.
-  const fKey = JSON.stringify(f);
   const last = o.narrow;
   // Every earlier word must hold a letter or digit: a lone "(" leaves names unchecked against a chat's person.
-  const narrower = last && last.base === o.base && last.fKey === fKey && tokens.length >= last.tokens.length
+  const narrower = last && last.base === o.base && tokens.length >= last.tokens.length
     && last.tokens.every((t, i) => /[\p{L}\p{N}]/u.test(t) && tokens[i].startsWith(t) && (t.length >= 4 || tokens[i].length < 4));
   const pool = [];
   for (const { it, rows: from } of narrower ? last.pool : base.items.map((it) => ({ it, rows: it.rows }))) {
     const { e, partner, name: title, partnerName, groupName, members } = it;
     let hit = false;
-    if (!byMessage) {
-      // An EduPage message is found by who wrote it, not by whom it went to ("→ Ján" matched every one).
-      // A one-to-one chat is its person, also when the chat is named otherwise (a Discord display name), and a merged
-      // person is found by the name the inbox shows; the closest of these names counts (a title matching only with a
-      // typo loses to the person's exact name).
-      const closeness = (n) => { const sc = nameScore(n, query); return sc < 0 ? 3 : sc; };
-      let name = title;
-      let best = matchName(title, tokens) ? closeness(title) : 4;
-      for (const alt of [partner && partnerName, groupName]) {
-        if (best === 0 || !alt || !wordTokens.length || !matchName(alt, wordTokens)) continue;
-        const c = closeness(alt);
-        if (c < best) { name = alt; best = c; }
-      }
-      if (best < 4) {
-        hit = true;
-        const score = best === 3 ? -1 : best;
-        const kind = e.kind === 'thread' ? 1 : partner ? 0 : 2;
-        // `person`: the name that matched when it is not the chat's title, shown under it.
-        chats.push({ e, rank: score < 0 ? 9 + kind : kind * 3 + score, person: name !== e.title && e.kind === 'room' ? name : '' });
-      }
-      if (e.kind === 'room' && !partner) {
-        const who = members.find((member) => matchName(member, wordTokens));
-        if (who) hit = true;
-        // A group already found by its name is not shown a second time.
-        if (who && chats.at(-1)?.e !== e) groups.push({ e, who });
-      }
+    // An EduPage message is found by who wrote it, not by whom it went to ("→ Ján" matched every one).
+    // A one-to-one chat is its person, also when the chat is named otherwise (a Discord display name), and a merged
+    // person is found by the name the inbox shows; the closest of these names counts (a title matching only with a
+    // typo loses to the person's exact name).
+    const closeness = (n) => { const sc = nameScore(n, query); return sc < 0 ? 3 : sc; };
+    let name = title;
+    let best = matchName(title, tokens) ? closeness(title) : 4;
+    for (const alt of [partner && partnerName, groupName]) {
+      if (best === 0 || !alt || !wordTokens.length || !matchName(alt, wordTokens)) continue;
+      const c = closeness(alt);
+      if (c < best) { name = alt; best = c; }
+    }
+    if (best < 4) {
+      hit = true;
+      const score = best === 3 ? -1 : best;
+      const kind = e.kind === 'thread' ? 1 : partner ? 0 : 2;
+      // `person`: the name that matched when it is not the chat's title, shown under it.
+      chats.push({ e, rank: score < 0 ? 9 + kind : kind * 3 + score, person: name !== e.title && e.kind === 'room' ? name : '' });
+    }
+    if (e.kind === 'room' && !partner) {
+      const who = members.find((member) => matchName(member, wordTokens));
+      if (who) hit = true;
+      // A group already found by its name is not shown a second time.
+      if (who && chats.at(-1)?.e !== e) groups.push({ e, who });
     }
     const rows = [];
     for (const row of from) {
-      if (!messageAllowed(f, row.ev, row.content)) continue;
       if (tokens.length && !tokens.every((tok) => row.words.some((w) => w.startsWith(tok)))) continue;
       rows.push(row);
       add(e, row.ev, row.text);
     }
     if (hit || rows.length) pool.push({ it, rows });
   }
-  o.narrow = { base: o.base, fKey, tokens, pool };
+  o.narrow = { base: o.base, tokens, pool };
   const byKey = new Map(list.map((e) => [e.key, e]));
   for (const ev of o.server || []) {
     if (isHeld(ev, cutOf(ev.room_id))) continue;
     const e = ev.room_id === S.roomId ? byKey.get(S.rootOf?.get(ev.event_id)) : byKey.get(ev.room_id);
-    if (!e || !ev.content?.body || !messageAllowed(f, ev, ev.content)) continue;
+    if (!e || !ev.content?.body) continue;
     add(e, ev, String(ev.content.body).replace(/^(> .*\n)+\n/, ''));
   }
   for (const ev of o.archive || []) {
     const e = byKey.get(ev.room_id);
-    if (e?.kind === 'room' && messageAllowed(f, ev, ev.content)) add(e, ev, ev.content.body);
+    if (e?.kind === 'room') add(e, ev, ev.content.body);
   }
   messages.sort((a, b) => b.ev.origin_server_ts - a.ev.origin_server_ts);
   chats.sort((a, b) => a.rank - b.rank); // stable: the newest first within a rank
-  const shown = messages.slice(0, byMessage ? 60 : 30);
+  const shown = messages.slice(0, 30);
   for (const x of shown) x.sender = x.e.kind === 'room' ? memberName(x.e.room, x.ev.sender) : nameOf(x.ev.sender);
-  return [[T('Chaty'), onePerPerson(chats, f.app, base.merged, query).slice(0, 30)], [T('V skupinách'), groups.slice(0, 30)], [T('Správy'), shown]];
+  return [[T('Chaty'), onePerPerson(chats, base.merged, query).slice(0, 30)], [T('V skupinách'), groups.slice(0, 30)], [T('Správy'), shown]];
 }
 
-/** Chat results with a merged person's chats as one row, the merged chat, where its first chat came. Not with a
- *  network filter (`app`): then each chat is that network's. */
-function onePerPerson(rows, app, merged, query = '') {
-  if (app) return rows;
+/** Chat results with a merged person's chats as one row, the merged chat, where its first chat came. */
+function onePerPerson(rows, merged, query = '') {
   const seen = new Set();
   return rows.flatMap((x) => {
     const g = x.e.kind === 'room' && groupOf(x.e.key);
@@ -8893,22 +8862,6 @@ function onePerPerson(rows, app, merged, query = '') {
     const matched = x.rank === undefined || nameScore(e.title, query) >= 0 ? '' : x.person || x.e.title;
     return [{ ...x, e, person: matched && norm(bareName(matched)) !== norm(bareName(e.title)) ? matched : '' }];
   });
-}
-
-/** The filter chips under the search field and, for the open one, its choices. */
-function searchFilters(o) {
-  const f = (o.f ||= {});
-  const chips = SEARCH_FILTERS.map(([key, label, options]) => {
-    const value = options.find(([v]) => v === (f[key] || ''));
-    return h('button', { class: `chip${f[key] ? ' on' : ''}${o.chip === key ? ' open' : ''}`, onclick: () => { o.chip = o.chip === key ? null : key; overlayRedraw(o); } },
-      f[key] ? value[1] : label, ' ▾');
-  });
-  const open = SEARCH_FILTERS.find(([key]) => key === o.chip);
-  return [h('div', { class: 'chips' }, chips),
-    open ? h('div', { class: 'chips choices' }, open[2].map(([v, label]) => h('button', {
-      class: `chip${(f[open[0]] || '') === v ? ' on' : ''}`,
-      onclick: () => { if (v) f[open[0]] = v; else delete f[open[0]]; o.chip = null; o.index = 0; overlayRedraw(o); },
-    }, label))) : null];
 }
 
 function openResult(x) {
@@ -9072,7 +9025,7 @@ function searchView(o) {
   const box = h('div', { class: 'results', onscroll: (e) => { const b = e.currentTarget; if (searchRest?.box === b && b.scrollTop + b.clientHeight > b.scrollHeight - 300) searchDrawRest(); } },
     body.length ? body : h('div', { class: 'empty' }, T('Nič sa nenašlo.')));
   searchRest = later.length ? { box, make: later } : null;
-  return [cmdInput(o, T('Hľadať chaty, ľudí a správy')), ...searchFilters(o), box];
+  return [cmdInput(o, T('Hľadať chaty, ľudí a správy')), box];
 }
 
 /** People Karchi can write to: everyone he has a one-to-one chat with, plus the bridges' contacts. */
@@ -11888,7 +11841,7 @@ function calFilesSettings() {
       h('div', { class: 'calshown', role: 'group', 'aria-label': T('Kalendáre do telefónu') }, (cal.doc?.calendars || []).map((c) => h('label', { class: 'bcheck' },
         h('input', { type: 'checkbox', checked: chosen.has(c.id), 'data-focus': `pcal:${c.id}`, onchange: calKeepFocus((e) => { const next = new Set(chosen); if (e.currentTarget.checked) next.add(c.id); else next.delete(c.id); calPhone.chosen = next; render(); }) }),
         c.name))),
-      h('label', { class: 'calfield' }, T('Obdobie '), h('select', { onchange: (e) => { calPhone.range = e.target.value; render(); } },
+      h('label', { class: 'calfield' }, T('Rozsah '), h('select', { onchange: (e) => { calPhone.range = e.target.value; render(); } },
         h('option', { value: 'upcoming', selected: calPhone.range === 'upcoming' }, T('Od dnes ďalej')), h('option', { value: 'all', selected: calPhone.range === 'all' }, T('Všetko')))),
       profile.alarm ? h('label', { class: 'calfield' }, T('Pripomienka, keď udalosť žiadnu nemá '), h('select', { onchange: (e) => { calPhone.alarm = e.target.value === '' ? '' : +e.target.value; render(); } },
         h('option', { value: '', selected: alarm === '' }, T('Žiadna')), CAL_ALARMS.map(([m, label]) => h('option', { value: String(m), selected: alarm === m }, label)))) : null,
@@ -13727,9 +13680,6 @@ function chatLookView(o) {
       else if (ev.key === 'Enter') { ev.preventDefault(); o.flat[o.index](); }
     } },
     choices.map(([label, v], i) => resultRow(o, null, i, [h('kbd', { class: 'num' }, String(i + 1)), v == null ? null : h('i', { class: `swatch look-c${v}` }),
-/** An app's name in Settings and Ctrl+N: a network still in beta says so after its name. */
-const appLabel = (app) => (app.beta ? `${app.name} (beta)` : app.name);
-
       h('div', { class: 'rmeta' }, h('b', {}, label)), h('time', {}, now === v ? T('vybraná') : '')]))),
   ];
 }
@@ -13776,6 +13726,9 @@ const linkStatus = (l) => {
   if (!state || state === 'CONNECTED' || state === 'CONNECTING') return '';
   return l.state.message ? ` · ${l.state.message}` : ` · ${state.toLowerCase()}`;
 };
+
+/** An app's name in Settings and Ctrl+N: a network still in beta says so after its name. */
+const appLabel = (app) => (app.beta ? `${app.name} (beta)` : app.name);
 
 /** An app with several logins (Gmail): a row per account, each with its own logout, and one more to add. */
 function multiLinkRows(app, logins) {

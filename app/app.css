@@ -605,10 +605,8 @@ kbd.num { margin: 0; min-width: 22px; text-align: center; padding: 2px 0; border
 .rsec .more { float: right; border: 0; background: none; color: var(--link); font: inherit; cursor: pointer; }
 .res.mini { padding: 5px 10px; }
 .chips { flex: none; display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 12px 4px; }
-.chips.choices { padding-top: 0; }
 .chip { border: var(--bw) solid var(--line); border-radius: var(--radius); padding: 4px 11px; background: var(--soft); color: var(--text); font: inherit; font-size: var(--fs); font-weight: 600; cursor: pointer; }
 .chip.on { border-color: var(--link); color: var(--link); }
-.chip.open { background: var(--soft); }
 /* Ctrl+N's way out to one network's search, and what that search says. */
 .icon.outside { background: var(--soft); }
 .icon.outside svg { color: var(--link); }
