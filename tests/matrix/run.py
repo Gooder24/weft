@@ -237,6 +237,15 @@ namespaces:
         status, _ = await prov.call("GET", "/whoami", base=P, token="not-karchis")
         ok("provisioning refuses anyone but Karchi", status == 401, status)
 
+        # Before sign-in: an encrypted room with old messages Weft's device will never have keys for.
+        friend, seen = await friend_client(base, remote.url, friend_id, friend_token, who["device_id"])
+        old_room = await friend.create_room(preset=RoomCreatePreset.PRIVATE, invitees=[UserID(remote_karchi)], initial_state=[
+            {"type": "m.room.encryption", "state_key": "", "content": {"algorithm": "m.megolm.v1.aes-sha2"}}])
+        await friend.state_store.set_encryption_info(old_room, {"algorithm": "m.megolm.v1.aes-sha2"})
+        await remote.call("POST", f"/rooms/{old_room}/join", {}, token=remote_token)
+        for i in range(4):
+            await friend.send_text(old_room, f"stara {i}")
+
         # Sign-in with the password form Weft shows.
         _, start = await prov.call("POST", "/login/start/password", {}, base=P)
         fields = [f["id"] for f in start.get("user_input", {}).get("fields", [])]
@@ -255,7 +264,6 @@ namespaces:
         weft_device = next((d["device_id"] for d in devices.get("devices", []) if d.get("display_name") == "Weft"), None)
         ok("a device called Weft exists there", bool(weft_device))
 
-        friend, seen = await friend_client(base, remote.url, friend_id, friend_token, who["device_id"])
         sync = LocalSync(local)
         await sync.step()
 
@@ -286,6 +294,7 @@ namespaces:
         # There → Weft, encrypted, as a reply to it.
         content = TextMessageEventContent(msgtype=MessageType.TEXT, body="Ahoj späť")
         content.set_reply(got)
+        sent_at = time.monotonic()
         friend_event = await friend.send_message(remote_room, content)
         enc = await remote.call("GET", f"/rooms/{remote_room}/event/{friend_event}", token=friend_token)
         ok("the friend's answer is encrypted on the wire", enc[1].get("type") == "m.room.encrypted", enc[1].get("type"))
@@ -294,6 +303,9 @@ namespaces:
             await sync.step()
             return sync.find(room, lambda e: e["type"] == "m.room.message" and e["content"].get("body", "").endswith("Ahoj späť"))
         reply = await until(answer)
+        took = time.monotonic() - sent_at
+        ok("…within seconds, old undecryptable messages elsewhere hold nothing back", bool(reply) and took < 8, round(took, 1))
+        ok("the old room from before sign-in is not in Weft", not any(e["content"].get("body", "").startswith("stara ") for e in sync.events))
         ghost = reply and reply["sender"]
         ok("the answer arrives in Weft from the friend's ghost", bool(reply) and ghost.startswith("@matrix_friend=3aremote.test:"), ghost)
         ok("…as a reply to Weft's message", bool(reply) and reply["content"].get("m.relates_to", {}).get("m.in_reply_to", {}).get("event_id") == sent["event_id"])

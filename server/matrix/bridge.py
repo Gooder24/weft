@@ -157,10 +157,12 @@ class Remote:
         self.state = "CONNECTING"
         self.message = ""
         self.sent: set[str] = set()  # transaction ids of what the bridge sent, so their echoes are not copied back
-        # Events in the order the server gave them: mautrix runs each handler (and each decryption) as its own task,
-        # which let quick messages overtake each other and a reaction come before its message.
-        self.queue: asyncio.Queue = asyncio.Queue()
-        self.pump_task: asyncio.Task | None = None
+        # Each room's events in the order the server gave them: mautrix runs each handler (and each decryption) as
+        # its own task, which let quick messages overtake each other and a reaction come before its message. One queue
+        # per room, so a key still on its way holds back only that room.
+        self.queues: dict[str, asyncio.Queue] = {}
+        self.pumps: dict[str, asyncio.Task] = {}
+        self.ready = asyncio.Event()  # set once encryption is on: nothing is sent there before
 
     async def start(self) -> None:
         await self.db.start()
@@ -176,18 +178,33 @@ class Remote:
             await machine.share_keys()
         for kind in (*MESSAGE_TYPES, EventType.ROOM_ENCRYPTED, EventType.RECEIPT, EventType.TYPING, EventType.ROOM_REDACTION):
             self.client.add_event_handler(kind, self.enqueue)
-        self.pump_task = asyncio.create_task(self.pump())
         self.client.add_event_handler(InternalEventType.SYNC_SUCCESSFUL, self.on_sync_ok)
         self.client.add_event_handler(InternalEventType.SYNC_ERRORED, self.on_sync_error)
         self.client.start({"room": {"timeline": {"limit": 20}, "state": {"lazy_load_members": True}}})
+        self.ready.set()
 
     async def enqueue(self, evt) -> None:
-        self.queue.put_nowait(evt)  # no await before this: tasks start in the order they were made
+        # No await before this: tasks start in the order they were made.
+        room = str(getattr(evt, "room_id", "") or "")
+        if room not in self.queues:
+            self.queues[room] = asyncio.Queue()
+            self.pumps[room] = asyncio.create_task(self.pump(self.queues[room]))
+        self.queues[room].put_nowait(evt)
 
-    async def pump(self) -> None:
+    def wanted(self, evt) -> bool:
+        """Old events (from before sign-in) and ones already copied are dropped before any key is waited for."""
+        stamp = getattr(evt, "timestamp", None)
+        if stamp is not None and stamp < self.since:
+            return False
+        event_id = getattr(evt, "event_id", None)
+        return not (event_id and self.bridge.store.one("SELECT 1 FROM message WHERE remote = ?", event_id))
+
+    async def pump(self, queue: asyncio.Queue) -> None:
         while True:
-            evt = await self.queue.get()
+            evt = await queue.get()
             try:
+                if not self.wanted(evt):
+                    continue
                 if evt.type == EventType.ROOM_ENCRYPTED:
                     evt = await self.decrypt(evt)
                     if not evt:
@@ -230,9 +247,10 @@ class Remote:
             self.state, self.message = "TRANSIENT_DISCONNECT", str(err or "")[:200]
 
     async def stop(self) -> None:
+        self.ready.clear()
         self.client.stop()
-        if self.pump_task:
-            self.pump_task.cancel()
+        for task in self.pumps.values():
+            task.cancel()
         await asyncio.sleep(0)
         try:
             await self.db.stop()
@@ -337,12 +355,13 @@ class Bridge:
         return self.az.intent.user(ADMIN, PUPPET_TOKEN, as_token=True) if PUPPET_TOKEN else None
 
     async def start(self) -> None:
+        row = self.store.one("SELECT * FROM login")
+        if row:
+            self.remote = Remote(self, row)  # before Weft's events can come in, so none finds no account
         await self.az.start(host="127.0.0.1", port=PORT)
         await self.az.intent.ensure_registered()
         await self.az.intent.set_displayname("Matrix")
-        row = self.store.one("SELECT * FROM login")
         if row:
-            self.remote = Remote(self, row)
             self.starting = asyncio.create_task(self.keep_starting(row))
 
     async def keep_starting(self, row: tuple) -> None:
@@ -506,15 +525,36 @@ class Bridge:
         async with self.local_locks.setdefault(evt.room_id, asyncio.Lock()):
             await self.handle_local_event(evt)
 
+    async def ready_remote(self, wait: float) -> Remote | None:
+        """The account once its encryption is on (a start or a retry may be under way), else None after `wait` s."""
+        end = time.monotonic() + wait
+        while (r := self.remote) and not r.ready.is_set() and time.monotonic() < end:
+            try:
+                await asyncio.wait_for(r.ready.wait(), 2)
+            except asyncio.TimeoutError:
+                pass
+        r = self.remote
+        return r if r and r.ready.is_set() else None
+
     async def handle_local_event(self, evt) -> None:
-        remote = self.remote
-        if not remote:
-            return
         room = evt.room_id
         row = self.store.one("SELECT remote FROM portal WHERE local = ?", room)
         if not row:
             return
         target = RoomID(row[0])
+        if evt.type in (EventType.RECEIPT, EventType.TYPING):
+            remote = self.remote
+            if not remote or not remote.ready.is_set():
+                return  # reading and typing while it starts are not worth waiting for
+        else:
+            if evt.sender != ADMIN or self.store.one("SELECT 1 FROM message WHERE local = ?", evt.event_id):
+                return
+            if FROM_THERE in (evt.content.serialize() if hasattr(evt.content, "serialize") else evt.content):
+                return  # the double puppet's copy of what he wrote there; it may arrive before its id is stored
+            remote = await self.ready_remote(90)
+            if not remote:
+                await self.az.intent.send_notice(RoomID(room), "Neodoslané na Matrix: účet sa ešte nepripojil.")
+                return
         if evt.type == EventType.RECEIPT:
             for local_event, kinds in evt.content.items():
                 if ADMIN in (kinds.get(ReceiptType.READ) or {}):
@@ -528,10 +568,6 @@ class Bridge:
                 self.admin_typing[room] = mine
                 await remote.client.set_typing(target, timeout=30000 if mine else 0)
             return
-        if evt.sender != ADMIN or self.store.one("SELECT 1 FROM message WHERE local = ?", evt.event_id):
-            return
-        if FROM_THERE in (evt.content.serialize() if hasattr(evt.content, "serialize") else evt.content):
-            return  # the double puppet's copy of what he wrote there; it may arrive before its id is stored
         if evt.type == EventType.ROOM_REDACTION:
             mapped = self.store.one("SELECT remote FROM message WHERE local = ?", evt.redacts)
             if mapped:
@@ -550,6 +586,8 @@ class Bridge:
             if any(k in content for k in MEDIA_KEYS):
                 await self.copy_media(content, self.az.intent, remote.client, outgoing=True,
                                       encrypt=bool(await remote.state_store.is_encrypted(target)))
+            if remote.client.crypto is None and await remote.state_store.is_encrypted(target):
+                raise ValueError("šifrovanie ešte nie je zapnuté")  # never plain text into an encrypted room
             txn = f"weft{secrets.token_hex(8)}"
             remote.sent.add(txn)
             sent = await remote.client.send_message_event(target, evt.type, content, txn_id=txn)
@@ -812,7 +850,7 @@ class Bridge:
         if not r:
             return self.error(400, "SK.KARCHI.NOT_LOGGED_IN", "Najprv sa prihlás na Matrix.")
         target = str((await request.json()).get("room") or "").strip()
-        if not re.match(r"^[#!][^:\s]+:[^\s]+$", target):
+        if not re.match(r"^#[^:\s]+:[^\s]+$|^![^\s]+$", target):  # room ids of version 12 have no server part
             return self.error(400, "SK.KARCHI.INVALID_INPUT", "Adresa miestnosti vyzerá ako #nazov:server.")
         try:
             room = await r.client.join_room(target, max_retries=0)
