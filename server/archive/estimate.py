@@ -151,29 +151,35 @@ def from_archive(db):
 
 
 def calibrate(db):
-    """PROFILES and OVERHEAD from the local archive, for networks with enough messages to say something."""
-    stats = collections.defaultdict(collections.Counter)
-    for it in from_archive(db):
-        s = stats[it.network]
-        s["n"] += 1
-        s["body"] += it.body
-        s["raw"] += it.raw
-        if it.media:
-            s["with_media"] += 1
-            s["files"] += len(it.media)
-            sized = [b for b in it.media if b is not None]
-            s["sized"] += len(sized)
-            s["bytes"] += sum(sized)
-    n = sum(s["n"] for s in stats.values())
-    text = sum(s["body"] + s["raw"] for s in stats.values())
+    """PROFILES and OVERHEAD from the local archive, measured as the built-in ones were: raw data over the messages
+    that carry it, and every file row with its size, also the ones the archive fetches only on request (Discord)."""
+    with closing(ro(db)) as c:
+        rows = {net: [n, body] for net, n, body in c.execute(
+            "SELECT coalesce(c.network, ''), count(*), sum(length(CAST(m.body AS BLOB))) FROM messages m JOIN chats c ON c.id = m.chat GROUP BY 1")}
+        raw = collections.Counter()
+        raw_n = collections.Counter()
+        for table, col in (("history_data", "raw"), ("messenger_message_data", "data")):
+            if not has_table(c, table): continue
+            for net, n, size in c.execute(f"SELECT coalesce(c.network, ''), count(*), sum(length(CAST(t.{col} AS BLOB))) FROM {table} t "
+                                          "JOIN messages m ON m.id = t.message JOIN chats c ON c.id = m.chat GROUP BY 1"):
+                raw[net] += size or 0
+                raw_n[net] += n
+        media = {}
+        if has_table(c, "message_media"):
+            media = {net: (msgs, files, sized, size) for net, msgs, files, sized, size in c.execute(
+                "SELECT coalesce(c.network, ''), count(DISTINCT mm.message), count(*), count(mm.bytes), sum(mm.bytes) FROM message_media mm "
+                "JOIN messages m ON m.id = mm.message JOIN chats c ON c.id = m.chat GROUP BY 1")}
+    n = sum(v[0] for v in rows.values())
+    text = sum((v[1] or 0) for v in rows.values()) + sum(raw.values())
+    # The main file only: the write-ahead log holds pages a checkpoint folds back into it.
     overhead = max(200, round((os.path.getsize(db) - text) / n)) if n else OVERHEAD
     profiles = dict(PROFILES)
-    for net, s in stats.items():
-        if s["n"] < 200: continue
+    for net, (count, body) in rows.items():
+        if count < 200: continue
         base = profile(net, PROFILES)
-        profiles[net] = Profile(s["body"] / s["n"], s["raw"] / s["n"], s["with_media"] / s["n"],
-                                s["files"] / s["with_media"] if s["with_media"] else base.files,
-                                s["bytes"] / s["sized"] if s["sized"] >= 20 else base.file_bytes)
+        msgs, files, sized, mbytes = media.get(net, (0, 0, 0, 0))
+        profiles[net] = Profile((body or 0) / count, raw[net] / raw_n[net] if raw_n[net] else base.raw, msgs / count,
+                                files / msgs if msgs else base.files, (mbytes or 0) / sized if sized >= 20 else base.file_bytes)
     return profiles, overhead
 
 
@@ -237,7 +243,7 @@ def from_messenger(zips):
         for m in t["data"]["messages"]:
             # As import_messenger.py keeps them: a removed message stays as a line, a file the export lacks has none.
             names = [import_messenger.media_name(a["uri"]) for a in m.get("media", [])]
-            files = [lookup(sizes[t["zip"]], n) for n in names if n]
+            files = [size for size in (lookup(sizes[t["zip"]], n) for n in names if n) if size is not None]
             yield Item("messenger", m["timestamp"], len(import_messenger.body(m).encode()), len(json.dumps(m, ensure_ascii=False).encode()), files)
 
 
@@ -250,22 +256,28 @@ def from_instagram(zips):
     merged = (dict(collections.ChainMap(*[s[0] for s in sizes.values()])), dict(collections.ChainMap(*[s[1] for s in sizes.values()])))
     for t in archive.ig_threads(zips).values():
         for ts, _sender, body, files in t["messages"].values():
-            yield Item("instagram", ts, len(body.encode()), 0, [lookup(merged, uri) for _kind, uri in files])
+            yield Item("instagram", ts, len(body.encode()), 0, [size for size in (lookup(merged, uri) for _kind, uri in files) if size is not None])
+
+
+# Beeper's bridge protocol ids and the rows that are no message, as import_beeper.py reads them.
+BEEPER_NETWORKS = {"facebookgo": "messenger", "facebook": "messenger", "instagramgo": "instagram", "instagram": "instagram",
+                   "whatsapp": "whatsapp", "discordgo": "discord", "discord": "discord"}
+BEEPER_SKIP = {"REACTION", "MEMBERSHIP", "HIDDEN"}
 
 
 def from_beeper(folder):
     """Beeper Desktop's index.db: each message of every chat, with the sizes of the files Beeper cached."""
-    sys.path.insert(0, str(HERE))
-    from import_beeper import network_of, SKIP
     folder = Path(folder)
     cached = folder / "media" / "local.beeper.com"
     with closing(ro(folder / "index.db")) as b:
         b.row_factory = sqlite3.Row
         nets = {}
         for t in b.execute("SELECT threadID, thread FROM threads"):
-            nets[t["threadID"]] = network_of(((json.loads(t["thread"]).get("extra") or {}).get("bridge")))[0]
+            bridge = (json.loads(t["thread"]).get("extra") or {}).get("bridge") or {}
+            proto = (bridge.get("protocol") or {}).get("id") or ""
+            nets[t["threadID"]] = BEEPER_NETWORKS.get(proto, proto or "beeper")
         for m in b.execute("SELECT roomID, type, timestamp, message FROM mx_room_messages WHERE isDeleted = 0"):
-            if m["type"] in SKIP or not m["timestamp"] or m["roomID"] not in nets: continue
+            if m["type"] in BEEPER_SKIP or not m["timestamp"] or m["roomID"] not in nets: continue
             msg = json.loads(m["message"])
             files = []
             for a in msg.get("attachments") or []:
@@ -288,7 +300,8 @@ def on_disk(db):
     share them, and the homeserver's own media (media/matrix) belong to no archived message."""
     def tree(path):
         return sum(f.stat().st_size for f in path.rglob("*") if f.is_file()) if path.is_dir() else 0
-    return {"archive_db": db.stat().st_size, "media": tree(db.parent / "media"), "thumbs": tree(db.parent / "thumbs")}
+    wal = Path(f"{db}-wal")
+    return {"archive_db": db.stat().st_size + (wal.stat().st_size if wal.exists() else 0), "media": tree(db.parent / "media"), "thumbs": tree(db.parent / "thumbs")}
 
 
 # ---------------------------------------------------------------- output
@@ -321,6 +334,14 @@ def main():
     parser.add_argument("--calibrate", action="store_true", help="per-message sizes from --db instead of the built-in ones")
     parser.add_argument("--text", action="store_true")
     args = parser.parse_args()
+    if args.source in ("messenger", "instagram") and not args.paths: parser.error(f"{args.source} takes one or more ZIP files")
+    if not Path(args.db).is_file() and (args.source == "archive" or args.calibrate): parser.error(f"no archive at {args.db}")
+    try: run(parser, args)
+    except (OSError, ValueError, zipfile.BadZipFile, sqlite3.Error, imaplib.IMAP4.error, RuntimeError) as err:
+        raise SystemExit(f"estimate.py: {type(err).__name__}: {err}")
+
+
+def run(parser, args):
     profiles, overhead = calibrate(args.db) if args.calibrate else (PROFILES, OVERHEAD)
     conn = None
     try:

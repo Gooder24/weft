@@ -102,7 +102,7 @@ class Estimate(unittest.TestCase):
         thread = {"threadName": "Skupina", "participants": ["A", "B"], "messages": [
             {"senderName": "A", "timestamp": NOW - DAY, "text": "ahoj", "media": [{"uri": "media/p.jpg"}]},
             {"senderName": "B", "timestamp": NOW - 200 * DAY, "text": "", "isUnsent": True, "media": []},
-            {"senderName": "B", "timestamp": NOW - 2 * DAY, "text": "x", "media": [{"uri": "Failed to download media"}]}]}
+            {"senderName": "B", "timestamp": NOW - 2 * DAY, "text": "x", "media": [{"uri": "Failed to download media"}, {"uri": "media/gone.jpg"}]}]}
         with zipfile.ZipFile(z, "w") as f:
             f.writestr("1.json", json.dumps(thread))
             f.writestr("media/p.jpg", b"\0" * 12_345)
@@ -113,6 +113,16 @@ class Estimate(unittest.TestCase):
         self.assertEqual(r["30"]["total"]["media_bytes"], 12_345)
         self.assertEqual(r["30"]["total"]["media_exact"], 1.0)
         self.assertEqual(r["all"]["total"]["messages"], 3)
+
+    def test_bad_input_is_one_line(self):
+        import subprocess
+        bad = self.tmp / "bad.zip"
+        bad.write_text("not a zip")
+        script = Path(estimate.__file__)
+        for args in (["messenger", str(bad)], ["messenger"], ["archive", "--db", str(self.tmp / "none.db")]):
+            r = subprocess.run([sys.executable, str(script), *args], capture_output=True, text=True)
+            self.assertNotEqual(r.returncode, 0, args)
+            self.assertNotIn("Traceback", r.stderr, args)
 
     def test_instagram_export_sizes_from_zip(self):
         z = self.tmp / "ig.zip"
@@ -149,14 +159,10 @@ class Estimate(unittest.TestCase):
         self.assertEqual((r["messages"], r["media_files"], r["media_bytes"]), (300, 30, 30 * 50_000))
         profiles, overhead = estimate.calibrate(db)
         d = profiles["discord"]
-        self.assertEqual((d.body, d.raw, d.media_share, d.file_bytes), (20, 100, 0.1, 50_000))
+        self.assertEqual((d.body, d.raw, d.media_share, d.file_bytes), (20, 100, 0.2, 50_000))
         self.assertGreater(overhead, 0)
 
     def test_beeper(self):
-        try:
-            import import_beeper  # noqa: F401  (the Beeper import; the estimate reads its network names)
-        except ImportError:
-            self.skipTest("server/archive/import_beeper.py is not here")
         folder = self.tmp / "BeeperTexts"
         (folder / "media/local.beeper.com").mkdir(parents=True)
         (folder / "media/local.beeper.com/abc").write_bytes(b"\0" * 777)

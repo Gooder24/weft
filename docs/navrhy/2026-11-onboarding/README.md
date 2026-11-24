@@ -9,7 +9,7 @@ Postavený je z neho len odhad miesta (`server/archive/estimate.py`), ostatné �
 ## Krátko
 
 - **Koľko histórie príde, dnes nikto nevyberá.** Každá sieť má svoje pevné číslo z konfigurácie mostu: Messenger,
-  Instagram a WhatsApp 50 správ na chat, Discord 50 v DM a nič v kanáloch, Teams 20 na chat, EduPage celý školský
+  Instagram a WhatsApp 50 správ na chat, Discord 50 v DM a nič v kanáloch, Teams 20 na chat (len chaty zo 14 dní), EduPage celý školský
   rok. Gmail a Outlook naopak hneď po pripojení začnú sťahovať **celú** poštu, bez otázky a bez zastavenia.
 - **Staršie správy** z Messengera a Instagramu dotiahne most po stránkach, keď človek v chate posúva nahor. WhatsApp,
   Discord a exporty Mety idú len ručným skriptom na serveri a k tomu treba Karchiho áno.
@@ -19,7 +19,7 @@ Postavený je z neho len odhad miesta (`server/archive/estimate.py`), ostatné �
   tomto počítači“ alebo „stará história len v počítači“ a obe majú háčiky (nižšie).
 - **Odhad miesta je postavený:** `estimate.py` vopred povie počet správ a miesto za 30 dní, 3 mesiace, rok a celú
   históriu. Údaje berie z veľkostí, ktoré zdroj prezradí sám, bez sťahovania. Na skutočných exportoch odhadol
-  Instagram na 1,8 GB a Messenger na 1,5 GB. Po importe tie isté exporty zaberajú 1,6 a 1,7 GB.
+  Instagram na 1,8 GB a Messenger na 1,5 GB. Po importe tie isté exporty zaberajú 1,6 a 1,8 GB.
 - **Najväčšia prekážka nie je história.** Nový človek bez EduPage dnes Weft vôbec nepoužije: po prihlásení ho Weft
   pustí len na obrazovku „Pripoj EduPage“ a tá sa nedá preskočiť.
 
@@ -34,7 +34,7 @@ Postavený je z neho len odhad miesta (`server/archive/estimate.py`), ostatné �
 | **EduPage** | prihlásenie menom a heslom (jediné povinné, pri prvom spustení) | celý školský rok od 1. 9. (`school_year_start`), staršie ako 7 dní ako prečítané; potom 7 dní dozadu pri každom čítaní | nie, netreba: je to pár MB | – | jedna miestnosť na homeserveri, archív, zariadenie celé | **dá sa preskočiť?** Nie, a to blokuje každého, kto EduPage nemá |
 | **Gmail** | Google (vlastný Desktop klient v `gmail/state/google-client.json`) alebo heslo aplikácie | **celá pošta** (All Mail), od najnovšej, 100 mailov na prechod a prechod každých 5 s, prílohy po 20 (`import_mail.py`); nové každých 5 min | nie | – (všetko príde samo) | len archív na serveri (`archive:gmail:…`), prílohy v `media/gmail/` | rozsah, pauza a stav („koľko ešte“); Google klient musí mať každý server svoj |
 | **Outlook** | stránka Microsoftu (klient Graph CLI, bez vlastnej appky) | **celá pošta**, od najnovšej, 100 na stranu (`import_batch`) | nie | – | len archív | ako Gmail |
-| **Teams** | ako Outlook | 20 posledných správ v každom chate (`FIRST_MESSAGES`), potom nové | nie | nič; Graph by dal aj staršie | homeserver (appservice), archív, zariadenie 80 | rozsah; oficiálne API, takže tu sa história dá bez rizika banu |
+| **Teams** | ako Outlook | chaty aktívne posledných 14 dní (`FIRST_DAYS`), v každom 20 posledných správ (`FIRST_MESSAGES`), potom nové | nie | nič; Graph by dal aj staršie | homeserver (appservice), archív, zariadenie 80 | rozsah; oficiálne API, takže tu sa história dá bez rizika banu |
 
 Spoločné pre všetky: archív raz za hodinu skopíruje všetko z homeservera (`archive.py mirror`), takže archív má
 nadmnožinu. Homeserver drží všetko, čo mosty kedy preniesli, vrátane médií, a mazať nevie (Tuwunel, na asuse 3,4 GB).
@@ -101,7 +101,7 @@ python3 server/archive/estimate.py beeper ~/imports/BeeperTexts --text
 | `archive` | dnešný archív; k tomu skutočné miesto na disku na porovnanie | presne (správy), médiá bez zdvojených súborov o pár percent viac |
 
 Čo zdroj nepovie, doplní z veľkostí nameraných v skutočnom archíve (asi 260 tisíc správ, tabuľka `PROFILES`):
-správa zaberie v databáze asi 0,8 kB k svojmu textu. S fotkou alebo súborom je 4 až 16 % správ podľa siete
+správa zaberie v databáze asi 0,8 kB k svojmu textu. Súbor, ktorý v exporte chýba, sa nepočíta, ako ho nenaimportuje ani importér. S fotkou alebo súborom je 4 až 16 % správ podľa siete
 a súbor má 0,4 MB (Instagram) až 1,8 MB (WhatsApp). `--calibrate` tieto čísla prepočíta z archívu daného servera.
 Výsledok hovorí, koľká časť médií je presná (`media_exact`), a `--text` dopíše „prílohy odhadom“.
 
@@ -122,7 +122,7 @@ Na čo ešte nie je zdroj:
 
 **Pre Beeper import:** `import_beeper.py --dry-run` môže na správy, ktoré ide pridať, zavolať `estimate.summarize()`
 (zoznam `estimate.Item`). Dostane tak tie isté obdobia a tú istú vetu o mieste ako pri novom účte. `estimate.py beeper` už
-číta celý priečinok sám a mená sietí berie z `import_beeper.network_of`.
+číta celý priečinok sám, s rovnakými menami sietí ako importér, a nepotrebuje ho.
 
 ## Návrh: pripojenie s otázkou „koľko histórie“
 
