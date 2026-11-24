@@ -15,8 +15,8 @@ git clone https://github.com/Gooder24/weft && cd weft && tools/demo
 
 Open the address it prints (http://127.0.0.1:8790/demo). `tools/demo` serves the real client from `app/` next to
 a pretend homeserver, bridges, calendar and Feed in one process on 127.0.0.1; what you send stays in its memory and
-the people answer with canned lines. Try Ctrl+K (search), Ctrl+N (a new chat), Ctrl+Shift+F (Feed) and Ctrl+,
-(Settings).
+the people answer with canned lines. Try Ctrl+K (search), Ctrl+N (a new chat; in a browser tab, where Ctrl+N opens a window, Ctrl+Shift+K), Ctrl+Shift+F
+(Feed) and Ctrl+, (Settings).
 
 ## What is different
 
@@ -47,7 +47,7 @@ the people answer with canned lines. Try Ctrl+K (search), Ctrl+N (a new chat), C
 | Teams | own bridge through Microsoft Graph, `server/microsoft/` | daily use |
 | Outlook | own bridge through Microsoft Graph, `server/microsoft/` | daily use |
 | Gmail | own bridge over IMAP and SMTP, `server/gmail/` | beta |
-| Matrix | own bridge with end-to-end encryption, `server/matrix/` | beta |
+| Matrix | own bridge, encrypted between the other homeserver and your Weft server, `server/matrix/` | beta |
 
 ## How it is built and checked
 
@@ -81,8 +81,9 @@ npm ci --prefix tests/accessibility && npm test --prefix tests/accessibility
 - `python3 .github/scripts/check-docs.py` checks the Markdown files for heading order, image alt text and link text.
 - `node tests/demo/demo.cjs` starts `tools/demo` and checks the inbox, a chat, search, Settings, Ctrl+N and Feed,
   and that no request leaves 127.0.0.1.
-- `.github/workflows/accessibility.yml` runs these on every pull request.
-- `python3 tests/matrix/run.py` checks the Matrix bridge against two throwaway homeservers.
+- `.github/workflows/accessibility.yml` runs these on every pull request and push to `main`.
+- `python3 tests/matrix/run.py` checks the Matrix bridge against two throwaway homeservers; it needs Tuwunel, so it
+  runs by hand, not in CI.
 
 Known problems are recorded in `.github/a11y-baseline.json`, `tests/accessibility/axe-baseline.json` and the `KNOWN`
 list in `tests/accessibility/keyboard.cjs`. A new problem fails the checks.
