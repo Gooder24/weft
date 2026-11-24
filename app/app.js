@@ -2420,10 +2420,39 @@ async function heldReply(r, room, id) {
   return !readable(r, ev) ? unreadNote() : '';
 }
 
+// Karchi's typing goes out like Beeper's: the bridges show „píše…“ on Messenger, Instagram, WhatsApp and Discord
+// (Teams' API and EduPage have none). It starts with the first letter, is repeated while he keeps typing and stops
+// when the box empties, the message goes, or the box loses the keys (another chat, another window). Settings →
+// Správy turns it off: account data sk.karchi.typing { send: false }.
+const TYPING = 'sk.karchi.typing';
+const TYPING_APPS = new Set(['messenger', 'instagram', 'whatsapp', 'discord']);
+const typingOn = () => S.account[TYPING]?.send !== false;
+let typingOut = null; // { room, at }: the chat the homeserver last heard Karchi typing in, and when
+function typingSay(room, typing) {
+  call('PUT', `/rooms/${q(room)}/typing/${q(S.userId)}`, typing ? { typing: true, timeout: 20000 } : { typing: false }).catch(() => {});
+}
+/** The message box of `r` now holds `text`. A command (/gif…) or an edit of an old message is no typing. */
+function typingNote(r, text) {
+  const say = typingOn() && !S.offline && !document.hidden && TYPING_APPS.has(r.app) && !r.archiveOnly
+    && !!text.trim() && !text.trimStart().startsWith('/') && S.editing?.room !== r.id;
+  if (!say || typingOut?.room !== r.id) typingStop();
+  if (!say || (typingOut && Date.now() - typingOut.at < 10000)) return;
+  typingOut = { room: r.id, at: Date.now() };
+  typingSay(r.id, true);
+}
+function typingStop() {
+  if (!typingOut) return;
+  const { room } = typingOut;
+  typingOut = null;
+  typingSay(room, false);
+}
+document.addEventListener('visibilitychange', () => { if (document.hidden) typingStop(); });
+
 /** Sends the attachments, each as its own message as Messenger does, then the text. `given`: a stashed text sent
  *  as it is („Poslať“ in the stash); the message box, its files and its reply stay. */
 async function sendChat(r, given = null) {
   if (r?.archiveOnly) return;
+  if (!given) typingStop();
   const draft = given ? given.text : S.drafts.get(r.id) || '';
   const text = draft.trim();
   const files = given ? [] : S.attach.get(r.id) || [];
@@ -8166,6 +8195,7 @@ function chatCompose(r, m, t = null) {
     oninput: (e) => {
       const was = slashWord(S.drafts.get(r.id) || '');
       setDraft(r.id, e.target.value);
+      typingNote(r, e.target.value);
       renderSoon();
       if (!e.target.value.trim() && !(S.attach.get(r.id) || []).length) { boxFrom.delete(r.id); doneBoxStash(r.id); }
       if (!e.target.value.trim()) picked.delete(r.id); // an emptied box forgets who its names were
@@ -8179,6 +8209,7 @@ function chatCompose(r, m, t = null) {
       // The lists of commands, emoji and people follow what is typed.
       if (slashWord(e.target.value) !== was || word !== colonWas || who !== whoWas) render();
     },
+    onblur: () => typingStop(),
     onkeydown: (e) => {
       const draft = S.drafts.get(r.id) || '';
       const found = colonHits(r);
@@ -13183,6 +13214,10 @@ function batchSettings() {
     h('label', { class: 'bcheck' },
       h('input', { type: 'checkbox', checked: !!b.edupage, onchange: (e) => saveBatches({ edupage: e.target.checked }) }),
       h('span', {}, T('Aj EduPage počká'), h('small', {}, T('Inak ju vidíš hneď, aj na hodine.')))),
+    h('h3', {}, T('Písanie')),
+    h('label', { class: 'bcheck' },
+      h('input', { type: 'checkbox', checked: typingOn(), onchange: (e) => { if (!e.target.checked) typingStop(); putAccount(TYPING, { send: e.target.checked }).catch(() => alert(T('Nastavenie sa neuložilo.'))); render(); } }),
+      h('span', {}, T('Ukázať ľuďom, že píšem'), h('small', {}, T('Messenger, Instagram, WhatsApp a Discord uvidia „píše…“, kým píšeš správu.')))),
     workSettings(),
     ringSettings(),
     lookSettings(),
@@ -13877,6 +13912,8 @@ function render() {
   }
   if (calendarFocus && !S.panel && !S.overlay && !cal.edit && !cal.detail && !cal.search) root.querySelector('.home-calendar')?.focus({ preventScroll: true });
   else if (inCalendar && !S.panel && !S.overlay && (!document.activeElement || document.activeElement === document.body)) root.querySelector('.home-calendar')?.focus({ preventScroll: true });
+  // The box Karchi typed in is gone or no longer has the keys (another chat, the network switch): he stopped typing there.
+  if (typingOut && document.activeElement?.dataset?.root !== typingOut.room) typingStop();
   if (S.view === 'main') { markRead(); if (!S.homeReady) { S.homeReady = true; cal.view = calDefault(); queueMicrotask(() => { loadCalendar(); if (S.surface === 'feed') feed.enter(); else feed.load(); }); } }
 }
 
