@@ -107,16 +107,28 @@ def remote_of(ghost: str) -> str | None:
 class Store:
     """The bridge's own small database: the login, which remote room is which Weft room, and message ids."""
 
+    # Each step brings a database from the version before it to its own; PRAGMA user_version says which ran.
+    # A new column or table is a new step at the end, never an edit of an old one. Rows are read by column name.
+    MIGRATIONS = [
+        """
+        CREATE TABLE IF NOT EXISTS login (id TEXT PRIMARY KEY, homeserver TEXT, user_id TEXT, device_id TEXT,
+            token TEXT, own_device INTEGER, pickle_key TEXT, since INTEGER, next_batch TEXT, name TEXT);
+        CREATE TABLE IF NOT EXISTS portal (remote TEXT PRIMARY KEY, local TEXT UNIQUE, dm INTEGER, name TEXT);
+        CREATE TABLE IF NOT EXISTS message (remote TEXT PRIMARY KEY, local TEXT UNIQUE, room TEXT);
+        CREATE TABLE IF NOT EXISTS ghost (mxid TEXT PRIMARY KEY, name TEXT);
+        CREATE TABLE IF NOT EXISTS skipped (remote TEXT PRIMARY KEY);
+        """,
+    ]
+
     def __init__(self, path: Path):
         self.db = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
-        self.db.executescript("""
-            CREATE TABLE IF NOT EXISTS login (id TEXT PRIMARY KEY, homeserver TEXT, user_id TEXT, device_id TEXT,
-                token TEXT, own_device INTEGER, pickle_key TEXT, since INTEGER, next_batch TEXT, name TEXT);
-            CREATE TABLE IF NOT EXISTS portal (remote TEXT PRIMARY KEY, local TEXT UNIQUE, dm INTEGER, name TEXT);
-            CREATE TABLE IF NOT EXISTS message (remote TEXT PRIMARY KEY, local TEXT UNIQUE, room TEXT);
-            CREATE TABLE IF NOT EXISTS ghost (mxid TEXT PRIMARY KEY, name TEXT);
-            CREATE TABLE IF NOT EXISTS skipped (remote TEXT PRIMARY KEY);
-        """)
+        self.db.row_factory = sqlite3.Row
+        self.db.execute("PRAGMA journal_mode = WAL")
+        version = self.db.execute("PRAGMA user_version").fetchone()[0]
+        if version > len(self.MIGRATIONS):
+            raise SystemExit(f"bridge.db is version {version}, newer than this bridge ({len(self.MIGRATIONS)})")
+        for number, step in enumerate(self.MIGRATIONS[version:], start=version + 1):
+            self.db.executescript(f"BEGIN; {step}; PRAGMA user_version = {number}; COMMIT;")
 
     def one(self, sql: str, *args):
         return self.db.execute(sql, args).fetchone()
@@ -145,7 +157,9 @@ class Remote:
 
     def __init__(self, bridge: Bridge, row: tuple):
         self.bridge = bridge
-        self.id, self.homeserver, self.user_id, self.device_id, token, self.own_device, pickle_key, self.since, _, self.name = row
+        self.id, self.homeserver, self.user_id, self.device_id = row["id"], row["homeserver"], row["user_id"], row["device_id"]
+        self.own_device, self.since, self.name = row["own_device"], row["since"], row["name"]
+        token, pickle_key = row["token"], row["pickle_key"]
         self.dir = STATE_DIR / self.id
         self.dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         # One file for room state and keys: inside a crypto transaction mautrix hands every Database the same
@@ -327,7 +341,7 @@ class Remote:
         if isinstance(content.get("m.new_content"), dict):
             content["m.new_content"][FROM_THERE] = evt.event_id  # an edit is read back as its new content
         local = await intent.send_message_event(portal, event_type, content, timestamp=evt.timestamp)
-        self.bridge.store.run("INSERT OR IGNORE INTO message VALUES (?, ?, ?)", evt.event_id, local, portal)
+        self.bridge.store.run("INSERT OR IGNORE INTO message (remote, local, room) VALUES (?, ?, ?)", evt.event_id, local, portal)
 
     async def on_redaction(self, evt) -> None:
         if evt.timestamp < self.since or self.is_echo(evt):
@@ -511,7 +525,7 @@ class Bridge:
                 return RoomID(row[0])
             state = await remote.client.get_state(RoomID(room))
             if any(str(e.type) in ("m.bridge", "uk.half-shot.bridge") for e in state):
-                self.store.run("INSERT OR IGNORE INTO skipped VALUES (?)", room)
+                self.store.run("INSERT OR IGNORE INTO skipped (remote) VALUES (?)", room)
                 return None
             members = [e for e in state if str(e.type) == "m.room.member" and e.content.membership.value in ("join", "invite")]
             others = [e for e in members if e.state_key != remote.user_id]
@@ -529,7 +543,7 @@ class Bridge:
                 name=None if dm else name, is_direct=dm, invitees=[ADMIN], preset=RoomCreatePreset.PRIVATE,
                 initial_state=[{"type": "m.bridge", "state_key": f"matrix://{room}", "content": bridge}],
                 creation_content={"m.federate": False})
-            self.store.run("INSERT INTO portal VALUES (?, ?, ?, ?)", room, local, int(dm), name)
+            self.store.run("INSERT INTO portal (remote, local, dm, name) VALUES (?, ?, ?, ?)", room, local, int(dm), name)
             puppet = self.admin_intent()
             if puppet:
                 try:
@@ -558,7 +572,7 @@ class Bridge:
                 name = user
         if name != self.ghost_names[mxid]:
             await intent.set_displayname(name)
-            self.store.run("INSERT OR REPLACE INTO ghost VALUES (?, ?)", mxid, name)
+            self.store.run("INSERT OR REPLACE INTO ghost (mxid, name) VALUES (?, ?)", mxid, name)
             self.ghost_names[mxid] = name
         return intent
 
@@ -658,7 +672,7 @@ class Bridge:
             log.warning("not sent to %s: %s", target, err)
             await self.az.intent.send_notice(RoomID(room), f"Neodoslané na Matrix: {getattr(err, 'message', None) or err}")
             return
-        self.store.run("INSERT OR IGNORE INTO message VALUES (?, ?, ?)", sent, evt.event_id, room)
+        self.store.run("INSERT OR IGNORE INTO message (remote, local, room) VALUES (?, ?, ?)", sent, evt.event_id, room)
 
     # -------------------------------------------------- provisioning
 
@@ -771,7 +785,8 @@ class Bridge:
             (STATE_DIR / login_id).rename(aside)
         shutil.rmtree(STATE_DIR / login_id, ignore_errors=True)  # keys of an earlier sign-out never come back
         self.store.run("DELETE FROM login")
-        self.store.run("INSERT INTO login VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)", login_id, homeserver, user_id, device_id,
+        self.store.run("INSERT INTO login (id, homeserver, user_id, device_id, token, own_device, pickle_key, since, name) "
+                       "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", login_id, homeserver, user_id, device_id,
                        token, own, secrets.token_hex(32), int(time.time() * 1000), user_id)
         remote = Remote(self, self.store.one("SELECT * FROM login WHERE id = ?", login_id))
         try:
@@ -791,7 +806,7 @@ class Bridge:
             if old_row:  # the signed-out account stays as it was, so "Znova prihlásiť" is offered again
                 if aside.exists():
                     aside.rename(STATE_DIR / login_id)
-                self.store.run(f"INSERT INTO login VALUES ({', '.join('?' * len(old_row))})", *old_row)
+                self.store.run(f"INSERT INTO login ({', '.join(old_row.keys())}) VALUES ({', '.join('?' * len(old_row))})", *old_row)
                 self.remote = Remote(self, old_row)
                 self.remote.state, self.remote.message = "BAD_CREDENTIALS", "The other homeserver signed this device out."
             return self.error(400, "SK.KARCHI.START_FAILED", f"Prihlásenie sa nepodarilo dokončiť: {getattr(err, 'message', None) or err}")
