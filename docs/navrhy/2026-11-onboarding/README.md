@@ -106,7 +106,7 @@ a súbor má 0,4 MB (Instagram) až 1,8 MB (WhatsApp). `--calibrate` tieto čís
 Výsledok hovorí, koľká časť médií je presná (`media_exact`), a `--text` dopíše „prílohy odhadom“.
 
 Kontrola na skutočných dátach (24. 11., len čítanie): model dnešného archívu dal 0,39 GB databázy a 5,4 GB médií,
-na disku je 0,39 GB a 5,2 GB. Exporty Mety pozri vyššie v Krátko. Test proti falošnému IMAP serveru a falošným
+na disku je 0,39 GB (hlavný súbor databázy, bez dočasného WAL) a 5,2 GB. Exporty Mety pozri vyššie v Krátko. Test proti falošnému IMAP serveru a falošným
 exportom: `tests/estimate/estimate_test.py`.
 
 Na čo ešte nie je zdroj:

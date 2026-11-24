@@ -220,17 +220,12 @@ def gmail_account(address):
 
 
 def zip_sizes(z):
-    """Member sizes by path and, for references that differ in their leading folders, by file name."""
-    full = {str(PurePosixPath(i.filename)): i.file_size for i in z.infolist() if not i.is_dir()}
-    names = collections.defaultdict(list)
-    for path, size in full.items(): names[PurePosixPath(path).name].append(size)
-    return full, {k: v[0] for k, v in names.items() if len(v) == 1}
+    """Member sizes by path, matched exactly as the importers match a message's files."""
+    return {str(PurePosixPath(i.filename)): i.file_size for i in z.infolist() if not i.is_dir()}
 
 
 def lookup(sizes, uri):
-    full, names = sizes
-    uri = str(PurePosixPath(uri))
-    return full.get(uri, names.get(PurePosixPath(uri).name))
+    return sizes.get(str(PurePosixPath(uri)))
 
 
 def from_messenger(zips):
@@ -253,8 +248,10 @@ def from_instagram(zips):
     sizes = {}
     for z in zips:
         with zipfile.ZipFile(z) as f: sizes[z] = zip_sizes(f)
-    merged = (dict(collections.ChainMap(*[s[0] for s in sizes.values()])), dict(collections.ChainMap(*[s[1] for s in sizes.values()])))
-    for t in archive.ig_threads(zips).values():
+    merged = dict(collections.ChainMap(*sizes.values()))
+    threads = archive.ig_threads(zips)
+    if not threads: raise ValueError("No Instagram messages found in these ZIP files")
+    for t in threads.values():
         for ts, _sender, body, files in t["messages"].values():
             yield Item("instagram", ts, len(body.encode()), 0, [size for size in (lookup(merged, uri) for _kind, uri in files) if size is not None])
 
@@ -272,7 +269,8 @@ def from_beeper(folder):
     with closing(ro(folder / "index.db")) as b:
         b.row_factory = sqlite3.Row
         nets = {}
-        for t in b.execute("SELECT threadID, thread FROM threads"):
+        for t in b.execute("SELECT threadID, thread FROM threads WHERE COALESCE(room_type, '') NOT IN "
+                           "('m.space', 'com.beeper.reminders', 'com.beeper.removed_messages', 'com.beeper.transcriptions')"):
             bridge = (json.loads(t["thread"]).get("extra") or {}).get("bridge") or {}
             proto = (bridge.get("protocol") or {}).get("id") or ""
             nets[t["threadID"]] = BEEPER_NETWORKS.get(proto, proto or "beeper")
@@ -337,7 +335,7 @@ def main():
     if args.source in ("messenger", "instagram") and not args.paths: parser.error(f"{args.source} takes one or more ZIP files")
     if not Path(args.db).is_file() and (args.source == "archive" or args.calibrate): parser.error(f"no archive at {args.db}")
     try: run(parser, args)
-    except (OSError, ValueError, zipfile.BadZipFile, sqlite3.Error, imaplib.IMAP4.error, RuntimeError) as err:
+    except (OSError, ValueError, zipfile.BadZipFile, sqlite3.Error, imaplib.IMAP4.error, RuntimeError, AttributeError, TypeError, KeyError) as err:
         raise SystemExit(f"estimate.py: {type(err).__name__}: {err}")
 
 

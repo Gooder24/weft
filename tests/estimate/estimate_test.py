@@ -119,7 +119,9 @@ class Estimate(unittest.TestCase):
         bad = self.tmp / "bad.zip"
         bad.write_text("not a zip")
         script = Path(estimate.__file__)
-        for args in (["messenger", str(bad)], ["messenger"], ["archive", "--db", str(self.tmp / "none.db")]):
+        empty = self.tmp / "empty.zip"
+        zipfile.ZipFile(empty, "w").close()
+        for args in (["messenger", str(bad)], ["messenger"], ["instagram", str(empty)], ["archive", "--db", str(self.tmp / "none.db")]):
             r = subprocess.run([sys.executable, str(script), *args], capture_output=True, text=True)
             self.assertNotEqual(r.returncode, 0, args)
             self.assertNotIn("Traceback", r.stderr, args)
@@ -167,10 +169,12 @@ class Estimate(unittest.TestCase):
         (folder / "media/local.beeper.com").mkdir(parents=True)
         (folder / "media/local.beeper.com/abc").write_bytes(b"\0" * 777)
         c = sqlite3.connect(folder / "index.db")
-        c.executescript("""CREATE TABLE threads (threadID TEXT, accountID TEXT, thread TEXT);
+        c.executescript("""CREATE TABLE threads (threadID TEXT, accountID TEXT, thread TEXT, room_type TEXT);
           CREATE TABLE mx_room_messages (roomID TEXT, id INTEGER, eventID TEXT, type TEXT, timestamp INTEGER, message TEXT,
             isDeleted INTEGER, isSentByMe INTEGER, senderContactID TEXT);""")
-        c.execute("INSERT INTO threads VALUES ('!r', 'wa', ?)", (json.dumps({"extra": {"bridge": {"protocol": {"id": "whatsapp"}}}}),))
+        c.execute("INSERT INTO threads VALUES ('!r', 'wa', ?, NULL)", (json.dumps({"extra": {"bridge": {"protocol": {"id": "whatsapp"}}}}),))
+        c.execute("INSERT INTO threads VALUES ('!s', 'wa', '{}', 'm.space')")  # no chat, as the importer skips it
+        c.execute("INSERT INTO mx_room_messages VALUES ('!s', 9, '$s', 'TEXT', ?, '{}', 0, 0, 'p')", (NOW,))
         rows = [("TEXT", NOW - DAY, {"text": "ahoj"}), ("IMAGE", NOW - 2 * DAY, {"text": "", "attachments": [{"srcURL": "mxc://local.beeper.com/abc?k=1"}]}),
                 ("REACTION", NOW - DAY, {"text": "x"})]
         for i, (kind, ts, msg) in enumerate(rows):
