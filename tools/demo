@@ -2,7 +2,7 @@
 """Weft without a server: `tools/demo` serves app/ next to a pretend homeserver, bridges, archive, calendar and
 Feed, all in this one process on 127.0.0.1, filled with made-up people and chats on every network.
 
-    tools/demo [--port 8765]      then open the address it prints
+    tools/demo [--port 8790]      then open the address it prints
 
 Only Python 3's standard library. Nothing leaves the machine: the page asks only this server, and this server asks
 no one. What you send stays in its memory and is gone when it stops; the people answer with canned lines.
