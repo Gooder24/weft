@@ -53,7 +53,8 @@ from mautrix.crypto import OlmMachine, PgCryptoStore
 from mautrix.client.encryption_manager import DecryptionDispatcher
 from mautrix.crypto.attachments import decrypt_attachment, encrypt_attachment
 from mautrix.errors import DecryptionError, MatrixError, MatrixRequestError, SessionNotFound
-from mautrix.types import (EventType, LoginType, PresenceState, ReceiptType, RoomCreatePreset, RoomID, UserID)
+from mautrix.types import (EventType, Filter, LoginType, PresenceState, ReceiptType, RoomCreatePreset, RoomEventFilter,
+                           RoomFilter, RoomID, StateFilter, UserID)
 from mautrix.util.async_db import Database
 
 log = logging.getLogger("weft.matrix")
@@ -71,7 +72,9 @@ MESSAGE_TYPES = {EventType.ROOM_MESSAGE, EventType.REACTION, EventType.STICKER}
 MEDIA_KEYS = ("url", "file")
 MEDIA_MAX = 25 * 1024 * 1024  # bytes a file may have to cross; more becomes a note in the chat
 GHOSTS_AT_ONCE = 20  # rooms up to this many people get all their ghosts at once, bigger ones as people write
-FROM_THERE = "sk.karchi.matrix.remote"  # on a message Weft got from there: its event id there
+FROM_THERE = "sk.karchi.matrix.remote"
+# A Filter object, which mautrix uploads once: a dict would go into ?filter= as Python's text, which Synapse refuses.
+SYNC_FILTER = Filter(room=RoomFilter(timeline=RoomEventFilter(limit=20), state=StateFilter(lazy_load_members=True)))  # on a message Weft got from there: its event id there
 
 
 def registration_value(path: str, key: str) -> str:
@@ -180,7 +183,8 @@ class Remote:
             self.client.add_event_handler(kind, self.enqueue)
         self.client.add_event_handler(InternalEventType.SYNC_SUCCESSFUL, self.on_sync_ok)
         self.client.add_event_handler(InternalEventType.SYNC_ERRORED, self.on_sync_error)
-        self.client.start({"room": {"timeline": {"limit": 20}, "state": {"lazy_load_members": True}}})
+        self.client.add_event_handler(InternalEventType.SYNC_STOPPED, self.on_sync_stopped)
+        self.client.start(SYNC_FILTER)
         self.ready.set()
 
     async def enqueue(self, evt) -> None:
@@ -238,13 +242,28 @@ class Remote:
     async def on_sync_ok(self, _evt) -> None:
         self.state, self.message = "CONNECTED", ""
 
-    async def on_sync_error(self, evt) -> None:
-        err = getattr(evt, "error", None)
+    # mautrix hands internal events over as a dict of its keyword arguments.
+    async def on_sync_error(self, evt: dict) -> None:
+        err = evt.get("error")
         if isinstance(err, MatrixRequestError) and err.http_status == 401:
             self.state, self.message = "BAD_CREDENTIALS", "The other homeserver signed this device out."
             self.client.stop()
         else:
             self.state, self.message = "TRANSIENT_DISCONNECT", str(err or "")[:200]
+
+    async def on_sync_stopped(self, evt: dict) -> None:
+        """A token the server no longer knows ends syncing for good; anything else (the filter not made while the
+        server was down) starts it again in a while."""
+        err = evt.get("error")
+        if err is None or not self.ready.is_set():
+            return  # stopped on purpose
+        if isinstance(err, MatrixRequestError) and err.http_status == 401:
+            self.state, self.message = "BAD_CREDENTIALS", "The other homeserver signed this device out."
+            return
+        self.state, self.message = "TRANSIENT_DISCONNECT", str(err)[:200]
+        await asyncio.sleep(30)
+        if self.ready.is_set() and self.bridge.remote is self:
+            self.client.start(SYNC_FILTER)
 
     async def stop(self) -> None:
         self.ready.clear()
@@ -779,7 +798,7 @@ class Bridge:
         if r.own_device:
             try:
                 await r.client.logout()
-            except MatrixError as err:
+            except Exception as err:  # a network error too: the local clean-up below always runs
                 log.warning("remote logout: %s", err)
         await r.client.api.session.close()
         puppet = self.admin_intent()
@@ -793,10 +812,10 @@ class Bridge:
                     if mxid.startswith("@matrix_"):
                         try:
                             await self.az.intent.user(UserID(mxid)).leave_room(RoomID(local))
-                        except MatrixError:
+                        except Exception:
                             pass
                 await self.az.intent.leave_room(RoomID(local))
-            except MatrixError as err:
+            except Exception as err:
                 log.warning("leaving %s: %s", local, err)
         for table in ("login", "portal", "message", "skipped", "ghost"):
             self.store.run(f"DELETE FROM {table}")
@@ -858,6 +877,10 @@ class Bridge:
             return self.error(400, "M_FORBIDDEN" if err.http_status == 403 else "M_NOT_FOUND", f"{target}: {err.message}")
         local = await self.portal(r, room)
         if not local:
+            try:
+                await r.client.leave_room(room)  # not left sitting in a room Weft does not show
+            except MatrixError:
+                pass
             return self.error(400, "SK.KARCHI.BRIDGED", "Tá miestnosť je sama most na inú sieť; Weft ju vynechá.")
         return web.json_response({"room_id": local})
 

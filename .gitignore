@@ -4,6 +4,7 @@ overenie/20*/
 overenie/verdikt.md
 __pycache__/
 server/gmail/state/
+server/matrix/state/
 server/cli/token
 GOAL-*.md
 tests/demo/out/

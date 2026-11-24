@@ -429,6 +429,18 @@ namespaces:
         status, _ = await prov.call("POST", "/join", {"room": "#nikde:remote.test"}, base=P)
         ok("an alias that does not exist is refused", status in (400, 404), status)
 
+        # The device is signed out there (from Element, say): Weft says so instead of retrying a dead token.
+        bridge_device = sqlite3.connect(base / "bridge" / "bridge.db").execute("SELECT device_id FROM login").fetchone()[0]
+        _, uia = await remote.call("POST", "/delete_devices", {"devices": [bridge_device]}, token=remote_token)
+        status, _ = await remote.call("POST", "/delete_devices", {"devices": [bridge_device], "auth": {
+            "type": "m.login.password", "identifier": {"type": "m.id.user", "user": remote_karchi},
+            "password": f"pw-karchi-{reg}", "session": uia.get("session")}}, token=remote_token)
+
+        async def signed_out_there():
+            _, w = await prov.call("GET", "/whoami", base=P)
+            return w.get("logins") and w["logins"][0]["state"]["state_event"] == "BAD_CREDENTIALS"
+        ok("a device signed out there shows as signed out in Weft", status == 200 and bool(await until(signed_out_there, seconds=70)), status)
+
         # Signing out cleans up.
         bridge_token = sqlite3.connect(base / "bridge" / "bridge.db").execute("SELECT token FROM login").fetchone()[0]
         status, _ = await prov.call("POST", f"/logout/{login_id}", {}, base=P)
