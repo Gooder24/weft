@@ -3153,6 +3153,7 @@ function openLater(r) {
   const text = (S.drafts.get(r.id) || '').trim();
   const files = S.attach.get(r.id) || [];
   if (!text && !files.length) return alert(T('Najprv napíš správu alebo pridaj prílohu, potom vyber, kedy odíde.'));
+  hmDrafts.clear();
   openOverlay('later', { room: r.id });
 }
 
@@ -3194,7 +3195,11 @@ function laterView(o) {
   const text = (S.drafts.get(r.id) || '').trim();
   const files = (S.attach.get(r.id) || []).length;
   const choices = remindChoices();
-  const own = () => { const ts = new Date(o.custom || '').getTime(); if (ts) scheduleChat(r, ts); else document.querySelector('.laterat')?.focus(); };
+  const own = () => {
+    if (hmStop('__overlay-latertime')) return alert(T('Čas napíš ako 7:30 alebo 1930.'));
+    const ts = new Date(o.custom || '').getTime();
+    if (ts) scheduleChat(r, ts); else document.querySelector('.laterat')?.focus();
+  };
   o.flat = [...choices.map(([, ts]) => () => scheduleChat(r, ts)), own];
   o.custom ??= localInput(Math.ceil((Date.now() + 3600e3) / 900e3) * 900e3); // in an hour, on a quarter
   const what = [files ? `${files} ${files === 1 ? T('príloha') : files < 5 ? T('prílohy') : T('príloh')}` : '', text].filter(Boolean).join(', ');
@@ -3202,6 +3207,7 @@ function laterView(o) {
     h('div', { class: 'rsec' }, T`Odoslať neskôr: ${what.length > 70 ? `${what.slice(0, 70)}…` : what}`),
     h('div', { class: 'results', ...listScroll(o), tabindex: -1, 'data-root': '__overlay', onkeydown: (ev) => {
       if (ev.target.tagName === 'INPUT') { if (ev.key === 'Enter') { ev.preventDefault(); own(); } return; }
+      if (ev.target.tagName === 'BUTTON') return; // „Naplánovať“ reached by Tab: Enter is its own click
       const n = Number(ev.key);
       if (n >= 1 && n <= o.flat.length) { ev.preventDefault(); o.flat[n - 1](); }
       else if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') { ev.preventDefault(); o.index = (o.index + (ev.key === 'ArrowDown' ? 1 : -1) + o.flat.length) % o.flat.length; render(); }
@@ -3211,8 +3217,10 @@ function laterView(o) {
     h('div', { class: `res${o.index === choices.length ? ' on' : ''}` },
       h('kbd', { class: 'num' }, String(choices.length + 1)),
       h('div', { class: 'rmeta' }, h('b', {}, T('Vlastný čas'))),
-      h('input', { class: 'laterat', type: 'datetime-local', value: o.custom, min: localInput(Date.now()), oninput: (e) => { o.custom = e.target.value; } }),
-      h('button', { class: 'primary', onclick: own }, T('Naplánovať')))),
+      // Day and time apart (the time always 24 h); a day cleared for a moment keeps the time.
+      h('input', { class: 'laterat', type: 'date', value: o.custom.split('T')[0], min: localInput(Date.now()).slice(0, 10), 'aria-label': T('Deň'), 'data-root': '__overlay-laterday', oninput: (e) => { o.custom = `${e.target.value}T${o.custom.split('T')[1]}`; } }),
+      hmInput({ class: 'laterat hm', root: '__overlay-latertime', get: () => o.custom.split('T')[1], put: (t) => { o.custom = `${o.custom.split('T')[0]}T${t}`; }, 'aria-label': T('Čas') }),
+      h('button', { class: 'primary', 'data-root': '__overlay-laterplan', onclick: own }, T('Naplánovať')))),
   ];
 }
 
@@ -11252,6 +11260,7 @@ function calKept() {
   return true;
 }
 function calEditOpen(ed) {
+  hmDrafts.clear();
   cal.edit = ed;
   cal.editFrom = calEditSig(ed);
 }
@@ -11286,6 +11295,64 @@ function calOpen(i) {
   render();
 }
 
+/** "7", "730", "7:30", "15.30" or "1530" -> "07:30" style; "" clears the time; anything else is null. */
+function parseTime(typed) {
+  const s = typed.trim();
+  if (!s) return '';
+  const m = s.match(/^(\d{1,2})(?:[:.]?(\d{2}))?$/);
+  if (!m || Number(m[1]) > 23 || Number(m[2] || 0) > 59) return null;
+  return `${m[1].padStart(2, '0')}:${m[2] || '00'}`;
+}
+
+/** Half-typed times by data-root: a redraw (a sync, or a panel drawn whole) brings the field back with what was typed. */
+const hmDrafts = new Map();
+/** Whether the field `root` holds a time that is not one: then nothing saves or schedules with it. */
+const hmWrong = (root) => hmDrafts.has(root) && !parseTime(hmDrafts.get(root));
+/** The first of `roots` holding a wrong time gets the keys; false when all are right. */
+function hmStop(...roots) {
+  const bad = roots.find(hmWrong);
+  if (!bad) return false;
+  [...document.querySelectorAll(`[data-root="${CSS.escape(bad)}"]`)].pop()?.focus();
+  return true;
+}
+/** A time of day typed as text, always 24 h: `<input type="time">` follows the system's AM/PM (x270 speaks en_US).
+ *  "8", "830", "8:30" all mean half past eight, ↑/↓ step a quarter; a wrong or empty one brings the old back, and its
+ *  Enter does nothing else. `get` reads the kept time, `put` takes a new "HH:MM" and must not redraw: the change comes
+ *  on blur, also under a mouse click or inside a redraw that takes the field away. `root` is the field's data-root. */
+function hmInput({ get, put, root, ...props }) {
+  const take = (el) => {
+    const was = el.hasAttribute('aria-invalid');
+    const t = parseTime(el.value);
+    // A wrong or empty time stays, marked, and nothing saves or schedules with it (hmWrong) until it is right.
+    if (!t) { hmDrafts.set(root, el.value); el.setAttribute('aria-invalid', 'true'); return false; }
+    hmDrafts.delete(root);
+    el.removeAttribute('aria-invalid');
+    el.value = t;
+    if (t !== get() || was) put(t); // the same time typed over a wrong one: the complaint about it goes
+    return true;
+  };
+  return h('input', {
+    class: 'hm', value: hmDrafts.get(root) ?? get(), placeholder: 'hh:mm', inputmode: 'numeric', maxlength: 5, spellcheck: false, autocomplete: 'off',
+    'data-root': root, 'aria-invalid': hmWrong(root) ? 'true' : null, ...props,
+    oninput: (e) => { hmDrafts.set(root, e.currentTarget.value); },
+    // Blur too: a field drawn anew holds the typed text as its value, so leaving it fires no change.
+    // Not while the window is away (Alt+Tab): the field still holds the keys and the rest of the digits comes later.
+    onchange: (e) => { if (!patching && document.hasFocus()) take(e.currentTarget); },
+    onblur: (e) => { if (!patching && document.hasFocus()) take(e.currentTarget); },
+    onkeydown: (e) => {
+      // Taken before the form or the list acts on Enter; a wrong time saves or schedules nothing.
+      if (e.key === 'Enter' && !take(e.currentTarget)) { e.preventDefault(); e.stopPropagation(); }
+      else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        e.preventDefault();
+        const [hh, mm] = (parseTime(e.currentTarget.value) || get()).split(':').map(Number);
+        const m = (Math.round((hh * 60 + mm) / 15) * 15 + (e.key === 'ArrowUp' ? 15 : -15) + 1440) % 1440;
+        e.currentTarget.value = `${pad(Math.floor(m / 60))}:${pad(m % 60)}`;
+        take(e.currentTarget);
+      }
+    },
+  });
+}
+
 function calEditor() {
   const ed = cal.edit;
   const redraw = (k) => k === 'allDay' || k === 'repeat' || k === 'ending' || k === 'monthMode' || k === 'more';
@@ -11306,6 +11373,32 @@ function calEditor() {
     const days = Cal.dayNumber(after) - Cal.dayNumber(before);
     if (days && !ed.daysTouched) ed.byday = ed.byday.map((i) => (((i + days) % 7) + 7) % 7);
     render();
+  };
+  // A new start time moves the end along too, but only the end's fields are written, without a redraw: a panel drawn
+  // whole would take the field, the next click or the keys from under Karchi. The day stays, so the series' days too.
+  const putStart = (t) => {
+    const before = calDate(ed.date, ed.time), after = calDate(ed.date, t);
+    ed.time = t;
+    ed.error = '';
+    const end = new Date(calDate(ed.endDate, ed.endTime).getTime() + (after - before));
+    if (Number.isNaN(end.getTime())) return;
+    ed.endDate = calYmd(end);
+    ed.endTime = calHm(end);
+    hmDrafts.delete('__calEndTime');
+    calWhenShown();
+  };
+  // Both copies of the editor (home, and the panel over it) show the times; a fixed time clears the old complaint.
+  // The complaint is only hidden, not taken out: the buttons under it must not move under a click already pressed.
+  const calWhenShown = () => {
+    for (const [root, v] of [['__calTime', ed.time], ['__calEndDate', ed.endDate], ['__calEndTime', ed.endTime]]) {
+      for (const el of document.querySelectorAll(`[data-root="${root}"]`)) {
+        if (el === document.activeElement) continue;
+        const wrong = hmWrong(root);
+        el.value = wrong ? hmDrafts.get(root) : v;
+        if (wrong) el.setAttribute('aria-invalid', 'true'); else el.removeAttribute('aria-invalid');
+      }
+    }
+    if (!ed.error) for (const el of document.querySelectorAll('.caledit > .err')) el.style.visibility = 'hidden';
   };
   const close = () => { cal.edit = null; render(); };
   const repeatLine = ed.repeat === 'none' ? '' : calRepeatText(calRuleOf(ed, calDate(ed.date)), calDate(ed.date));
@@ -11350,9 +11443,9 @@ function calEditor() {
   let buttons;
   if (ed.asking === 'save') {
     buttons = h('div', { class: 'calbtns calask' }, h('span', {}, T('Opakuje sa. Zmeniť:')),
-      ed.ruleTouched ? null : h('button', { type: 'button', class: 'ghost', onclick: () => calSubmit('one') }, T('Len túto')),
-      first ? null : h('button', { type: 'button', class: 'ghost', onclick: () => calSubmit('following') }, T('Túto a ďalšie')),
-      h('button', { type: 'button', class: 'primary', onclick: () => calSubmit('all') }, T('Celú sériu')),
+      ed.ruleTouched ? null : h('button', { type: 'button', class: 'ghost', 'data-root': '__calAskOne', onclick: () => calSubmit('one') }, T('Len túto')),
+      first ? null : h('button', { type: 'button', class: 'ghost', 'data-root': '__calAskFollowing', onclick: () => calSubmit('following') }, T('Túto a ďalšie')),
+      h('button', { type: 'button', class: 'primary', 'data-root': '__calAskAll', onclick: () => calSubmit('all') }, T('Celú sériu')),
       h('button', { type: 'button', class: 'ghost', onclick: () => { ed.asking = null; render(); calEditBox()?.querySelector('.calbtns button.primary')?.focus(); } }, T('Späť')));
   } else if (ed.asking === 'del') {
     buttons = h('div', { class: 'calbtns calask' }, h('span', {}, recurring ? T('Opakuje sa. Zmazať:') : T`Zmazať „${ed.title}“?`),
@@ -11369,11 +11462,11 @@ function calEditor() {
   return h('form', { class: 'caledit', onsubmit: (e) => { e.preventDefault(); calSubmit(); } },
     h('input', { name: 'title', value: ed.title, placeholder: T('Názov'), required: true, oninput: set('title'), 'data-root': '__calTitle' }),
     h('div', { class: 'calwhen' },
-      h('input', { type: 'date', value: ed.date, required: true, 'aria-label': T('Začiatok'), onchange: moveStart('date') }),
-      ed.allDay ? null : h('input', { type: 'time', value: ed.time, required: true, 'aria-label': T('Čas začiatku'), onchange: moveStart('time') }),
+      h('input', { type: 'date', value: ed.date, required: true, 'aria-label': T('Začiatok'), 'data-root': '__calDate', onchange: moveStart('date') }),
+      ed.allDay ? null : hmInput({ root: '__calTime', get: () => ed.time, put: putStart, required: true, 'aria-label': T('Čas začiatku') }),
       '–',
-      h('input', { type: 'date', value: ed.endDate, required: true, 'aria-label': T('Koniec'), onchange: set('endDate') }),
-      ed.allDay ? null : h('input', { type: 'time', value: ed.endTime, required: true, 'aria-label': T('Čas konca'), onchange: set('endTime') }),
+      h('input', { type: 'date', value: ed.endDate, required: true, 'aria-label': T('Koniec'), 'data-root': '__calEndDate', onchange: set('endDate') }),
+      ed.allDay ? null : hmInput({ root: '__calEndTime', get: () => ed.endTime, put: (t) => { ed.endTime = t; ed.error = ''; calWhenShown(); }, required: true, 'aria-label': T('Čas konca') }),
       h('label', { class: 'bcheck' }, h('input', { type: 'checkbox', checked: ed.allDay, onchange: set('allDay') }), T('celý deň'))),
     h('select', { class: 'calrepeat-kind', 'aria-label': T('Opakovanie'), onchange: (e) => { set('repeat')(e); if (ed.repeat === 'WEEKLY' && !ed.byday.length) ed.byday = [weekdayIndex(ref)]; render(); } },
       CAL_REPEATS.map(([v, l]) => h('option', { value: v, selected: ed.repeat === v }, l))),
@@ -11415,6 +11508,7 @@ function calSubmit(scope = null) {
   const end = ed.allDay ? Cal.addDays(calDate(ed.endDate), 1) : calDate(ed.endDate, ed.endTime);
   const fail = (text) => { ed.error = text; ed.asking = null; render(); };
   if (!ed.title.trim()) return fail(T('Zadaj názov.'));
+  if (!ed.allDay && hmStop('__calTime', '__calEndTime')) return fail(T('Čas napíš ako 7:30 alebo 1930.'));
   if ([start, end].some((d) => Number.isNaN(d.getTime()))) return fail(T('Doplň dátum a čas.'));
   if (end < start || (end - start === 0 && ed.allDay)) return fail(T('Koniec je pred začiatkom.'));
   if (ed.repeat !== 'none' && ed.ending === 'until' && !(calDate(ed.until) >= Cal.startOfDay(start))) return fail(T('Opakovanie končí pred začiatkom.'));
@@ -13353,15 +13447,6 @@ function callSettings() {
 }
 
 
-/** "7", "730", "7:30", "15.30" or "1530" -> "07:30" style; "" clears the time; anything else is null. */
-function parseTime(typed) {
-  const s = typed.trim();
-  if (!s) return '';
-  const m = s.match(/^(\d{1,2})(?:[:.]?(\d{2}))?$/);
-  if (!m || Number(m[1]) > 23 || Number(m[2] || 0) > 59) return null;
-  return `${m[1].padStart(2, '0')}:${m[2] || '00'}`;
-}
-
 /** The three batch times as plain text fields (from tomorrow on); `where` keeps the menu's and Settings' fields apart. */
 function timeInputs(where) {
   const b = batchTarget();
@@ -13978,6 +14063,8 @@ function show(view) {
   render();
 }
 
+/** True while render() swaps the DOM (hmInput reads it). */
+let patching = false;
 function render() {
   renderEpoch++;
   if (S.overlay?.kind !== 'search') searchRest = null; // rows not drawn yet belong to a closed search
@@ -14049,7 +14136,9 @@ function render() {
   else content = h('div', { class: 'empty' }, T('Načítavam…'));
   const kids = [content].flat().filter(Boolean);
   if (S.view !== 'main' && S.view !== 'login') kids.forEach(opaque);
-  patchChildren(root, kids);
+  // A field taken away blurs and may fire its change inside this: hmInput keeps that half-typed text as it is.
+  patching = true;
+  try { patchChildren(root, kids); } finally { patching = false; }
   if (!sideRowH) sideRowH = root.querySelector('.sidelist > .item')?.offsetHeight || 0;
   sideWatch(root);
   watchLinks(root);
@@ -14113,7 +14202,9 @@ function render() {
   if (found) { found.scrollIntoView({ block: 'center' }); S.focusScrolled = S.focusEvent; }
   // An open overlay takes the keyboard (its second field, `__overlay-…`, keeps it); otherwise the field that had it keeps it.
   const overlayRoot = S.overlay && (typing?.root?.startsWith('__overlay-') && root.querySelector(`[data-root="${CSS.escape(typing.root)}"]`) ? typing.root : '__overlay');
-  const again = root.querySelector(`[data-root="${CSS.escape(overlayRoot || typing?.root || '')}"]`);
+  const againSel = `[data-root="${CSS.escape(overlayRoot || typing?.root || '')}"]`;
+  // The calendar's editor is in home and in its panel at once: the panel's, drawn later, is the one in sight.
+  const again = !overlayRoot && typing?.root?.startsWith('__cal') ? [...root.querySelectorAll(againSel)].pop() : root.querySelector(againSel);
   if (again) {
     again.focus({ preventScroll: true });
     // The message box was asked for (a picked name, an edit): its caret now, not at some later render.

@@ -654,6 +654,7 @@ export default {
   "Uložiť": "Save",
   "Názov": "Title",
   "Začiatok": "Start",
+  "Čas": "Time",
   "Čas začiatku": "Start time",
   "Koniec": "End",
   "Čas konca": "End time",
