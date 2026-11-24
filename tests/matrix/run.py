@@ -400,9 +400,13 @@ namespaces:
         ok("quick messages from there arrive in Weft in order", order == [f"poradie {i}" for i in range(5)], order)
         _, quick = await local.call("PUT", f"/rooms/{room}/send/m.room.message/qd", {"msgtype": "m.text", "body": "hned zmazem"})
         await local.call("PUT", f"/rooms/{room}/redact/{quick['event_id']}/qd", {})
-        quick_there = await until(lambda: asyncio.sleep(0, next((m for m in seen["messages"] if m.content.body == "hned zmazem"), None)))
-        gone = await until(lambda: asyncio.sleep(0, bool(quick_there) and any(r.redacts == quick_there.event_id for r in seen["redactions"])))
-        ok("a message deleted right after sending is deleted there too", bool(gone))
+        # The homeserver may hand the bridge the message already deleted; then nothing goes there at all.
+        await local.call("PUT", f"/rooms/{room}/send/m.room.message/qd2", {"msgtype": "m.text", "body": "po rychlom mazani"})
+        await until(lambda: asyncio.sleep(0, any(m.content.body == "po rychlom mazani" for m in seen["messages"])))
+        quick_there = next((m for m in seen["messages"] if m.content.body == "hned zmazem"), None)
+        gone = not quick_there or await until(lambda: asyncio.sleep(0, any(r.redacts == quick_there.event_id for r in seen["redactions"])))
+        empty = [m.event_id for m in seen["messages"] if not m.content.body]
+        ok("a message deleted right after sending is deleted there too (or never sent)", bool(gone) and not empty, (bool(quick_there), empty))
         # A file that cannot pass is never replaced by a note sent there in Karchi's name.
         await local.call("PUT", f"/rooms/{room}/send/m.room.message/big", {"msgtype": "m.file", "body": "velky.zip",
                                                                            "url": mxc, "info": {"size": 30 * 1024 * 1024}})
@@ -440,6 +444,43 @@ namespaces:
             _, w = await prov.call("GET", "/whoami", base=P)
             return w.get("logins") and w["logins"][0]["state"]["state_event"] == "BAD_CREDENTIALS"
         ok("a device signed out there shows as signed out in Weft", status == 200 and bool(await until(signed_out_there, seconds=70)), status)
+        # Signing in again keeps the chats: the same Weft room carries on.
+        _, start = await prov.call("POST", "/login/start/password", {}, base=P)
+        status, done = await prov.call("POST", f"/login/step/{start['login_id']}/{start['step_id']}/user_input",
+                                       {"homeserver": remote.url, "username": remote_karchi, "password": f"pw-karchi-{reg}"}, base=P)
+        ok("signing in again after that completes", status == 200 and done.get("type") == "complete", done)
+        ok("…and keeps the chats", sqlite3.connect(base / "bridge" / "bridge.db").execute(
+            "SELECT local FROM portal WHERE local = ?", (room,)).fetchone() is not None)
+        await until(connected)
+        await friend.send_text(remote_room, "po novom prihlaseni")
+
+        async def again_here():
+            await sync.step()
+            return sync.find(room, lambda e: e["content"].get("body") == "po novom prihlaseni")
+        ok("…and a new message comes into the same Weft room", bool(await until(again_here)))
+        # A gap: the bridge is down while more messages come than one sync carries; Weft says some are missing.
+        procs[-1].terminate()
+        procs[-1].wait()
+        for i in range(25):
+            await friend.send_text(remote_room, f"medzera {i}")
+        procs.append(subprocess.Popen([sys.executable, str(ROOT / "server/matrix/bridge.py")], env=env,
+                                      stdout=open(base / "bridge2.log", "w"), stderr=subprocess.STDOUT))
+        await until(bridge_up)
+
+        async def gap_note():
+            await sync.step()
+            return sync.find(room, lambda e: "nedostali" in e["content"].get("body", ""))
+        ok("after a gap Weft says some messages are missing", bool(await until(gap_note, seconds=40)))
+        await until(connected)
+        # A message whose key never comes shows as a note instead of vanishing.
+        await remote.call("PUT", f"/rooms/{remote_room}/send/m.room.encrypted/utd1", {
+            "algorithm": "m.megolm.v1.aes-sha2", "sender_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "session_id": "nikdynepride", "ciphertext": "AwgA", "device_id": who["device_id"]}, token=friend_token)
+
+        async def utd_note():
+            await sync.step()
+            return sync.find(room, lambda e: "nevie prečítať" in e["content"].get("body", ""))
+        ok("an undecryptable message leaves a note in Weft", bool(await until(utd_note, seconds=40)))
 
         # Signing out cleans up.
         bridge_token = sqlite3.connect(base / "bridge" / "bridge.db").execute("SELECT token FROM login").fetchone()[0]

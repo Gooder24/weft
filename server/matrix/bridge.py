@@ -166,6 +166,7 @@ class Remote:
         self.queues: dict[str, asyncio.Queue] = {}
         self.pumps: dict[str, asyncio.Task] = {}
         self.ready = asyncio.Event()  # set once encryption is on: nothing is sent there before
+        self.first_sync, self.had_batch = True, False
 
     async def start(self) -> None:
         await self.db.start()
@@ -184,6 +185,7 @@ class Remote:
         self.client.add_event_handler(InternalEventType.SYNC_SUCCESSFUL, self.on_sync_ok)
         self.client.add_event_handler(InternalEventType.SYNC_ERRORED, self.on_sync_error)
         self.client.add_event_handler(InternalEventType.SYNC_STOPPED, self.on_sync_stopped)
+        self.had_batch = bool(await self.client.sync_store.get_next_batch())
         self.client.start(SYNC_FILTER)
         self.ready.set()
 
@@ -210,9 +212,11 @@ class Remote:
                 if not self.wanted(evt):
                     continue
                 if evt.type == EventType.ROOM_ENCRYPTED:
-                    evt = await self.decrypt(evt)
-                    if not evt:
+                    clear = await self.decrypt(evt)
+                    if not clear:
+                        await self.cannot_read(evt)
                         continue
+                    evt = clear
                 if evt.type in MESSAGE_TYPES:
                     await self.on_message(evt)
                 elif evt.type == EventType.ROOM_REDACTION:
@@ -239,8 +243,23 @@ class Remote:
                 log.warning("cannot decrypt %s: %s", evt.event_id, err)
                 return None
 
-    async def on_sync_ok(self, _evt) -> None:
+    async def cannot_read(self, evt) -> None:
+        """A message whose key never came still shows that it was there, instead of vanishing."""
+        local = await self.bridge.portal(self, evt.room_id)
+        if not local:
+            return
+        who = "Ty (z inej aplikácie)" if evt.sender == self.user_id else evt.sender
+        await self.bridge.az.intent.send_notice(local, f"{who}: šifrovaná správa, ktorú Weft nevie prečítať (kľúč k nej neprišiel).")
+
+    async def on_sync_ok(self, evt: dict) -> None:
         self.state, self.message = "CONNECTED", ""
+        # After a gap (a restart, the server down) a room with more new events than one sync carries says so.
+        first, self.first_sync = self.first_sync, False
+        if first and not self.had_batch:
+            return
+        for room, data in ((evt.get("data") or {}).get("rooms", {}).get("join", {}) or {}).items():
+            if (data.get("timeline") or {}).get("limited") and (local := await self.bridge.portal(self, room, create=False)):
+                await self.bridge.az.intent.send_notice(local, "Niektoré správy z tohto chatu sa do Weftu nedostali (most bol chvíľu mimo). Nájdeš ich v inej Matrix aplikácii.")
 
     # mautrix hands internal events over as a dict of its keyword arguments.
     async def on_sync_error(self, evt: dict) -> None:
@@ -599,6 +618,9 @@ class Bridge:
         if evt.type not in MESSAGE_TYPES:
             return
         content = evt.content.serialize()
+        raw = evt.serialize()
+        if not raw.get("content") or (raw.get("unsigned") or {}).get("redacted_because"):
+            return  # deleted before it reached the bridge: nothing goes there
         if not self.map_relations(content, to_local=False):
             return
         try:
@@ -664,7 +686,7 @@ class Bridge:
         flow = request.match_info["flow"]
         if flow not in self.FIELDS:
             return self.error(404, "M_NOT_FOUND", "Unknown login flow")
-        if self.remote:
+        if self.remote and self.remote.state != "BAD_CREDENTIALS":
             return self.error(400, "SK.KARCHI.ALREADY", f"Už si prihlásený ako {self.remote.user_id}: najprv sa odhlás.")
         process = secrets.token_hex(8)
         self.logins[process] = {"flow": flow, "at": time.time()}
@@ -684,7 +706,7 @@ class Bridge:
         process = self.logins.pop(request.match_info["process"], None)
         if not process:
             return self.error(404, "M_NOT_FOUND", "Toto prihlásenie skončilo, začni znova.")
-        if self.remote:
+        if self.remote and self.remote.state != "BAD_CREDENTIALS":
             return self.error(400, "SK.KARCHI.ALREADY", "Už si prihlásený.")
         body = await request.json()
         homeserver = await self.resolve_homeserver(str(body.get("homeserver") or "").strip(), str(body.get("username") or ""))
@@ -706,6 +728,17 @@ class Bridge:
             return self.error(400, "SK.KARCHI.INVALID_INPUT", str(err))
         finally:
             await client.api.session.close()
+        # Signing in again after the other server signed Weft out keeps its chats; only the same account may.
+        old = self.remote
+        if old and (old.state != "BAD_CREDENTIALS" or old.user_id != user_id):
+            if own:
+                await self.drop_session(homeserver, token)
+            return self.error(400, "SK.KARCHI.ALREADY", f"Weft má účet {old.user_id}: prihlás ten, alebo sa najprv odhlás.")
+        old_row = self.store.one("SELECT * FROM login") if old else None
+        if old:
+            self.remote = None
+            await old.stop()
+            await old.client.api.session.close()
         login_id = re.sub(r"[^a-z0-9]+", "_", user_id.lower()).strip("_") or "login"
         shutil.rmtree(STATE_DIR / login_id, ignore_errors=True)  # keys of an earlier sign-out never come back
         self.store.run("DELETE FROM login")
@@ -726,10 +759,24 @@ class Bridge:
             await remote.client.api.session.close()
             self.store.run("DELETE FROM login")
             shutil.rmtree(remote.dir, ignore_errors=True)
+            if old_row:  # the signed-out account stays as it was, so "Znova prihlásiť" is offered again
+                self.store.run(f"INSERT INTO login VALUES ({', '.join('?' * len(old_row))})", *old_row)
+                self.remote = Remote(self, old_row)
+                self.remote.state, self.remote.message = "BAD_CREDENTIALS", "The other homeserver signed this device out."
             return self.error(400, "SK.KARCHI.START_FAILED", f"Prihlásenie sa nepodarilo dokončiť: {getattr(err, 'message', None) or err}")
         self.remote = remote
         return web.json_response({"type": "complete", "step_id": "sk.karchi.matrix.complete", "instructions": f"Prihlásený ako {user_id}.",
                                   "complete": {"user_login_id": login_id}})
+
+    @staticmethod
+    async def drop_session(homeserver: str, token: str) -> None:
+        client = Client(base_url=homeserver, token=token)
+        try:
+            await client.logout()
+        except Exception:
+            pass
+        finally:
+            await client.api.session.close()
 
     @staticmethod
     async def token_login(client: Client, homeserver: str, token: str) -> tuple[str, str, str, int]:
