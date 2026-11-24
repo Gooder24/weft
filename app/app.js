@@ -9567,7 +9567,7 @@ function newChatView(o) {
       ]) : null,
       mail ? resultRow(o, null, number ? 1 : 0, [
         h('div', { class: 'avwrap' }, h('div', { class: 'icon mailicon' }, icon('mail')), h('img', { class: 'badge', src: (mailFrom()?.app || mailApps[0]).icon, alt: '' })),
-        h('div', { class: 'rmeta' }, h('b', {}, mailTo ? T`Nový mail pre ${mailTo}` : T('Nový mail')), h('small', {}, mailApps.map((a) => a.name).join(' alebo '))),
+        h('div', { class: 'rmeta' }, h('b', {}, mailTo ? T`Nový mail pre ${mailTo}` : T('Nový mail')), h('small', {}, mailApps.map(appLabel).join(' alebo '))),
       ]) : null,
       group ? resultRow(o, null, shift - 1, [
         h('div', { class: 'avwrap' }, h('div', { class: 'icon grpicon' }, icon('users')), h('img', { class: 'badge', src: waIcon, alt: '' })),
@@ -9642,7 +9642,7 @@ function mailView() {
   const head = h('div', { class: 'chead' },
     h('button', { class: 'back', title: T('Späť'), onclick: closeThread }, '‹'),
     h('div', { class: 'icon mailicon' }, icon('mail')),
-    h('div', { class: 'ctitle' }, h('b', {}, T('Nový mail')), h('small', {}, h('img', { src: mailApp().icon, alt: '' }), mailApp().name)));
+    h('div', { class: 'ctitle' }, h('b', {}, T('Nový mail')), h('small', {}, h('img', { src: mailApp().icon, alt: '' }), appLabel(mailApp()))));
   if (m.sent) {
     return h('div', { class: 'detail chat mail' }, head,
       h('div', { class: 'msgs' }, h('div', { class: 'cstart' }, m.sent,
@@ -12895,7 +12895,7 @@ const LINKS = [
   // Any number of Gmail addresses, each its own login (multi): the bridge has no people to search.
   {
     id: 'gmail', name: 'Gmail', icon: '/gmail.ico', base: '/_bridges/gmail/_matrix/provision/v3', flow: 'google',
-    anywhere: true, multi: true, noContactList: true, noSearch: true,
+    beta: true, anywhere: true, multi: true, noContactList: true, noSearch: true,
     otherFlow: { google: ['password', T('Pripojiť heslom aplikácie')], password: ['google', T('Pripojiť cez Google')] },
   },
   // Outlook mail and Teams chats: any number of Microsoft accounts each, signed in separately (one bridge, two APIs).
@@ -13393,7 +13393,7 @@ function accountSettings() {
           h('button', { class: 'ghost danger', type: 'button', onclick: () => unlink(app, first) }, T('Odhlásiť Discord'))) : null,
       ];
       return h('div', { class: 'acct' }, h('img', { class: 'appicon', src: app.icon, alt: '' }),
-        h('span', {}, app.name, h('small', {},
+        h('span', {}, appLabel(app), h('small', {},
           logins === undefined ? T('zisťujem…') : logins === null ? T('most neodpovedá')
             : first ? first.name + linkStatus(first) : T('nepripojené'))),
         logins === null ? null : first
@@ -13727,6 +13727,9 @@ function chatLookView(o) {
       else if (ev.key === 'Enter') { ev.preventDefault(); o.flat[o.index](); }
     } },
     choices.map(([label, v], i) => resultRow(o, null, i, [h('kbd', { class: 'num' }, String(i + 1)), v == null ? null : h('i', { class: `swatch look-c${v}` }),
+/** An app's name in Settings and Ctrl+N: a network still in beta says so after its name. */
+const appLabel = (app) => (app.beta ? `${app.name} (beta)` : app.name);
+
       h('div', { class: 'rmeta' }, h('b', {}, label)), h('time', {}, now === v ? T('vybraná') : '')]))),
   ];
 }
@@ -13778,12 +13781,12 @@ const linkStatus = (l) => {
 function multiLinkRows(app, logins) {
   return [
     logins.map((l) => h('div', { class: 'acct', 'data-key': `${app.id}:${l.id}` }, h('img', { class: 'appicon', src: app.icon, alt: '' }),
-      h('span', {}, app.name, h('small', {}, l.name + linkStatus(l))),
+      h('span', {}, appLabel(app), h('small', {}, l.name + linkStatus(l))),
       app.id === 'gmail' ? codeModeSelect(l) : null,
       h('div', { class: 'row' }, signedOut(l) ? h('button', { class: 'primary', onclick: () => signInAgain(app, l) }, T('Znova prihlásiť')) : null,
         h('button', { class: 'ghost danger', onclick: () => unlink(app, l, l.name) }, T('Odhlásiť'))))),
     app.multi ? h('div', { class: 'acct' }, h('img', { class: 'appicon', src: app.icon, alt: '' }),
-      h('span', {}, app.name, h('small', {}, T('ďalší účet'))),
+      h('span', {}, appLabel(app), h('small', {}, T('ďalší účet'))),
       h('button', { class: 'primary', onclick: () => startLink(app) }, T('Pridať'))) : null,
   ];
 }
