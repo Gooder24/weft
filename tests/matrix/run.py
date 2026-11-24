@@ -138,7 +138,7 @@ async def friend_client(base: Path, url: str, user: str, token: str, device: str
     await machine.load()
     await store.put_device_id(device)
     await machine.share_keys()
-    seen = {"messages": [], "receipts": [], "encrypted": set(), "db": db}
+    seen = {"messages": [], "receipts": [], "encrypted": set(), "redactions": [], "db": db}
 
     async def on_invite(evt):
         if evt.state_key == user and evt.content.membership.value == "invite":
@@ -153,10 +153,14 @@ async def friend_client(base: Path, url: str, user: str, token: str, device: str
     async def on_receipt(evt):
         seen["receipts"].append(evt)
 
+    async def on_redaction(evt):
+        seen["redactions"].append(evt)
+
     client.add_event_handler(EventType.ROOM_MEMBER, on_invite)
     client.add_event_handler(EventType.ROOM_MESSAGE, on_message)
     client.add_event_handler(EventType.ROOM_ENCRYPTED, on_encrypted)
     client.add_event_handler(EventType.RECEIPT, on_receipt)
+    client.add_event_handler(EventType.ROOM_REDACTION, on_redaction)
     client.start(None)
     return client, seen
 
@@ -352,6 +356,20 @@ namespaces:
             opened = decrypt_attachment(await friend.download_media(f.url), f.key.key, f.hashes["sha256"], f.iv)
         ok("a file from Weft goes there encrypted and opens", bool(there) and not there.content.url and opened == mine_data,
            there and (bool(there.content.file), there.content.url))
+
+        # Deleting a message in Weft deletes it there, once (its echo never comes back as a new deletion).
+        await local.call("PUT", f"/rooms/{room}/redact/{mine['event_id']}/r1", {})
+        gone = await until(lambda: asyncio.sleep(0, any(r.redacts == back.event_id for r in seen["redactions"])))
+        ok("deleting in Weft deletes it there", bool(gone))
+        await friend.send_text(remote_room, "po mazani")
+
+        async def after_delete():
+            await sync.step()
+            return sync.find(room, lambda e: e["content"].get("body") == "po mazani")
+        await until(after_delete)  # everything the deletion set off has passed through by now
+        await sync.step()
+        local_redactions = [e for e in sync.events if e["room_id"] == room and e["type"] == "m.room.redaction"]
+        ok("…once, with no loop", len(seen["redactions"]) == 1 and len(local_redactions) == 1, (len(seen["redactions"]), len(local_redactions)))
 
         # Joining a room by its #alias.
         club = await friend.create_room(alias_localpart="klub", preset=RoomCreatePreset.PUBLIC, name="Klub")

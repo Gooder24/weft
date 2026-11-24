@@ -205,12 +205,12 @@ class Remote:
     async def on_message(self, evt) -> None:
         if evt.timestamp < self.since or self.is_echo(evt) or self.bridge.store.one("SELECT 1 FROM message WHERE remote = ?", evt.event_id):
             return
+        content = evt.content.serialize()
+        if not self.bridge.map_relations(content, to_local=True):
+            return  # an edit or reaction of something Weft never had (no empty chat is made for it)
         portal = await self.bridge.portal(self, evt.room_id)
         if not portal:
             return
-        content = evt.content.serialize()
-        if not self.bridge.map_relations(content, to_local=True):
-            return  # an edit or reaction of something Weft never had
         if any(k in content for k in MEDIA_KEYS):
             await self.bridge.copy_media(content, self.client, self.bridge.az.intent, encrypt=False)
         if evt.sender == self.user_id:
@@ -230,6 +230,8 @@ class Remote:
         row = self.bridge.store.one("SELECT local, room FROM message WHERE remote = ?", evt.redacts)
         if not row:
             return
+        # Forgotten first: the copy coming back from Weft then finds nothing to redact there again.
+        self.bridge.store.run("DELETE FROM message WHERE remote = ?", evt.redacts)
         intent = self.bridge.admin_intent() if evt.sender == self.user_id else await self.bridge.ghost(self, row[1], evt.sender)
         if intent:
             await intent.redact(RoomID(row[1]), row[0])
@@ -467,7 +469,11 @@ class Bridge:
         if evt.type == EventType.ROOM_REDACTION:
             mapped = self.store.one("SELECT remote FROM message WHERE local = ?", evt.redacts)
             if mapped:
-                await remote.client.redact(target, mapped[0])
+                self.store.run("DELETE FROM message WHERE local = ?", evt.redacts)  # its echo from there stops here
+                try:
+                    await remote.client.redact(target, mapped[0])
+                except Exception as err:
+                    await self.az.intent.send_notice(RoomID(room), f"Nevymazané na Matrixe: {getattr(err, 'message', None) or err}")
             return
         if evt.type not in MESSAGE_TYPES:
             return
