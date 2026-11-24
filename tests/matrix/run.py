@@ -451,6 +451,12 @@ namespaces:
         ok("signing in again after that completes", status == 200 and done.get("type") == "complete", done)
         ok("…and keeps the chats", sqlite3.connect(base / "bridge" / "bridge.db").execute(
             "SELECT local FROM portal WHERE local = ?", (room,)).fetchone() is not None)
+        # A file right after it, before the new keys know the room: still encrypted.
+        await local.call("PUT", f"/rooms/{room}/send/m.room.message/rf", {"msgtype": "m.file", "body": "hned.bin", "url": mxc,
+                                                                          "info": {"size": len(mine_data)}})
+        early = await until(lambda: asyncio.sleep(0, next((m for m in seen["messages"] if m.content.body == "hned.bin"), None)))
+        ok("…a file sent at once goes there encrypted", bool(early) and bool(early.content.file) and not early.content.url,
+           early and (bool(early.content.file), early.content.url))
         await until(connected)
         await friend.send_text(remote_room, "po novom prihlaseni")
 

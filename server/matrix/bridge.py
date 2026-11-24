@@ -52,7 +52,7 @@ from mautrix.client.state_store.asyncpg import PgStateStore
 from mautrix.crypto import OlmMachine, PgCryptoStore
 from mautrix.client.encryption_manager import DecryptionDispatcher
 from mautrix.crypto.attachments import decrypt_attachment, encrypt_attachment
-from mautrix.errors import DecryptionError, MatrixError, MatrixRequestError, SessionNotFound
+from mautrix.errors import DecryptionError, MatrixError, MatrixRequestError, MNotFound, SessionNotFound
 from mautrix.types import (EventType, Filter, LoginType, PresenceState, ReceiptType, RoomCreatePreset, RoomEventFilter,
                            RoomFilter, RoomID, StateFilter, UserID)
 from mautrix.util.async_db import Database
@@ -212,6 +212,8 @@ class Remote:
                 if not self.wanted(evt):
                     continue
                 if evt.type == EventType.ROOM_ENCRYPTED:
+                    if not (evt.serialize().get("content") or {}).get("ciphertext"):
+                        continue  # deleted there before it reached Weft: nothing to read, nothing to note
                     clear = await self.decrypt(evt)
                     if not clear:
                         await self.cannot_read(evt)
@@ -372,6 +374,7 @@ class Bridge:
         self.az.matrix_event_handler(self.on_local_event)
         self.remote: Remote | None = None
         self.logins: dict[str, dict] = {}  # login process -> what it asked for
+        self.login_lock = asyncio.Lock()  # one sign-in at a time: two at once could leave two accounts running
         self.tokens: dict[str, float] = {}  # Weft tokens that proved to be Karchi's, until when
         self.typing: dict[str, set[str]] = {}
         self.admin_typing: dict[str, bool] = {}
@@ -416,6 +419,10 @@ class Bridge:
             except Exception as err:
                 await remote.stop()
                 await remote.client.api.session.close()
+                if isinstance(err, MatrixRequestError) and err.http_status == 401:
+                    # The other server signed this device out: no retry helps, "Znova prihlásiť" does.
+                    remote.state, remote.message = "BAD_CREDENTIALS", "The other homeserver signed this device out."
+                    return
                 remote.state, remote.message = "TRANSIENT_DISCONNECT", str(err)[:200]
                 log.warning("start failed, again in %d s: %s", delay, err)
                 await asyncio.sleep(delay)
@@ -563,6 +570,20 @@ class Bridge:
         async with self.local_locks.setdefault(evt.room_id, asyncio.Lock()):
             await self.handle_local_event(evt)
 
+    @staticmethod
+    async def room_encrypted(remote: Remote, room: RoomID) -> bool:
+        """Whether the room there is encrypted, asked of the server when the state store does not know yet (right
+        after sign-in): an unknown room is never treated as plain. mautrix encrypts by the same store."""
+        known = await remote.state_store.is_encrypted(room)
+        if known is not None:
+            return bool(known)
+        try:
+            info = await remote.client.get_state_event(room, EventType.ROOM_ENCRYPTION)
+        except MNotFound:
+            return False
+        await remote.state_store.set_encryption_info(room, info)
+        return True
+
     async def ready_remote(self, wait: float) -> Remote | None:
         """The account once its encryption is on (a start or a retry may be under way), else None after `wait` s."""
         end = time.monotonic() + wait
@@ -624,10 +645,10 @@ class Bridge:
         if not self.map_relations(content, to_local=False):
             return
         try:
+            encrypted = await self.room_encrypted(remote, target)
             if any(k in content for k in MEDIA_KEYS):
-                await self.copy_media(content, self.az.intent, remote.client, outgoing=True,
-                                      encrypt=bool(await remote.state_store.is_encrypted(target)))
-            if remote.client.crypto is None and await remote.state_store.is_encrypted(target):
+                await self.copy_media(content, self.az.intent, remote.client, outgoing=True, encrypt=encrypted)
+            if remote.client.crypto is None and encrypted:
                 raise ValueError("šifrovanie ešte nie je zapnuté")  # never plain text into an encrypted room
             txn = f"weft{secrets.token_hex(8)}"
             remote.sent.add(txn)
@@ -703,6 +724,10 @@ class Bridge:
     async def login_step(self, request: web.Request) -> web.Response:
         if (denied := await self.guard(request)):
             return denied
+        async with self.login_lock:
+            return await self.sign_in(request)
+
+    async def sign_in(self, request: web.Request) -> web.Response:
         process = self.logins.pop(request.match_info["process"], None)
         if not process:
             return self.error(404, "M_NOT_FOUND", "Toto prihlásenie skončilo, začni znova.")
@@ -740,6 +765,10 @@ class Bridge:
             await old.stop()
             await old.client.api.session.close()
         login_id = re.sub(r"[^a-z0-9]+", "_", user_id.lower()).strip("_") or "login"
+        aside = STATE_DIR / f"{login_id}.before"  # the signed-out account's keys, back in place if this fails
+        shutil.rmtree(aside, ignore_errors=True)
+        if old_row and (STATE_DIR / login_id).exists():
+            (STATE_DIR / login_id).rename(aside)
         shutil.rmtree(STATE_DIR / login_id, ignore_errors=True)  # keys of an earlier sign-out never come back
         self.store.run("DELETE FROM login")
         self.store.run("INSERT INTO login VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)", login_id, homeserver, user_id, device_id,
@@ -760,11 +789,20 @@ class Bridge:
             self.store.run("DELETE FROM login")
             shutil.rmtree(remote.dir, ignore_errors=True)
             if old_row:  # the signed-out account stays as it was, so "Znova prihlásiť" is offered again
+                if aside.exists():
+                    aside.rename(STATE_DIR / login_id)
                 self.store.run(f"INSERT INTO login VALUES ({', '.join('?' * len(old_row))})", *old_row)
                 self.remote = Remote(self, old_row)
                 self.remote.state, self.remote.message = "BAD_CREDENTIALS", "The other homeserver signed this device out."
             return self.error(400, "SK.KARCHI.START_FAILED", f"Prihlásenie sa nepodarilo dokončiť: {getattr(err, 'message', None) or err}")
         self.remote = remote
+        shutil.rmtree(aside, ignore_errors=True)
+        if old_row:
+            for (local,) in self.store.all("SELECT local FROM portal"):
+                try:
+                    await self.az.intent.send_notice(RoomID(local), "Matrix je znova prihlásený. Čo prišlo, kým bol odhlásený, sa do Weftu nedostalo; nájdeš to v inej Matrix aplikácii.")
+                except MatrixError:
+                    pass
         return web.json_response({"type": "complete", "step_id": "sk.karchi.matrix.complete", "instructions": f"Prihlásený ako {user_id}.",
                                   "complete": {"user_login_id": login_id}})
 
