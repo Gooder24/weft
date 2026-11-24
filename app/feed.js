@@ -545,6 +545,26 @@ export function createFeed({ h, api, kv, refresh, offline, user, settingsPanel, 
     await configure({ sources: [...kept, ...added] });
   }
   const addAiNews = () => addPreset(AI_SOURCES);
+  // Whether a mouse button or finger is down: a save then waits until the click is over, or its render would
+  // replace the button between press and release and swallow the click.
+  let pressed = false;
+  document.addEventListener('pointerdown', () => { pressed = true; }, true);
+  for (const type of ['pointerup', 'pointercancel']) document.addEventListener(type, () => { setTimeout(() => { pressed = false; }); }, true);
+  /** Saves a row's typed category a tick later, once focus has settled. A field that a render replaced while it
+   *  had focus (a sync) is not left: the new field carries the draft on and saves when Karchi leaves it. */
+  function saveCategory(id, field) {
+    const run = () => {
+      if (!(id in state.catDraft)) return;
+      if (!field.isConnected && document.activeElement?.dataset?.root === field.dataset.root) return;
+      const category = state.catDraft[id].trim();
+      delete state.catDraft[id];
+      const source = cfg().sources.find((x) => x.id === id);
+      if (source && category !== (source.category || '')) configure({ sources: cfg().sources.map((x) => (x.id === id ? { ...x, category } : x)) });
+    };
+    if (!pressed) { setTimeout(run); return; }
+    const go = () => { document.removeEventListener('pointerup', go, true); document.removeEventListener('pointercancel', go, true); setTimeout(run); };
+    document.addEventListener('pointerup', go, true); document.addEventListener('pointercancel', go, true);
+  }
   function extractYouTubeUrls(text) {
     const urls = new Set();
     const opml = text.match(/xmlUrl="([^"]+)"/gi) || [];
@@ -584,12 +604,12 @@ export function createFeed({ h, api, kv, refresh, offline, user, settingsPanel, 
       !window.desktop?.collect ? h('p', { class: 'hint' }, T('Instagram pripojíš v desktopovej appke Weft. Potom feed uvidíš aj tu.')) : null,
       h('h3', {}, T('RSS, YouTube a X')),
       c.sources.length ? c.sources.map((s) => h('div', { class: 'feed-source', 'data-feed-source': s.id }, h('span', {}, s.name || s.url),
-        // A draft per row and a data-root keep focus and typing through a re-render (a sync). The save waits a
-        // tick: `change` fires while a click or Tab is moving focus, and a render then would find no field to keep.
-        h('input', { class: 'feed-source-cat', value: state.catDraft[s.id] ?? s.category ?? '', placeholder: T('Kategória'), 'aria-label': T`Kategória zdroja ${s.name || s.url}`, list: 'feed-topics', 'data-root': `__feedCat:${s.id}`,
+        // A draft per row and a data-root keep focus and typing through a re-render (a sync); Enter or leaving saves.
+        h('input', { class: 'feed-source-cat', value: state.catDraft[s.id] ?? s.category ?? '', placeholder: T('Kategória'), 'aria-label': T`Kategória zdroja ${s.name || s.url}`, list: 'feed-topics', 'data-root': `__feedCat:${s.id}`, 'data-focus': `cat:${s.id}`,
           oninput: (e) => { state.catDraft[s.id] = e.target.value; },
-          onchange: (e) => { const category = e.target.value.trim(); delete state.catDraft[s.id]; if (category !== (s.category || '')) setTimeout(() => configure({ sources: cfg().sources.map((x) => (x.id === s.id ? { ...x, category } : x)) })); } }),
-        h('button', { class: 'ghost danger', onclick: () => configure({ sources: c.sources.filter((x) => x.id !== s.id) }) }, T('Odstrániť'))))
+          onkeydown: (e) => { if (e.key === 'Enter') saveCategory(s.id, e.target); },
+          onblur: (e) => saveCategory(s.id, e.target) }),
+        h('button', { class: 'ghost danger', 'data-focus': `del:${s.id}`, onclick: () => configure({ sources: cfg().sources.filter((x) => x.id !== s.id) }) }, T('Odstrániť'))))
         : h('p', { class: 'hint' }, T('Zatiaľ žiadny zdroj.')),
       h('datalist', { id: 'feed-topics' }, topics().map((t) => h('option', { value: t }))),
       h('form', { class: 'feed-add', onsubmit: (e) => { e.preventDefault(); if (!state.addUrl.trim()) return; const s = { id: state.addUrl, url: state.addUrl.trim(), name: state.addName.trim(), category: state.addCat.trim() }; state.addUrl = ''; state.addName = ''; state.addCat = ''; configure({ sources: [...c.sources, s] }); } },
