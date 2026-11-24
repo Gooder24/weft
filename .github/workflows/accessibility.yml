@@ -34,3 +34,6 @@ jobs:
         env:
           CI: "true"
         run: npm test
+
+      - name: The demo runs without a server and asks only 127.0.0.1
+        run: node tests/demo/demo.cjs

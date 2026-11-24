@@ -6,3 +6,4 @@ __pycache__/
 server/gmail/state/
 server/cli/token
 GOAL-*.md
+tests/demo/out/

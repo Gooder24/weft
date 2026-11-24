@@ -1,0 +1,486 @@
+#!/usr/bin/env python3
+"""Weft without a server: `tools/demo` serves app/ next to a pretend homeserver, bridges, archive, calendar and
+Feed, all in this one process on 127.0.0.1, filled with made-up people and chats on every network.
+
+    tools/demo [--port 8765]      then open the address it prints
+
+Only Python 3's standard library. Nothing leaves the machine: the page asks only this server, and this server asks
+no one. What you send stays in its memory and is gone when it stops; the people answer with canned lines.
+Every name, chat and mail here is invented."""
+import argparse, json, mimetypes, os, re, threading, time, urllib.parse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+APP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'app')
+HS = 'demo.localhost'
+ME = f'@you:{HS}'
+TOKEN = 'demo-token'
+NOW = int(time.time() * 1000)
+MIN, HOUR, DAY = 60_000, 3_600_000, 86_400_000
+
+# ------------------------------------------------------------------ the made-up world
+
+# Each chat: its network (the m.bridge protocol the client knows), its people (ghost id, name) and its messages as
+# (minutes ago, ghost id or None for you, text). A group has a name; a one-to-one chat takes its person's.
+PEOPLE = {
+    'tomas_m': ('@facebook_100001:' + HS, 'Tomáš Hruška'),
+    'tomas_w': ('@whatsapp_421900111222:' + HS, 'Tomáš Hruška'),
+    'lucia': ('@instagram_200002:' + HS, 'Lucia Králiková'),
+    'zuzka': ('@facebook_100003:' + HS, 'Zuzana Poláková'),
+    'peter': ('@facebook_100004:' + HS, 'Peter Malý'),
+    'marek': ('@whatsapp_421900333444:' + HS, 'Marek Bielik'),
+    'mama': ('@whatsapp_421900555666:' + HS, 'Mama'),
+    'oco': ('@whatsapp_421900777888:' + HS, 'Oco'),
+    'nova': ('@discord_900000000000000001:' + HS, 'nova_byte'),
+    'kubo': ('@discord_900000000000000002:' + HS, 'kubo'),
+    'vargova': ('@teams_6f1c2a4e-0000-4000-8000-000000000001:' + HS, 'Ing. Jana Vargová'),
+    'hermes': ('@hermes:' + HS, 'Hermes'),
+    'teacher': ('@edupage_ucitel_1001:' + HS, 'Mgr. Eva Šimková'),
+    'teacher2': ('@edupage_ucitel_1002:' + HS, 'Mgr. Juraj Kollár'),
+}
+BRIDGES = {'messenger': ('facebookgo', 'Messenger'), 'instagram': ('instagramgo', 'Instagram'), 'whatsapp': ('whatsapp', 'WhatsApp'),
+           'discord': ('discord', 'Discord'), 'teams': ('teams', 'Microsoft Teams')}
+CHATS = [
+    {'id': 'tomas-m', 'net': 'messenger', 'people': ['tomas_m'], 'messages': [
+        (190, 'tomas_m', 'Ideš v sobotu na ten koncert?'), (186, None, 'Asi hej, ešte riešim lístok'),
+        (40, 'tomas_m', 'Lístky sú ešte na stránke, ale miznú'), (39, 'tomas_m', 'Zajtra o 17:00 pred vchodom?')]},
+    {'id': 'tomas-w', 'net': 'whatsapp', 'people': ['tomas_w'], 'messages': [
+        (3 * DAY // MIN, 'tomas_w', 'Pošli mi potom tie fotky z výletu'), (3 * DAY // MIN - 5, None, 'Jasné, večer')]},
+    {'id': 'lucia', 'net': 'instagram', 'people': ['lucia'], 'messages': [
+        (300, 'lucia', 'videla si ten reel o kreslení svetla? 😄'), (290, None, 'hahaha áno, skúsim to cez víkend'),
+        (12, 'lucia', 'tak čo, vyšlo to?')]},
+    {'id': 'krivan', 'net': 'messenger', 'name': 'Výlet na Kriváň', 'people': ['tomas_m', 'zuzka', 'peter'], 'messages': [
+        (26 * 60, 'zuzka', 'Kto má na Kriváň čelovku navyše?'), (25 * 60, 'peter', 'Ja mám dve'), (25 * 60 - 3, None, 'Super, beriem jednu'),
+        (95, 'zuzka', 'Odchod v piatok o 6:30 zo stanice'), (90, 'tomas_m', '👍')]},
+    {'id': 'marek', 'net': 'whatsapp', 'people': ['marek'], 'messages': [
+        (8 * 60, 'marek', 'Máš ešte ten kábel na projektor?'), (7 * 60, None, 'Mám, prinesiem ho zajtra'),
+        (6 * 60, 'marek', 'Ďakujem!')]},
+    {'id': 'rodina', 'net': 'whatsapp', 'name': 'Rodina', 'people': ['mama', 'oco'], 'messages': [
+        (5 * 60, 'mama', 'Kto príde v nedeľu na obed?'), (4 * 60, 'oco', 'Ja určite'), (61, 'mama', 'Upečiem koláč 🍰')]},
+    {'id': 'nova', 'net': 'discord', 'people': ['nova'], 'messages': [
+        (2 * DAY // MIN, 'nova', 'gg, zajtra ďalšie kolo?'), (2 * DAY // MIN - 10, None, 'jasne, o ôsmej')]},
+    {'id': 'pixel', 'net': 'discord', 'name': '#general', 'server': ('800000000000000001', 'Pixel Club'), 'people': ['nova', 'kubo'], 'messages': [
+        (70, 'kubo', 'nová verzia pixel editora je vonku'), (68, 'nova', 'konečne vrstvy!'), (20, 'kubo', 'kto robí výzvu na tento týždeň?')]},
+    {'id': 'vargova', 'net': 'teams', 'people': ['vargova'], 'messages': [
+        (22 * 60, 'vargova', 'Dobrý deň, pošlete mi prosím do piatka prezentáciu?'), (21 * 60, None, 'Dobrý deň, áno, pošlem ju do štvrtka.')]},
+    {'id': 'hermes', 'net': 'hermes', 'people': ['hermes'], 'messages': [
+        (30, 'hermes', 'Ranný prehľad: 3 nové správy, zajtra test z matematiky, v piatok výlet.')]},
+]
+EDUPAGE = [  # (minutes ago, teacher, text)
+    (2 * DAY // MIN, 'teacher', 'Dobrý deň, v pondelok píšeme test z derivácií. Prineste si kalkulačky.'),
+    (DAY // MIN, 'teacher2', 'Exkurzia do planetária sa presúva na štvrtok, odchod o 8:00 pred školou.'),
+    (150, 'teacher', 'Domáca úloha: príklady 4 až 9 na strane 112, do stredy.'),
+]
+MAIL = [  # Gmail and Outlook threads, read-only archive chats: (network, id, subject, [(minutes ago, sender or None, text)])
+    ('gmail', 'kurz', 'Fotky z kurzu fotografie', [(9 * 60, 'Martin Novotný', 'Ahoj, posielam odkaz na fotky z kurzu. Najlepšie sú tie zo západu slnka.')]),
+    ('gmail', 'kniznica', 'Pripomienka: vrátenie knihy', [(30 * 60, 'Mestská knižnica', 'Dobrý deň, výpožička „Malý princ“ končí o 3 dni.')]),
+    ('outlook', 'rozvrh', 'Zmena rozvrhu na budúci týždeň', [(4 * 60, 'Študijné oddelenie', 'V utorok odpadá 3. hodina, náhradou je konzultácia v piatok.')]),
+]
+REPLIES = ['Super, ďakujem!', 'Jasné 👍', 'Dobre, dám vedieť.', 'Haha, presne tak', 'Ok, platí.']
+
+
+def day_at(days, hour, minute=0):
+    """An ISO time `days` from today at hour:minute, local time."""
+    t = time.localtime()
+    base = time.mktime((t.tm_year, t.tm_mon, t.tm_mday, hour, minute, 0, 0, 0, -1))
+    return time.strftime('%Y-%m-%dT%H:%M:%S%z', time.localtime(base + days * 86400)).replace('+0000', 'Z')
+
+
+def calendar_doc():
+    ev = lambda uid, title, days, h, m, mins, **kw: {'uid': uid, 'title': title, 'start': day_at(days, h, m), 'end': day_at(days, h + (m + mins) // 60, (m + mins) % 60),
+                                                    'allDay': False, 'rrule': None, 'exdates': [], 'alarmMinutes': '', 'description': '', 'notes': '', 'location': '', **kw}
+    return {'schema': 2, 'calendars': [
+        {'id': 'osobne', 'name': 'Osobné', 'color': '#628790', 'visible': True, 'events': [
+            ev('koncert', 'Koncert', 1, 17, 0, 120, location='Mestská hala'),
+            ev('zbor', 'Zbor', 0, 18, 0, 90, rrule={'FREQ': 'WEEKLY', 'BYDAY': ['MO', 'WE']}),
+            ev('krivan', 'Výlet na Kriváň', 3, 6, 30, 600)]},
+        {'id': 'skola', 'name': 'Škola', 'color': '#4fae6b', 'category': 'school', 'visible': True, 'events': [
+            ev('mat', 'Matematika', 0, 8, 0, 45, rrule={'FREQ': 'WEEKLY', 'BYDAY': ['MO', 'TU', 'TH']}),
+            ev('fyz', 'Fyzika', 0, 9, 50, 45, rrule={'FREQ': 'WEEKLY', 'BYDAY': ['MO', 'WE', 'FR']}),
+            ev('test', 'Test: derivácie', 4, 10, 45, 45),
+            ev('planetarium', 'Exkurzia: planetárium', 2, 8, 0, 240)]},
+    ]}
+
+
+SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="640"><rect width="640" height="640" fill="{bg}"/><circle cx="{x}" cy="300" r="140" fill="{fg}"/><rect x="0" y="470" width="640" height="170" fill="{fg}" opacity=".5"/></svg>'
+FEED_ITEMS = [  # (source, kind, minutes ago, author, title, text, picture colours or None)
+    ('blog', 'rss', 50, 'Malý technický blog', 'Prečo si postaviť vlastný domáci server', 'Stačí starý notebook, pár hodín a chuť skúšať. Tu je, čo sa nám osvedčilo.', ('#0a1512', '#628790')),
+    ('kanal', 'youtube', 180, 'Kreslenie svetlom', 'Ako odfotiť svetelné kresby mobilom', '', ('#1a2320', '#e2c08d')),
+    ('x', 'x', 240, 'opensource_sk', 'Open-source víkend v Bratislave: prihlasovanie je otvorené.', 'Open-source víkend v Bratislave: prihlasovanie je otvorené. Prídu aj ľudia z Matrixu.', None),
+    ('blog', 'rss', 26 * 60, 'Malý technický blog', 'Matrix mosty v praxi', 'Ako spojiť chaty z rôznych sietí do jedného klienta a čo pritom stráži pred banom.', ('#26302c', '#abe7e6')),
+    ('kanal', 'youtube', 30 * 60, 'Kreslenie svetlom', 'Dlhá expozícia bez statívu', '', ('#000a07', '#a1d289')),
+]
+SOURCES = [{'id': 'blog', 'url': 'https://blog.example.org/feed.xml', 'name': 'Malý technický blog'},
+           {'id': 'kanal', 'url': 'https://www.youtube.com/feeds/videos.xml?channel_id=UCdemo', 'name': 'Kreslenie svetlom', 'kind': 'youtube'},
+           {'id': 'x', 'url': 'https://x.com/opensource_sk', 'name': '@opensource_sk', 'kind': 'x', 'category': 'Open-source platby'}]
+
+
+class World:
+    """Rooms, account data and every change in order: a sync after `since` gets the changes after it."""
+
+    def __init__(self):
+        self.lock = threading.Condition()
+        self.seq = 0
+        self.changes = []  # (seq, room id or None, kind, payload)
+        self.rooms = {}
+        self.account = {}
+        self.media = {}
+        self.calendar = {'version': 1, 'doc': calendar_doc()}
+        self.n = 0
+        start = NOW - 2 * MIN
+        today = time.strftime('%Y-%m-%d')
+        self.account['sk.karchi.window'] = {'day': today, 'start': start, 'end': start + 8 * HOUR, 'used': 1, 'count': 3, 'minutes': 480}
+        self.account['sk.karchi.batches'] = {'mode': 'manual', 'times': [], 'edupage': False}
+        self.build()
+
+    def eid(self):
+        self.n += 1
+        return f'$demo{self.n}'
+
+    def event(self, room, sender, ts, type_, content, state_key=None):
+        e = {'event_id': self.eid(), 'room_id': room, 'sender': sender, 'origin_server_ts': ts, 'type': type_, 'content': content, 'unsigned': {}}
+        if state_key is not None: e['state_key'] = state_key
+        return e
+
+    def room(self, rid, creator, members, name=None, bridge=None, created=NOW - 30 * DAY):
+        r = {'id': rid, 'state': [], 'timeline': [], 'members': {}, 'receipts': {}}
+        r['state'].append(self.event(rid, creator, created, 'm.room.create', {'creator': creator, 'room_version': '10'}, ''))
+        for uid, display in [(ME, 'Ty')] + members:
+            r['state'].append(self.event(rid, uid, created, 'm.room.member', {'membership': 'join', 'displayname': display}, uid))
+            r['members'][uid] = display
+        if name: r['state'].append(self.event(rid, creator, created, 'm.room.name', {'name': name}, ''))
+        if bridge: r['state'].append(self.event(rid, creator, created, 'm.bridge', bridge, bridge['channel']['id']))
+        self.rooms[rid] = r
+        return r
+
+    def build(self):
+        edu = self.room(f'!edupage:{HS}', f'@edupagebot:{HS}', [(PEOPLE[k][0], PEOPLE[k][1]) for k in ('teacher', 'teacher2')])
+        for ago, who, text in EDUPAGE:
+            edu['timeline'].append(self.event(edu['id'], PEOPLE[who][0], NOW - ago * MIN, 'm.room.message', {'msgtype': 'm.text', 'body': text}))
+        for c in CHATS:
+            rid = f'!{c["id"]}:{HS}'
+            members = [PEOPLE[k] for k in c['people']]
+            bridge = None
+            if c['net'] in BRIDGES:
+                proto, display = BRIDGES[c['net']]
+                channel = {'id': c.get('name') or members[0][0], 'displayname': c.get('name') or members[0][1]}
+                bridge = {'bridgebot': f'@{c["net"]}bot:{HS}', 'protocol': {'id': proto, 'displayname': display}, 'channel': channel}
+                if 'server' in c: bridge['network'] = {'id': c['server'][0], 'displayname': c['server'][1]}
+            r = self.room(rid, ME, members, c.get('name'), bridge)
+            for ago, who, text in c['messages']:
+                sender = PEOPLE[who][0] if who else ME
+                r['timeline'].append(self.event(rid, sender, NOW - ago * MIN, 'm.room.message', {'msgtype': 'm.text', 'body': text}))
+            # What you wrote last, and everything before it, counts as read; what came after waits for you.
+            mine = [e for e in r['timeline'] if e['sender'] == ME]
+            if mine: r['receipts'][ME] = mine[-1]['event_id']
+
+    def change(self, room, kind, payload):
+        with self.lock:
+            self.seq += 1
+            self.changes.append((self.seq, room, kind, payload))
+            self.lock.notify_all()
+
+    def send(self, rid, type_, content, txn):
+        r = self.rooms[rid]
+        e = self.event(rid, ME, int(time.time() * 1000), type_, content)
+        e['unsigned'] = {'transaction_id': txn}
+        r['timeline'].append(e)
+        r['receipts'][ME] = e['event_id']
+        self.change(rid, 'timeline', e)
+        others = [u for u in r['members'] if u != ME]
+        if type_ == 'm.room.message' and others and not rid.startswith('!edupage'):
+            threading.Thread(target=self.answer, args=(rid, others[0]), daemon=True).start()
+        return e['event_id']
+
+    def answer(self, rid, who):
+        """The other side types for a moment and answers with a canned line."""
+        time.sleep(1.2)
+        self.change(rid, 'typing', [who])
+        time.sleep(2.0)
+        self.change(rid, 'typing', [])
+        r = self.rooms[rid]
+        e = self.event(rid, who, int(time.time() * 1000), 'm.room.message', {'msgtype': 'm.text', 'body': REPLIES[self.n % len(REPLIES)]})
+        r['timeline'].append(e)
+        self.change(rid, 'timeline', e)
+
+    def unread(self, r):
+        read = r['receipts'].get(ME)
+        ids = [e['event_id'] for e in r['timeline']]
+        after = r['timeline'][ids.index(read) + 1:] if read in ids else r['timeline']
+        return sum(1 for e in after if e['sender'] != ME)
+
+    def joined(self, r, events, typing=None):
+        out = {'state': {'events': r['state']}, 'timeline': {'events': events, 'limited': False, 'prev_batch': f'p_{r["id"]}'},
+               'ephemeral': {'events': []}, 'account_data': {'events': []}, 'unread_notifications': {'notification_count': self.unread(r), 'highlight_count': 0}}
+        if r['receipts']:
+            out['ephemeral']['events'].append({'type': 'm.receipt', 'content': {eid: {'m.read': {u: {'ts': NOW}}} for u, eid in r['receipts'].items()}})
+        if typing is not None: out['ephemeral']['events'].append({'type': 'm.typing', 'content': {'user_ids': typing}})
+        return out
+
+    def sync(self, since, timeout):
+        with self.lock:
+            if since is None:
+                return {'next_batch': str(self.seq), 'account_data': {'events': [{'type': k, 'content': v} for k, v in self.account.items()]},
+                        'rooms': {'join': {rid: self.joined(r, r['timeline']) for rid, r in self.rooms.items()}}}
+            after = int(since)
+            end = time.time() + timeout / 1000
+            while self.seq <= after and time.time() < end:
+                self.lock.wait(end - time.time())
+            news = [c for c in self.changes if c[0] > after]
+            out = {'next_batch': str(self.seq), 'account_data': {'events': []}, 'rooms': {'join': {}}}
+            for _, rid, kind, payload in news:
+                if kind == 'account':
+                    out['account_data']['events'].append(payload)
+                    continue
+                r = self.rooms[rid]
+                j = out['rooms']['join'].setdefault(rid, {'timeline': {'events': [], 'limited': False}, 'ephemeral': {'events': []},
+                                                          'unread_notifications': {'notification_count': self.unread(r), 'highlight_count': 0}})
+                if kind == 'timeline': j['timeline']['events'].append(payload)
+                elif kind == 'typing': j['ephemeral']['events'].append({'type': 'm.typing', 'content': {'user_ids': payload}})
+                elif kind == 'receipt': j['ephemeral']['events'].append({'type': 'm.receipt', 'content': {payload: {'m.read': {ME: {'ts': int(time.time() * 1000)}}}}})
+            return out
+
+    def search(self, term):
+        term = term.lower()
+        hits = [e for r in self.rooms.values() for e in r['timeline'] if term in str(e['content'].get('body', '')).lower()]
+        hits.sort(key=lambda e: -e['origin_server_ts'])
+        return {'search_categories': {'room_events': {'count': len(hits), 'results': [{'rank': 1, 'result': e} for e in hits[:50]]}}}
+
+
+def archive_chats():
+    chats = []
+    for net, cid, subject, msgs in MAIL:
+        ago, sender, body = msgs[-1]
+        chats.append({'id': f'archive:{net}:demo-{cid}', 'network': net, 'title': subject,
+                      'last': {'id': f'arch-{cid}-{len(msgs) - 1}', 'ts': NOW - ago * MIN, 'sender': sender or 'Ty', 'me': sender is None, 'body': body}})
+    return chats
+
+
+def archive_messages(room):
+    for net, cid, subject, msgs in MAIL:
+        if room == f'archive:{net}:demo-{cid}':
+            return [{'id': f'arch-{cid}-{i}', 'ts': NOW - ago * MIN, 'sender': sender or 'Ty', 'me': sender is None, 'body': body}
+                    for i, (ago, sender, body) in enumerate(msgs)]
+    return []
+
+
+def feed_doc():
+    items = []
+    for n, (source, kind, ago, author, title, text, pic) in enumerate(FEED_ITEMS):
+        item = {'id': f'demo-{n}', 'source': source, 'kind': kind, 'at': NOW - ago * MIN, 'author': author, 'title': title, 'text': text,
+                'url': 'https://example.org/'}
+        if kind == 'x': item['name'] = author
+        if pic: item['media'] = [{'type': 'image'}]
+        items.append(item)
+    w = WORLD.account['sk.karchi.window']
+    return {'day': time.strftime('%Y-%m-%d'), 'today': time.strftime('%Y-%m-%d'), 'at': NOW - 10 * MIN, 'due': False, 'items': items, 'hiddenItems': [], 'users': [], 'errors': [],
+            'settings': {'sources': SOURCES, 'instagram': False, 'daily': True, 'limitOnce': True, 'hiddenStories': {}},
+            'policy': {'count': w['count'], 'minutes': w['minutes'], 'next': None}, 'access': True, 'canOpen': False, 'locked': False,
+            'window': w, 'now': int(time.time() * 1000), 'busy': False, 'instagramPaused': True, 'instagramConnected': False}
+
+
+LOGINS = {
+    'edupage': [{'id': 'demo', 'name': 'Ty (Gymnázium Príklad)', 'state': {'state_event': 'CONNECTED'}}],
+    'messenger': [{'id': '100000', 'name': 'Ty', 'state': {'state_event': 'CONNECTED'}}],
+    'instagram': [{'id': '200000', 'name': 'ty.demo', 'state': {'state_event': 'CONNECTED'}}],
+    'whatsapp': [{'id': '421900000000', 'name': '+421 900 000 000', 'state': {'state_event': 'CONNECTED'}}],
+    'teams': [{'id': 'demo-teams', 'name': 'ty@skola.example.org', 'state': {'state_event': 'CONNECTED'}}],
+    'gmail': [{'id': 'ty@example.com', 'name': 'ty@example.com', 'state': {'state_event': 'CONNECTED'}}],
+    'outlook': [{'id': 'demo-outlook', 'name': 'ty@skola.example.org', 'state': {'state_event': 'CONNECTED'}}],
+}
+
+WORLD = None
+
+
+class Handler(BaseHTTPRequestHandler):
+    protocol_version = 'HTTP/1.1'
+
+    def log_message(self, fmt, *args):
+        if os.environ.get('DEMO_LOG'): super().log_message(fmt, *args)
+
+    def reply(self, code, body=None, ctype='application/json', headers=None):
+        data = body if isinstance(body, bytes) else json.dumps({} if body is None else body).encode()
+        self.send_response(code)
+        self.send_header('Content-Type', ctype)
+        self.send_header('Content-Length', str(len(data)))
+        self.send_header('Cache-Control', 'no-store')
+        for k, v in (headers or {}).items(): self.send_header(k, v)
+        self.end_headers()
+        if self.command == 'HEAD': return
+        try: self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError): self.close_connection = True  # the page stopped waiting (a long poll)
+
+    def body(self):
+        raw = self.raw
+        if 'json' in (self.headers.get('Content-Type') or ''):
+            try: return json.loads(raw or b'{}')
+            except ValueError: return {}
+        return raw
+
+    def do_GET(self): self.route()
+    def do_HEAD(self): self.route()
+    def do_POST(self): self.route()
+    def do_PUT(self): self.route()
+    def do_DELETE(self): self.route()
+    def do_OPTIONS(self): self.reply(204, b'', 'text/plain')
+
+    def route(self):
+        # Read every body first: one left unread would spoil the next request on the same connection.
+        n = int(self.headers.get('Content-Length') or 0)
+        self.raw = self.rfile.read(n) if n else b''
+        u = urllib.parse.urlsplit(self.path)
+        path, query = urllib.parse.unquote(u.path), dict(urllib.parse.parse_qsl(u.query))
+        if path == '/demo': return self.start_page()
+        if not path.startswith('/_'): return self.static(u.path)
+        if path.startswith('/_matrix/client/'): return self.matrix(path, query)
+        if path.startswith('/_matrix/media/') or path.startswith('/_matrix/client/v1/media/'): return self.media(path)
+        if path.startswith('/_bridges/'): return self.bridge(path)
+        if path.startswith('/_archive/'): return self.archive(path, query)
+        if path.startswith('/_calendar/'): return self.calendar(path, query)
+        if path.startswith('/_feed/'): return self.feed(path, query)
+        return self.reply(404, {'errcode': 'M_UNRECOGNIZED', 'error': 'not in the demo'})
+
+    def start_page(self):
+        """Signs the browser in as the demo user and opens Weft."""
+        page = f'''<!doctype html><meta charset="utf-8"><title>Weft demo</title><script>
+localStorage.setItem('ep_token', {json.dumps(TOKEN)}); localStorage.setItem('ep_user', {json.dumps(ME)});
+if (localStorage.getItem('ep_show_all') === null) localStorage.setItem('ep_show_all', '1'); // the inbox lists every chat, not only unread ones
+location.replace('/');
+</script>'''
+        self.reply(200, page.encode(), 'text/html; charset=utf-8')
+
+    def static(self, raw):
+        rel = urllib.parse.unquote(raw).lstrip('/') or 'index.html'
+        full = os.path.realpath(os.path.join(APP, rel))
+        if not full.startswith(os.path.realpath(APP) + os.sep) or not os.path.isfile(full):
+            return self.reply(404, b'not found', 'text/plain')
+        ctype = mimetypes.guess_type(full)[0] or 'application/octet-stream'
+        if ctype.startswith('text/') or ctype in ('application/javascript', 'application/json', 'image/svg+xml'): ctype += '; charset=utf-8'
+        with open(full, 'rb') as f: self.reply(200, f.read(), ctype)
+
+    def authed(self):
+        return self.headers.get('Authorization') == f'Bearer {TOKEN}'
+
+    def matrix(self, path, query):
+        p = re.sub(r'^/_matrix/client/(v3|r0|v1)', '', path)
+        m = self.command
+        if path == '/_matrix/client/versions': return self.reply(200, {'versions': ['v1.11', 'v1.12']})
+        if p == '/login':
+            if m == 'GET': return self.reply(200, {'flows': [{'type': 'm.login.password'}]})
+            return self.reply(200, {'access_token': TOKEN, 'user_id': ME, 'device_id': 'DEMO'})
+        if not self.authed(): return self.reply(401, {'errcode': 'M_UNKNOWN_TOKEN', 'error': 'Sign in through /demo'})
+        if p == '/logout' or p == '/logout/all': return self.reply(200, {})
+        if p == '/account/whoami': return self.reply(200, {'user_id': ME, 'device_id': 'DEMO'})
+        if p == '/sync': return self.reply(200, WORLD.sync(query.get('since'), int(query.get('timeout') or 0)))
+        if p == '/pushrules/' or p == '/pushrules': return self.reply(200, {'global': {}})
+        if p == '/capabilities': return self.reply(200, {'capabilities': {}})
+        if p == '/search': return self.reply(200, WORLD.search(((self.body() or {}).get('search_categories') or {}).get('room_events', {}).get('search_term', '')))
+        if p.startswith('/profile/'): return self.reply(200, {'displayname': WORLD.rooms and next((r['members'][u] for r in WORLD.rooms.values() for u in r['members'] if u == p.split('/')[2]), None)})
+        acc = re.match(r'^/user/([^/]+)/account_data/(.+)$', p)
+        if acc:
+            kind = acc.group(2)
+            if m == 'PUT':
+                WORLD.account[kind] = self.body()
+                WORLD.change(None, 'account', {'type': kind, 'content': WORLD.account[kind]})
+                return self.reply(200, {})
+            return self.reply(200, WORLD.account[kind]) if kind in WORLD.account else self.reply(404, {'errcode': 'M_NOT_FOUND'})
+        room = re.match(r'^/rooms/([^/]+)/(.+)$', p)
+        if room:
+            rid, rest = room.groups()
+            r = WORLD.rooms.get(rid)
+            if not r: return self.reply(404, {'errcode': 'M_NOT_FOUND', 'error': 'no such room in the demo'})
+            if rest == 'messages': return self.reply(200, {'chunk': [], 'start': query.get('from', ''), 'state': []})
+            if rest == 'joined_members': return self.reply(200, {'joined': {u: {'display_name': n} for u, n in r['members'].items()}})
+            if rest == 'members': return self.reply(200, {'chunk': [e for e in r['state'] if e['type'] == 'm.room.member']})
+            if rest.startswith('state'): return self.reply(200, r['state'] if rest == 'state' else {})
+            send = re.match(r'^send/([^/]+)/(.+)$', rest)
+            if send and m == 'PUT': return self.reply(200, {'event_id': WORLD.send(rid, send.group(1), self.body(), send.group(2))})
+            if rest.startswith('receipt/') or rest == 'read_markers':
+                b = self.body() if rest == 'read_markers' else {}
+                eid = b.get('m.read') or b.get('m.fully_read') or rest.split('/')[-1]
+                r['receipts'][ME] = eid
+                WORLD.change(rid, 'receipt', eid)
+                return self.reply(200, {})
+            if rest.startswith('context/'):
+                eid = rest.split('/', 1)[1]
+                ev = next((e for e in r['timeline'] if e['event_id'] == eid), None)
+                return self.reply(200, {'event': ev, 'events_before': [], 'events_after': [], 'state': []}) if ev else self.reply(404, {'errcode': 'M_NOT_FOUND'})
+            if rest.startswith('event/'):
+                ev = next((e for e in r['timeline'] if e['event_id'] == rest.split('/', 1)[1]), None)
+                return self.reply(200, ev) if ev else self.reply(404, {'errcode': 'M_NOT_FOUND'})
+            if rest.startswith('typing/') or rest.startswith('redact/') or rest == 'leave' or rest == 'forget': return self.reply(200, {})
+            return self.reply(200, {})
+        return self.reply(404, {'errcode': 'M_UNRECOGNIZED', 'error': 'not in the demo'})
+
+    def media(self, path):
+        if path.endswith('/upload') and self.command == 'POST':
+            data = self.body()
+            mid = f'demo{len(WORLD.media) + 1}'
+            WORLD.media[mid] = (data if isinstance(data, bytes) else json.dumps(data).encode(), self.headers.get('Content-Type') or 'application/octet-stream')
+            return self.reply(200, {'content_uri': f'mxc://{HS}/{mid}'})
+        mid = path.rstrip('/').split('/')[-1]
+        if mid in WORLD.media: return self.reply(200, WORLD.media[mid][0], WORLD.media[mid][1])
+        return self.reply(404, {'errcode': 'M_NOT_FOUND'})
+
+    def bridge(self, path):
+        net = path.split('/')[2]
+        if net == 'discord' and path.endswith('/ping'):
+            return self.reply(200, {'Discord': {'logged_in': True, 'connected': True, 'id': '900000000000000000'}})
+        if path.endswith('/whoami'): return self.reply(200, {'logins': LOGINS.get(net, [])})
+        if net == 'gmail' and '/codes' in path:
+            time.sleep(5)  # a long poll that never brings a code
+            return self.reply(200, {'seq': 0, 'codes': [], 'ttl': 600, 'now': int(time.time() * 1000)})
+        if self.command == 'GET': return self.reply(200, {})
+        return self.reply(403, {'errcode': 'M_FORBIDDEN', 'error': 'Accounts cannot be changed in the demo.'})
+
+    def archive(self, path, query):
+        if path == '/_archive/chats': return self.reply(200, {'chats': archive_chats()})
+        msgs = re.match(r'^/_archive/rooms/([^/]+)/messages$', path)
+        if msgs:
+            before = int(query.get('before') or 9e15)
+            return self.reply(200, {'messages': [x for x in archive_messages(msgs.group(1)) if x['ts'] < before][::-1], 'until': 0})
+        if path == '/_archive/search': return self.reply(200, {'results': []})
+        return self.reply(200, {})
+
+    def calendar(self, path, query):
+        c = WORLD.calendar
+        if path == '/_calendar/doc':
+            if query.get('have') == str(c['version']): return self.reply(200, {'version': c['version'], 'same': True})
+            return self.reply(200, c)
+        if path == '/_calendar/ops' and self.command == 'POST':
+            for op in (self.body() or {}).get('ops', []):
+                cal = next((x for x in c['doc']['calendars'] if x['id'] == op.get('cal')), None)
+                if op.get('op') == 'put' and cal:
+                    cal['events'] = [e for e in cal['events'] if e['uid'] != op['event']['uid']] + [op['event']]
+                elif op.get('op') == 'del' and cal:
+                    cal['events'] = [e for e in cal['events'] if e['uid'] != op.get('uid')]
+            c['version'] += 1
+            return self.reply(200, c)
+        return self.reply(404, {'error': 'not in the demo'})
+
+    def feed(self, path, query):
+        if path == '/_feed/media':
+            n = int(query.get('id', 'demo-0').split('-')[-1])
+            bg, fg = FEED_ITEMS[n][6] or ('#0a1512', '#628790')
+            return self.reply(200, SVG.format(bg=bg, fg=fg, x=200 + 60 * n).encode(), 'image/svg+xml')
+        if path in ('/_feed/doc', '/_feed/refresh', '/_feed/window', '/_feed/settings', '/_feed/policy'): return self.reply(200, feed_doc())
+        if path == '/_feed/window/close': return self.reply(200, feed_doc())
+        return self.reply(404, {'error': 'not in the demo'})
+
+
+def main():
+    global WORLD
+    ap = argparse.ArgumentParser(description='Weft with made-up people and chats, on this computer only.')
+    ap.add_argument('--port', type=int, default=8790, help='default 8790; a busy port falls back to a free one')
+    args = ap.parse_args()
+    WORLD = World()
+    try: server = ThreadingHTTPServer(('127.0.0.1', args.port), Handler)
+    except OSError: server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    args.port = server.server_address[1]
+    server.daemon_threads = True
+    print(f'Weft demo: open http://127.0.0.1:{args.port}/demo   (Ctrl+C stops it; everything here is made up)', flush=True)
+    try: server.serve_forever()
+    except KeyboardInterrupt: pass
+
+
+if __name__ == '__main__':
+    main()
