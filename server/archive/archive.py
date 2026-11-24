@@ -1506,8 +1506,10 @@ class Api(BaseHTTPRequestHandler):
 
 
 def room_export_end(c, room):
+    """The newest message of the room's exports, which hold everything older. Not Beeper's: its cache keeps only a
+    chat's last messages, so the bridge pages on below them (import_beeper.py)."""
     return c.execute("""SELECT max(m.ts) FROM messages m JOIN chats c ON c.id = m.chat
-                        WHERE c.room = ? AND c.source NOT IN ('matrix', 'bridge')""", (room,)).fetchone()[0]
+                        WHERE c.room = ? AND c.source NOT IN ('matrix', 'bridge', 'beeper')""", (room,)).fetchone()[0]
 
 
 def export_caps(c):
