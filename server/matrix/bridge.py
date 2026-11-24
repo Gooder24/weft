@@ -105,22 +105,34 @@ def remote_of(ghost: str) -> str | None:
     return "@" + raw
 
 
-MATRIX_TO = re.compile(r"https://matrix\.to/#/(@[^\"'<>\s?/]+)")
+# A user link, written with "@" or "%40" (Element and Beeper encode it), alone or as the whole <a> around it.
+MATRIX_TO = re.compile(
+    r"<a\s[^>]*?href=[\"']https://matrix\.to/#/((?:@|%40)[^\"'<>\s?/]+)[^\"'<>\s]*[\"'][^>]*>(.*?)</a>"  # 1 id, 2 text
+    r"|https://matrix\.to/#/((?:@|%40)[^\"'<>\s?/]+)[^\"'<>\s]*",  # 3 id
+    re.S)
 
 
 def translate_users(content: dict, to_local: bool, me: str) -> None:
     """Mentions (m.mentions and matrix.to links) name the same people on the other side: going out a ghost becomes
     its remote id and Karchi his remote account, and nothing names Weft's own server or carries Weft's own fields
-    (sk.karchi.*); coming in Karchi's remote account becomes him and anyone else a ghost."""
-    def other(uid: str) -> str | None:
+    (sk.karchi.*); coming in Karchi's remote account becomes him and anyone else a ghost. A link to someone who
+    has no account there (another bridge's ghost, a bot) goes out as its text alone."""
+    def other(uid) -> str | None:
+        if not isinstance(uid, str) or not uid.startswith("@"):
+            return None
         if to_local:
             return str(ADMIN) if uid == me else str(ghost_of(uid))
         return me if uid == ADMIN else remote_of(uid)
 
+    def href(mapped: str) -> str:
+        return f"https://matrix.to/#/{urllib.parse.quote(mapped, safe='@:')}"
+
     def link(m: re.Match) -> str:
-        uid = urllib.parse.unquote(m.group(1))
-        mapped = other(uid)
-        return f"https://matrix.to/#/{urllib.parse.quote(mapped, safe='@:')}" if mapped else m.group(0)
+        in_a = m.group(1) is not None
+        mapped = other(urllib.parse.unquote(m.group(1) if in_a else m.group(3)))
+        if in_a:
+            return f'<a href="{href(mapped)}">{m.group(2)}</a>' if mapped else m.group(2)
+        return href(mapped) if mapped else ("" if not to_local else m.group(0))
 
     for part in (content, content.get("m.new_content")):
         if not isinstance(part, dict):
@@ -130,7 +142,8 @@ def translate_users(content: dict, to_local: bool, me: str) -> None:
                 part.pop(key)
         mentions = part.get("m.mentions")
         if isinstance(mentions, dict) and isinstance(mentions.get("user_ids"), list):
-            mentions["user_ids"] = [u for u in (other(str(u)) for u in mentions["user_ids"]) if u]
+            # A new dict: an edit's two m.mentions may be one object, and must not be translated twice.
+            part["m.mentions"] = {**mentions, "user_ids": [u for u in map(other, mentions["user_ids"]) if u]}
         if isinstance(part.get("formatted_body"), str):
             part["formatted_body"] = MATRIX_TO.sub(link, part["formatted_body"])
 

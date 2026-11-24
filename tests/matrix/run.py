@@ -11,6 +11,7 @@ login, keys, ids or rooms behind and ends the device on the other server.
 """
 import asyncio
 import json
+import urllib.parse
 import os
 import secrets
 import shutil
@@ -349,6 +350,18 @@ namespaces:
            and f"matrix.to/#/{friend_id}" in raw_out.get("formatted_body", ""), raw_out.get("m.mentions"))
         ok("…and nothing of Weft's server or own fields goes there", "weft.test" not in json.dumps(raw_out) and not any(k.startswith("sk.karchi.") for k in raw_out),
            [k for k in raw_out if k.startswith("sk.karchi.")])
+        # An edit carries its mentions twice; a %40 link (as Element writes it) is a mention too.
+        await local.call("PUT", f"/rooms/{room}/send/m.room.message/me", {
+            "msgtype": "m.text", "body": "* friend: pozri znova", "m.mentions": {"user_ids": [ghost]},
+            "m.new_content": {"msgtype": "m.text", "body": "friend: pozri znova", "format": "org.matrix.custom.html",
+                              "formatted_body": f'<a href="https://matrix.to/#/{urllib.parse.quote(ghost, safe="")}">friend</a>: pozri znova',
+                              "m.mentions": {"user_ids": [ghost]}},
+            "m.relates_to": {"rel_type": "m.replace", "event_id": mine["event_id"]}})
+        edit = await until(lambda: asyncio.sleep(0, next((m for m in seen["messages"] if "pozri znova" in (m.content.body or "")), None)))
+        raw_edit = edit.content.serialize() if edit else {}
+        ok("an edit with a mention names the friend there too", raw_edit.get("m.mentions", {}).get("user_ids") == [friend_id]
+           and raw_edit.get("m.new_content", {}).get("m.mentions", {}).get("user_ids") == [friend_id]
+           and "weft.test" not in json.dumps(raw_edit), raw_edit)
         await friend.send_message_event(remote_room, EventType.ROOM_MESSAGE, {
             "msgtype": "m.text", "body": "karchi: hej", "format": "org.matrix.custom.html",
             "formatted_body": f'<a href="https://matrix.to/#/{remote_karchi}">karchi</a>: hej', "m.mentions": {"user_ids": [remote_karchi]}})
