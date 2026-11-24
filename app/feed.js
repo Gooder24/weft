@@ -7,7 +7,7 @@ import { icon } from './icons.js';
 /** Tiles drawn at once; „Zobraziť ďalšie“ adds as many again (sixty YouTube channels bring hundreds of videos). */
 const PAGE = 120;
 export function createFeed({ h, api, kv, refresh, offline, user, settingsPanel, schedule, close, isOpen = () => false, readingWindow, onWindow, windowsLeft }) {
-  const state = { doc: null, busy: false, error: '', open: null, addUrl: '', addName: '', addCat: '', reader: null, sel: null, limit: PAGE };
+  const state = { doc: null, busy: false, error: '', open: null, addUrl: '', addName: '', addCat: '', catDraft: {}, reader: null, sel: null, limit: PAGE };
   const media = new Map();
   let generation = 0;
   let flushing = null;
@@ -584,8 +584,11 @@ export function createFeed({ h, api, kv, refresh, offline, user, settingsPanel, 
       !window.desktop?.collect ? h('p', { class: 'hint' }, T('Instagram pripojíš v desktopovej appke Weft. Potom feed uvidíš aj tu.')) : null,
       h('h3', {}, T('RSS, YouTube a X')),
       c.sources.length ? c.sources.map((s) => h('div', { class: 'feed-source', 'data-feed-source': s.id }, h('span', {}, s.name || s.url),
-        h('input', { class: 'feed-source-cat', value: s.category || '', placeholder: T('Kategória'), 'aria-label': T`Kategória zdroja ${s.name || s.url}`, list: 'feed-topics',
-          onchange: (e) => { const category = e.target.value.trim(); if (category !== (s.category || '')) configure({ sources: c.sources.map((x) => (x.id === s.id ? { ...x, category } : x)) }); } }),
+        // A draft per row and a data-root keep focus and typing through a re-render (a sync). The save waits a
+        // tick: `change` fires while a click or Tab is moving focus, and a render then would find no field to keep.
+        h('input', { class: 'feed-source-cat', value: state.catDraft[s.id] ?? s.category ?? '', placeholder: T('Kategória'), 'aria-label': T`Kategória zdroja ${s.name || s.url}`, list: 'feed-topics', 'data-root': `__feedCat:${s.id}`,
+          oninput: (e) => { state.catDraft[s.id] = e.target.value; },
+          onchange: (e) => { const category = e.target.value.trim(); delete state.catDraft[s.id]; if (category !== (s.category || '')) setTimeout(() => configure({ sources: cfg().sources.map((x) => (x.id === s.id ? { ...x, category } : x)) })); } }),
         h('button', { class: 'ghost danger', onclick: () => configure({ sources: c.sources.filter((x) => x.id !== s.id) }) }, T('Odstrániť'))))
         : h('p', { class: 'hint' }, T('Zatiaľ žiadny zdroj.')),
       h('datalist', { id: 'feed-topics' }, topics().map((t) => h('option', { value: t }))),
