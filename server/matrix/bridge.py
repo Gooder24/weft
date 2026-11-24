@@ -107,9 +107,10 @@ def remote_of(ghost: str) -> str | None:
 
 # A user link, written with "@" or "%40" (Element and Beeper encode it), alone or as the whole <a> around it.
 MATRIX_TO = re.compile(
-    r"<a\s[^>]*?href=[\"']https://matrix\.to/#/((?:@|%40)[^\"'<>\s?/]+)[^\"'<>\s]*[\"'][^>]*>(.*?)</a>"  # 1 id, 2 text
-    r"|https://matrix\.to/#/((?:@|%40)[^\"'<>\s?/]+)[^\"'<>\s]*",  # 3 id
-    re.S)
+    r"<a\s(?:[^>]*?\s)?href=[\"']https?://matrix\.to/#/((?:@|%40)[^\"'<>\s?/]+)[^\"'<>\s]*[\"'][^>]*>(.*?)</a>"  # 1 id, 2 text
+    r"|https?://matrix\.to/#/((?:@|%40)[^\"'<>\s?/]+)[^\"'<>\s]*",  # 3 id
+    re.S | re.I)
+TRAILING = re.compile(r"[.,;:!?)\]]+$")  # sentence punctuation after a bare link is not part of it
 
 
 def translate_users(content: dict, to_local: bool, me: str) -> None:
@@ -122,17 +123,28 @@ def translate_users(content: dict, to_local: bool, me: str) -> None:
             return None
         if to_local:
             return str(ADMIN) if uid == me else str(ghost_of(uid))
-        return me if uid == ADMIN else remote_of(uid)
+        if uid == ADMIN:
+            return me
+        if not uid.endswith(f":{SERVER_NAME}"):
+            return uid  # someone of another server, already named as they are there
+        return remote_of(uid)
 
     def href(mapped: str) -> str:
         return f"https://matrix.to/#/{urllib.parse.quote(mapped, safe='@:')}"
 
     def link(m: re.Match) -> str:
-        in_a = m.group(1) is not None
-        mapped = other(urllib.parse.unquote(m.group(1) if in_a else m.group(3)))
-        if in_a:
-            return f'<a href="{href(mapped)}">{m.group(2)}</a>' if mapped else m.group(2)
-        return href(mapped) if mapped else ("" if not to_local else m.group(0))
+        if m.group(1) is not None:
+            mapped = other(urllib.parse.unquote(m.group(1)))
+            text = MATRIX_TO.sub(link, m.group(2))  # an auto-linked text is a link too
+            return f'<a href="{href(mapped)}">{text}</a>' if mapped else text
+        raw = m.group(0)
+        tail = TRAILING.search(raw)
+        if tail:
+            raw = raw[:tail.start()]
+        uid = urllib.parse.unquote(MATRIX_TO.match(raw).group(3)) if MATRIX_TO.match(raw) else ""
+        mapped = other(uid)
+        kept = href(mapped) if mapped else ("" if not to_local else raw)
+        return kept + (tail.group(0) if tail else "")
 
     for part in (content, content.get("m.new_content")):
         if not isinstance(part, dict):
