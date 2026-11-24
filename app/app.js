@@ -2429,11 +2429,15 @@ const TYPING_APPS = new Set(['messenger', 'instagram', 'whatsapp', 'discord']);
 const typingOn = () => S.account[TYPING]?.send !== false;
 let typingOut = null; // { room, at }: the chat the homeserver last heard Karchi typing in, and when
 function typingSay(room, typing) {
-  call('PUT', `/rooms/${q(room)}/typing/${q(S.userId)}`, typing ? { typing: true, timeout: 20000 } : { typing: false }).catch(() => {});
+  // keepalive: a stop sent as the window closes still arrives.
+  fetch(`/_matrix/client/v3/rooms/${q(room)}/typing/${q(S.userId)}`, {
+    method: 'PUT', keepalive: true, headers: { Authorization: `Bearer ${S.token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(typing ? { typing: true, timeout: 20000 } : { typing: false }),
+  }).catch(() => {});
 }
 /** The message box of `r` now holds `text`. A command (/gif…) or an edit of an old message is no typing. */
 function typingNote(r, text) {
-  const say = typingOn() && !S.offline && !document.hidden && TYPING_APPS.has(r.app) && !r.archiveOnly
+  const say = typingOn() && !S.offline && !document.hidden && !S.panel && !S.overlay && TYPING_APPS.has(r.app) && !r.archiveOnly
     && !!text.trim() && !text.trimStart().startsWith('/') && S.editing?.room !== r.id;
   if (!say || typingOut?.room !== r.id) typingStop();
   if (!say || (typingOut && Date.now() - typingOut.at < 10000)) return;
@@ -2447,6 +2451,7 @@ function typingStop() {
   typingSay(room, false);
 }
 document.addEventListener('visibilitychange', () => { if (document.hidden) typingStop(); });
+addEventListener('pagehide', typingStop);
 
 /** Sends the attachments, each as its own message as Messenger does, then the text. `given`: a stashed text sent
  *  as it is („Poslať“ in the stash); the message box, its files and its reply stay. */
@@ -13912,8 +13917,9 @@ function render() {
   }
   if (calendarFocus && !S.panel && !S.overlay && !cal.edit && !cal.detail && !cal.search) root.querySelector('.home-calendar')?.focus({ preventScroll: true });
   else if (inCalendar && !S.panel && !S.overlay && (!document.activeElement || document.activeElement === document.body)) root.querySelector('.home-calendar')?.focus({ preventScroll: true });
-  // The box Karchi typed in is gone or no longer has the keys (another chat, the network switch): he stopped typing there.
-  if (typingOut && document.activeElement?.dataset?.root !== typingOut.room) typingStop();
+  // The box Karchi typed in is gone, no longer has the keys (another chat, the network switch) or is under a panel or
+  // overlay (Ctrl+, keeps its focus behind the veil): he stopped typing there.
+  if (typingOut && (document.activeElement?.dataset?.root !== typingOut.room || S.panel || S.overlay)) typingStop();
   if (S.view === 'main') { markRead(); if (!S.homeReady) { S.homeReady = true; cal.view = calDefault(); queueMicrotask(() => { loadCalendar(); if (S.surface === 'feed') feed.enter(); else feed.load(); }); } }
 }
 

@@ -19,7 +19,7 @@ export default {
   "Nastavenie sa neuložilo.": "The setting was not saved.",
   "Písanie": "Typing",
   "Ukázať ľuďom, že píšem": "Show people that I am typing",
-  "Messenger, Instagram, WhatsApp a Discord uvidia „píše…“, kým píšeš správu.": "Messenger, Instagram, WhatsApp and Discord see „typing…“ while you write a message.",
+  "Messenger, Instagram, WhatsApp a Discord uvidia „píše…“, kým píšeš správu.": "Messenger, Instagram, WhatsApp and Discord see “typing…” while you write a message.",
   "Nová správa sa ukáže": "A new message will show",
   "Nové správy sa ukážu": "New messages will show",
   "{} Dnes ešte {} na čítanie.": "{} {} left for reading today.",
