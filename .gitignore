@@ -2,7 +2,6 @@ node_modules/
 dist/
 overenie/20*/
 overenie/verdikt.md
-overenie/verifier-output.txt
 __pycache__/
 server/gmail/state/
 server/cli/token
