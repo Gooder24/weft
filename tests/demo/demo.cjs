@@ -115,9 +115,14 @@ async function main() {
     await shot('05-new-mail-gmail-beta');
     // …and, with a Matrix account, a new chat by @name:server and a room by #alias:server.
     ok('Ctrl+N offers a new Matrix chat', newChat.includes('Nový chat na Matrixe'));
-    await p.type('.cmd.new .cmdinput', '@ana:example.org');
+    // Choosing the row with nothing typed puts "@" in the field and the address is typed after it.
+    const mxRow = await p.evaluateHandle(() => [...document.querySelectorAll('.cmd.new .results > *')].find((e) => e.innerText.includes('Nový chat na Matrixe')));
+    if (mxRow.asElement()) await mxRow.asElement().click();
     await sleep(300);
-    ok('…with the @name:server typed', (await p.$eval('.cmd.new', (e) => e.innerText)).includes('Nový chat na Matrixe s @ana:example.org'));
+    await p.keyboard.type('ana:example.org');
+    await sleep(300);
+    const typed = await p.$eval('.cmd.new .cmdinput', (e) => e.value);
+    ok('…with the @name:server typed', typed === '@ana:example.org' && (await p.$eval('.cmd.new', (e) => e.innerText)).includes('Nový chat na Matrixe s @ana:example.org'), typed);
     await p.focus('.cmd.new .cmdinput');
     await p.keyboard.down('Control'); await p.keyboard.press('a'); await p.keyboard.up('Control');
     await p.keyboard.type('#weft:example.org');

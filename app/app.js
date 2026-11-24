@@ -9459,6 +9459,7 @@ function matrixAsk(o) {
   const text = o.query.trim();
   if (/^@[^:\s]+:[^\s]+$/.test(text)) return { user: text };
   if (/^[#!][^:\s]+:[^\s]+$/.test(text)) return { room: text };
+  if (/^[@#][^\s]*$/.test(text)) return {}; // an address being typed keeps the row
   const query = norm(text);
   return !query || nameScore('novy chat matrix miestnost', query) >= 0 ? {} : null;
 }
@@ -9467,9 +9468,13 @@ function matrixAsk(o) {
 async function matrixStart(o, mx) {
   if (mx.user) return startChat({ app: 'matrix', contact: { id: mx.user } });
   if (!mx.room) {
-    o.query = '@';
+    if (!/^[@#]/.test(o.query.trim())) o.query = '@';
     o.index = 0;
-    return render();
+    render();
+    // The caret goes after the "@", so the address is typed behind it.
+    const field = document.querySelector('.cmd.new .cmdinput');
+    if (field) { field.focus(); field.setSelectionRange(field.value.length, field.value.length); }
+    return;
   }
   remoteDrop(o);
   S.overlay = null;
