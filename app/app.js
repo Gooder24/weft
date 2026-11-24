@@ -5443,10 +5443,13 @@ function mainView() {
   sideLast = { shown, pool };
   const quiet = eduQuiet();
   const unread = mine.filter((e) => e.unread && inBox('inbox')(e) && !(quiet && e.app === 'edupage')).length;
-  document.title = unread ? `(${unread}) Weft` : 'Weft';
   scheduleBatch();
   const pendingRoom = !open && (S.selected?.startsWith('!') || (S.selected && S.selected === S.justSent));
   const newEdu = S.selected?.startsWith('edu:') ? S.selected.slice(4) : null;
+  // The window title names the open chat as its header does ("(3) Name · Weft"): x270's work log reads it.
+  const named = open?.kind === 'room' ? (open.merged && groupOf(open.room.id) ? open.title : roomTitle(open.room))
+    : newEdu ? eduName(newEdu) : open ? titleOf(open.thread) : '';
+  document.title = `${unread ? `(${unread}) ` : ''}${named ? `${named} · ` : ''}Weft`;
   const message = open?.kind === 'room' ? chatView(open.room, open)
     : S.selected === MAIL ? mailView()
     : newEdu ? newEduView(newEdu)
