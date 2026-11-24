@@ -98,7 +98,7 @@ def ghost_of(remote: str) -> UserID:
 
 
 def remote_of(ghost: str) -> str | None:
-    m = re.match(rf"^@{GHOST_PREFIX}(.+):{re.escape(SERVER_NAME)}$", ghost)
+    m = re.match(rf"^@{GHOST_PREFIX}(.+):{re.escape(SERVER_NAME)}$", ghost, re.I)
     if not m:
         return None
     raw = re.sub(r"(=[0-9a-f]{2})+", lambda g: bytes.fromhex(g.group(0).replace("=", "")).decode("utf-8", "replace"), m.group(1))
@@ -107,8 +107,8 @@ def remote_of(ghost: str) -> str | None:
 
 # A user link, written with "@" or "%40" (Element and Beeper encode it), alone or as the whole <a> around it.
 MATRIX_TO = re.compile(
-    r"<a\s(?:[^>]*?\s)?href=[\"']https?://matrix\.to/#/((?:@|%40)[^\"'<>\s?/]+)[^\"'<>\s]*[\"'][^>]*>(.*?)</a>"  # 1 id, 2 text
-    r"|https?://matrix\.to/#/((?:@|%40)[^\"'<>\s?/]+)[^\"'<>\s]*",  # 3 id
+    r"<a\s(?:[^>]*?\s)?href=[\"']https?://matrix\.to/#/((?:@|%40)[^\"'<>\s?/&]+)[^\"'<>\s]*[\"'][^>]*>(.*?)</a>"  # 1 id, 2 text
+    r"|https?://matrix\.to/#/((?:@|%40)[^\"'<>\s?/&]+)(?:\?[^\"'<>\s&]*(?:&amp;[^\"'<>\s&]*)*)?",  # 3 id, its ?via=…
     re.S | re.I)
 TRAILING = re.compile(r"[.,;:!?)\]]+$")  # sentence punctuation after a bare link is not part of it
 
@@ -125,7 +125,7 @@ def translate_users(content: dict, to_local: bool, me: str) -> None:
             return str(ADMIN) if uid == me else str(ghost_of(uid))
         if uid == ADMIN:
             return me
-        if not uid.endswith(f":{SERVER_NAME}"):
+        if not uid.lower().endswith(f":{SERVER_NAME.lower()}"):
             return uid  # someone of another server, already named as they are there
         return remote_of(uid)
 

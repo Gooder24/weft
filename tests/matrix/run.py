@@ -342,13 +342,14 @@ namespaces:
         # Mentions name the same people on the other side; nothing names Weft's server or carries Weft's own fields.
         await local.call("PUT", f"/rooms/{room}/send/m.room.message/mn", {
             "msgtype": "m.text", "body": "friend: pozri", "format": "org.matrix.custom.html",
-            "formatted_body": f'<a href="https://matrix.to/#/{ghost}">friend</a>: pozri (aj https://matrix.to/#/@other:elsewhere.test).',
+            "formatted_body": f'<a href="https://matrix.to/#/{ghost}">friend</a>: pozri &lt;https://matrix.to/#/{ghost}&gt; (aj https://matrix.to/#/@other:elsewhere.test).',
             "m.mentions": {"user_ids": [ghost, "@other:elsewhere.test"]}, "sk.karchi.resend_of": "$x"})
         out = await until(lambda: asyncio.sleep(0, next((m for m in seen["messages"] if m.content.body == "friend: pozri"), None)))
         raw_out = out.content.serialize() if out else {}
         ok("a mention from Weft names the friend there, and someone of a third server as they are",
            raw_out.get("m.mentions", {}).get("user_ids") == [friend_id, "@other:elsewhere.test"]
-           and f"matrix.to/#/{friend_id}" in raw_out.get("formatted_body", "")
+           and f"<a href=\"https://matrix.to/#/{friend_id}\">friend</a>" in raw_out.get("formatted_body", "")
+           and f"&lt;https://matrix.to/#/{friend_id}&gt;" in raw_out.get("formatted_body", "")
            and raw_out.get("formatted_body", "").endswith("(aj https://matrix.to/#/@other:elsewhere.test)."), raw_out.get("formatted_body"))
         ok("…and nothing of Weft's server or own fields goes there", "weft.test" not in json.dumps(raw_out) and not any(k.startswith("sk.karchi.") for k in raw_out),
            [k for k in raw_out if k.startswith("sk.karchi.")])
