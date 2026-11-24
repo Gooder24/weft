@@ -86,10 +86,11 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   `#alias:server`. Sign-out ends the device there and deletes keys, ids and rooms. Weft's homeserver keeps
   federation off. Check: `tests/matrix/run.py` (two throwaway Tuwunels; `TUWUNEL=~/matrix-spike/bin/tuwunel`).
   Its encryption is mautrix-python on libolm (python3-olm), which upstream marks deprecated (known timing CVEs,
-  replacement vodozemac); versions are pinned in `requirements.txt`. The way out is a bridge on mautrix-go or the
-  matrix-rust-sdk, which use vodozemac; until then do not unpin. `bridge.db` has `PRAGMA user_version`: a schema
-  change is a new step at the end of `Store.MIGRATIONS`. After restoring `state/` from a backup, sign out and in
-  again (old Olm/Megolm state must never come back), or remote keys break.
+  replacement vodozemac); mautrix and its database libraries are pinned in `requirements.txt`, python3-olm comes
+  from Debian. The way out is a bridge on the matrix-rust-sdk (vodozemac) or on mautrix-go without libolm; until
+  then do not unpin. `bridge.db` has `PRAGMA user_version`: a schema change is a new step at the end of
+  `Store.MIGRATIONS`. It runs in WAL mode, so a backup copies `bridge.db*` (or `sqlite3 .backup`). After restoring
+  `state/` from a backup, sign out and in again (old Olm/Megolm state must never come back), or remote keys break.
 - `server/gmail/cleanup.py` and `matrix-spike-gmail-cleanup.timer` move explicitly enabled accounts'
   Gmail Promotions and Social categories to Trash every five minutes on asus, including old mail.
   Policy: `gmail/state/cleanup-policy.json`; private audit/status alongside it. Never empty Trash or
