@@ -26,7 +26,9 @@ import aiohttp
 from mautrix.client import Client
 from mautrix.client.state_store.asyncpg import PgStateStore
 from mautrix.crypto import OlmMachine, PgCryptoStore
-from mautrix.types import EventType, MessageType, ReceiptType, RoomCreatePreset, TextMessageEventContent, UserID
+from mautrix.crypto.attachments import decrypt_attachment, encrypt_attachment
+from mautrix.types import (EventType, FileInfo, MediaMessageEventContent, MessageType, ReceiptType, RoomCreatePreset,
+                           TextMessageEventContent, UserID)
 from mautrix.util.async_db import Database
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -212,6 +214,7 @@ namespaces:
         remote_karchi, remote_token = await remote.register("karchi", reg)
         friend_id, friend_token = await remote.register("friend", reg)
         _, who = await remote.call("GET", "/account/whoami", token=friend_token)
+        remote_device = (await remote.call("GET", "/account/whoami", token=remote_token))[1].get("device_id")
 
         env = {**os.environ, "HOMESERVER": local.url, "SERVER_NAME": "weft.test", "ADMIN_MXID": karchi,
                "REGISTRATION": str(apps / "matrix.yaml"), "DOUBLEPUPPET": str(apps / "doublepuppet.yaml"),
@@ -319,6 +322,37 @@ namespaces:
         ok("typing there shows in Weft", await until(typing_here))
         await friend.set_typing(remote_room, timeout=0)
 
+        # Files: an encrypted one from there arrives readable in Weft; one from Weft goes out encrypted.
+        data = b"poznamky " + secrets.token_bytes(200)
+        cipher, efile = encrypt_attachment(data)
+        efile.url = await friend.upload_media(cipher, mime_type="application/octet-stream")
+        await friend.send_message(remote_room, MediaMessageEventContent(
+            msgtype=MessageType.FILE, body="poznamky.bin", file=efile, info=FileInfo(mimetype="application/octet-stream", size=len(data))))
+
+        async def file_here():
+            await sync.step()
+            return sync.find(room, lambda e: e["content"].get("body") == "poznamky.bin")
+        fe = await until(file_here)
+        got_bytes = b""
+        if fe and str(fe["content"].get("url", "")).startswith("mxc://"):
+            async with http.get(f"{local.url}/_matrix/client/v1/media/download/{fe['content']['url'][6:]}",
+                                headers={"Authorization": f"Bearer {karchi_token}"}) as res:
+                got_bytes = await res.read()
+        ok("an encrypted file from there opens in Weft", got_bytes == data, fe and fe["content"].get("url"))
+        mine_data = b"odpoved " + secrets.token_bytes(200)
+        async with http.post(f"{local.url}/_matrix/media/v3/upload", data=mine_data,
+                             headers={"Authorization": f"Bearer {karchi_token}", "Content-Type": "application/octet-stream"}) as res:
+            mxc = (await res.json())["content_uri"]
+        await local.call("PUT", f"/rooms/{room}/send/m.room.message/t3", {"msgtype": "m.file", "body": "odpoved.bin", "url": mxc,
+                                                                          "info": {"size": len(mine_data)}})
+        there = await until(lambda: asyncio.sleep(0, next((m for m in seen["messages"] if m.content.body == "odpoved.bin"), None)))
+        opened = b""
+        if there and there.content.file:
+            f = there.content.file
+            opened = decrypt_attachment(await friend.download_media(f.url), f.key.key, f.hashes["sha256"], f.iv)
+        ok("a file from Weft goes there encrypted and opens", bool(there) and not there.content.url and opened == mine_data,
+           there and (bool(there.content.file), there.content.url))
+
         # Joining a room by its #alias.
         club = await friend.create_room(alias_localpart="klub", preset=RoomCreatePreset.PUBLIC, name="Klub")
         status, joined = await prov.call("POST", "/join", {"room": "#klub:remote.test"}, base=P)
@@ -354,6 +388,30 @@ namespaces:
             await sync.step()
             return {room, club_local} <= sync.left
         ok("Karchi has left the Matrix chats in Weft", await until(left))
+
+        # A token of a session Karchi keeps: Weft gets a device of its own, or uses that session only while it has
+        # no keys, and signing out never ends that session.
+        _, start = await prov.call("POST", "/login/start/token", {}, base=P)
+        status, done = await prov.call("POST", f"/login/step/{start['login_id']}/{start['step_id']}/user_input",
+                                       {"homeserver": remote.url, "token": remote_token}, base=P)
+        ok("sign-in by token completes", status == 200 and done.get("type") == "complete", done)
+        own = sqlite3.connect(base / "bridge" / "bridge.db").execute("SELECT device_id, own_device FROM login").fetchone()
+        ok("…on a device of its own, or on one that had no keys", bool(own) and (own[1] == 1 or own[0] == remote_device), own)
+        login = await until(connected)
+        ok("…and connects", bool(login))
+        status, _ = await prov.call("POST", f"/logout/{done.get('complete', {}).get('user_login_id')}", {}, base=P)
+        status2, _ = await remote.call("GET", "/account/whoami", token=remote_token)
+        ok("signing out leaves Karchi's own session working", status == 200 and status2 == 200, (status, status2))
+        # A session that already has keys (the friend's, an Element) is never used as Weft's device.
+        _, start = await prov.call("POST", "/login/start/token", {}, base=P)
+        status, done = await prov.call("POST", f"/login/step/{start['login_id']}/{start['step_id']}/user_input",
+                                       {"homeserver": remote.url, "token": friend_token}, base=P)
+        own = sqlite3.connect(base / "bridge" / "bridge.db").execute("SELECT device_id, own_device FROM login").fetchone()
+        ok("a session with keys is never shared", status == 400 or (bool(own) and own[1] == 1 and own[0] != who["device_id"]), (status, done, own))
+        if status == 200:
+            await prov.call("POST", f"/logout/{done.get('complete', {}).get('user_login_id')}", {}, base=P)
+        status, _ = await remote.call("GET", "/account/whoami", token=friend_token)
+        ok("…and that session keeps working", status == 200, status)
     finally:
         if friend:
             friend.stop()

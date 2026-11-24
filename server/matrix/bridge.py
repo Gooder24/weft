@@ -43,12 +43,14 @@ from pathlib import Path
 
 import aiohttp
 from aiohttp import web
+from mautrix.api import Method
 from mautrix.appservice import AppService
 from mautrix.appservice.state_store.file import FileASStateStore
 from mautrix.client import Client, InternalEventType
 from mautrix.client.state_store import SyncStore
 from mautrix.client.state_store.asyncpg import PgStateStore
 from mautrix.crypto import OlmMachine, PgCryptoStore
+from mautrix.crypto.attachments import decrypt_attachment, encrypt_attachment
 from mautrix.errors import MatrixError, MatrixRequestError
 from mautrix.types import (EventType, LoginType, PresenceState, ReceiptType, RoomCreatePreset, RoomID, UserID)
 from mautrix.util.async_db import Database
@@ -66,6 +68,9 @@ DEVICE_NAME = "Weft"
 # What the bridge copies across; anything else (calls, polls, stickers of other kinds) stays where it is.
 MESSAGE_TYPES = {EventType.ROOM_MESSAGE, EventType.REACTION, EventType.STICKER}
 MEDIA_KEYS = ("url", "file")
+MEDIA_MAX = 25 * 1024 * 1024  # bytes a file may have to cross; more becomes a note in the chat
+GHOSTS_AT_ONCE = 20  # rooms up to this many people get all their ghosts at once, bigger ones as people write
+FROM_THERE = "sk.karchi.matrix.remote"  # on a message Weft got from there: its event id there
 
 
 def registration_value(path: str, key: str) -> str:
@@ -207,7 +212,7 @@ class Remote:
         if not self.bridge.map_relations(content, to_local=True):
             return  # an edit or reaction of something Weft never had
         if any(k in content for k in MEDIA_KEYS):
-            await self.bridge.copy_media(content, self.client, self.bridge.az.intent)
+            await self.bridge.copy_media(content, self.client, self.bridge.az.intent, encrypt=False)
         if evt.sender == self.user_id:
             intent = self.bridge.admin_intent()
             if not intent:
@@ -215,6 +220,7 @@ class Remote:
         else:
             intent = await self.bridge.ghost(self, portal, evt.sender)
         event_type = EventType.find(str(evt.type), EventType.Class.MESSAGE)
+        content[FROM_THERE] = evt.event_id
         local = await intent.send_message_event(portal, event_type, content, timestamp=evt.timestamp)
         self.bridge.store.run("INSERT OR IGNORE INTO message VALUES (?, ?, ?)", evt.event_id, local, portal)
 
@@ -263,6 +269,7 @@ class Bridge:
         self.logins: dict[str, dict] = {}  # login process -> what it asked for
         self.tokens: dict[str, float] = {}  # Weft tokens that proved to be Karchi's, until when
         self.typing: dict[str, set[str]] = {}
+        self.admin_typing: dict[str, bool] = {}
         self.portal_locks: dict[str, asyncio.Lock] = {}
         self.ghost_names: dict[str, str] = {}
         routes = web.RouteTableDef()
@@ -286,7 +293,21 @@ class Bridge:
         row = self.store.one("SELECT * FROM login")
         if row:
             self.remote = Remote(self, row)
-            await self.remote.start()
+            self.starting = asyncio.create_task(self.keep_starting(self.remote))
+
+    async def keep_starting(self, remote: Remote) -> None:
+        """The other server may be down when asus boots: try again, longer each time, until it answers."""
+        delay = 10
+        while self.remote is remote:
+            try:
+                await remote.start()
+                return
+            except Exception as err:
+                await remote.stop()  # closes the key store, so the next try opens it afresh
+                remote.state, remote.message = "TRANSIENT_DISCONNECT", str(err)[:200]
+                log.warning("start failed, again in %d s: %s", delay, err)
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 600)
 
     # -------------------------------------------------- rooms in Weft
 
@@ -315,21 +336,34 @@ class Bridge:
         content.pop("com.beeper.linkpreviews", None)
         return True
 
-    async def copy_media(self, content: dict, source, target) -> None:
-        """A file's bytes uploaded again on the other homeserver (an encrypted file stays encrypted, same keys)."""
+    async def copy_media(self, content: dict, source, target, encrypt: bool) -> None:
+        """A file's bytes uploaded again on the other side: decrypted into Weft (its rooms are not encrypted), and
+        encrypted with fresh keys into an encrypted room there. Files over MEDIA_MAX become a note."""
         try:
-            if "file" in content and isinstance(content["file"], dict):
-                data = await source.download_media(content["file"]["url"])
-                content["file"]["url"] = await target.upload_media(data, mime_type="application/octet-stream")
+            info = content.get("info") or {}
+            if int(info.get("size") or 0) > MEDIA_MAX:
+                raise ValueError("too large")
+            if isinstance(content.get("file"), dict):
+                f = content.pop("file")
+                data = await source.download_media(f["url"])
+                if len(data) > MEDIA_MAX:
+                    raise ValueError("too large")
+                data = decrypt_attachment(data, f["key"]["k"], f["hashes"]["sha256"], f["iv"])
             elif content.get("url"):
-                info = content.get("info") or {}
-                data = await source.download_media(content["url"])
+                data = await source.download_media(content.pop("url"))
+                if len(data) > MEDIA_MAX:
+                    raise ValueError("too large")
+            else:
+                return
+            if encrypt:
+                data, f = encrypt_attachment(data)
+                f.url = await target.upload_media(data, mime_type="application/octet-stream")
+                content["file"] = f.serialize()
+            else:
                 content["url"] = await target.upload_media(data, mime_type=info.get("mimetype") or "application/octet-stream",
                                                            filename=content.get("body") or None)
-            info = content.get("info") or {}
-            for key in ("thumbnail_url",):
+            for key in ("thumbnail_url", "thumbnail_file"):
                 info.pop(key, None)
-            info.pop("thumbnail_file", None)
         except Exception as err:
             log.warning("media not copied: %s", err)
             content.pop("url", None)
@@ -376,8 +410,9 @@ class Bridge:
                     await puppet.join_room_by_id(local)
                 except MatrixError as err:
                     log.warning("Karchi could not join %s: %s", local, err)
-            for e in others:
-                await self.ghost(remote, local, e.state_key, e.content.displayname)
+            if len(others) <= GHOSTS_AT_ONCE:  # a big public room's people come in when they write
+                for e in others:
+                    await self.ghost(remote, local, e.state_key, e.content.displayname)
             log.info("portal %s for %s (%s, %s)", local, room, "DM" if dm else "group", "encrypted" if encrypted else "plain")
             return RoomID(local)
 
@@ -420,10 +455,15 @@ class Bridge:
                         await remote.client.set_fully_read_marker(target, fully_read=mapped[0], read_receipt=mapped[0])
             return
         if evt.type == EventType.TYPING:
-            await remote.client.set_typing(target, timeout=30000 if ADMIN in evt.content.user_ids else 0)
+            mine = ADMIN in evt.content.user_ids
+            if mine != self.admin_typing.get(room, False):  # a ghost starting to type comes here too
+                self.admin_typing[room] = mine
+                await remote.client.set_typing(target, timeout=30000 if mine else 0)
             return
         if evt.sender != ADMIN or self.store.one("SELECT 1 FROM message WHERE local = ?", evt.event_id):
             return
+        if FROM_THERE in (evt.content.serialize() if hasattr(evt.content, "serialize") else evt.content):
+            return  # the double puppet's copy of what he wrote there; it may arrive before its id is stored
         if evt.type == EventType.ROOM_REDACTION:
             mapped = self.store.one("SELECT remote FROM message WHERE local = ?", evt.redacts)
             if mapped:
@@ -434,11 +474,17 @@ class Bridge:
         content = evt.content.serialize()
         if not self.map_relations(content, to_local=False):
             return
-        if any(k in content for k in MEDIA_KEYS):
-            await self.copy_media(content, self.az.intent, remote.client)
-        txn = f"weft{secrets.token_hex(8)}"
-        remote.sent.add(txn)
-        sent = await remote.client.send_message_event(target, evt.type, content, txn_id=txn)
+        try:
+            if any(k in content for k in MEDIA_KEYS):
+                await self.copy_media(content, self.az.intent, remote.client, encrypt=bool(await remote.state_store.is_encrypted(target)))
+            txn = f"weft{secrets.token_hex(8)}"
+            remote.sent.add(txn)
+            sent = await remote.client.send_message_event(target, evt.type, content, txn_id=txn)
+        except Exception as err:
+            # Never a message that looks sent but is not: say so in the chat.
+            log.warning("not sent to %s: %s", target, err)
+            await self.az.intent.send_notice(RoomID(room), f"Neodoslané na Matrix: {getattr(err, 'message', None) or err}")
+            return
         self.store.run("INSERT OR IGNORE INTO message VALUES (?, ?, ?)", sent, evt.event_id, room)
 
     # -------------------------------------------------- provisioning
@@ -523,24 +569,63 @@ class Bridge:
                                          device_name=DEVICE_NAME, store_access_token=True, update_hs_url=False)
                 user_id, device_id, token, own = res.user_id, res.device_id, res.access_token, 1
             else:
-                client.api.token = str(body.get("token") or "").strip()
-                who = await client.whoami()
-                if not who.device_id:
-                    return self.error(400, "SK.KARCHI.INVALID_INPUT", "Tento token nemá zariadenie; Weft ho potrebuje na šifrovanie.")
-                user_id, device_id, token, own = who.user_id, who.device_id, client.api.token, 0
+                user_id, device_id, token, own = await self.token_login(client, homeserver, str(body.get("token") or "").strip())
         except MatrixRequestError as err:
             return self.error(400, "SK.KARCHI.INVALID_INPUT", err.message or "Prihlásenie zlyhalo.")
+        except ValueError as err:
+            return self.error(400, "SK.KARCHI.INVALID_INPUT", str(err))
         finally:
             await client.api.session.close()
-        login_id = re.sub(r"[^a-z0-9]+", "_", user_id.lower()).strip("_")
+        login_id = re.sub(r"[^a-z0-9]+", "_", user_id.lower()).strip("_") or "login"
         shutil.rmtree(STATE_DIR / login_id, ignore_errors=True)  # keys of an earlier sign-out never come back
         self.store.run("DELETE FROM login")
         self.store.run("INSERT INTO login VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)", login_id, homeserver, user_id, device_id,
                        token, own, secrets.token_hex(32), int(time.time() * 1000), user_id)
-        self.remote = Remote(self, self.store.one("SELECT * FROM login WHERE id = ?", login_id))
-        await self.remote.start()
+        remote = Remote(self, self.store.one("SELECT * FROM login WHERE id = ?", login_id))
+        try:
+            await remote.start()
+        except Exception as err:
+            # Nothing half signed in stays behind to fail at every restart.
+            log.warning("sign-in could not start: %s", err)
+            await remote.stop()
+            if own:
+                try:
+                    await remote.client.logout()
+                except MatrixError:
+                    pass
+            await remote.client.api.session.close()
+            self.store.run("DELETE FROM login")
+            shutil.rmtree(remote.dir, ignore_errors=True)
+            return self.error(400, "SK.KARCHI.START_FAILED", f"Prihlásenie sa nepodarilo dokončiť: {getattr(err, 'message', None) or err}")
+        self.remote = remote
         return web.json_response({"type": "complete", "step_id": "sk.karchi.matrix.complete", "instructions": f"Prihlásený ako {user_id}.",
                                   "complete": {"user_login_id": login_id}})
+
+    @staticmethod
+    async def token_login(client: Client, homeserver: str, token: str) -> tuple[str, str, str, int]:
+        """A token of a session Karchi keeps (Beeper has no passwords). Its device already has keys, and two key sets
+        on one device break encryption for both, so Weft asks that session for a one-time login token and signs in a
+        device of its own. Only a session that has no keys yet may be used as it is."""
+        client.api.token = token
+        who = await client.whoami()
+        if not who.device_id:
+            raise ValueError("Tento token nemá zariadenie; Weft ho potrebuje na šifrovanie.")
+        try:
+            res = await client.api.request(Method.POST, "/_matrix/client/v1/login/get_token", {})
+            fresh = Client(base_url=homeserver)
+            try:
+                own = await fresh.login(token=res["login_token"], login_type=LoginType.TOKEN, device_name=DEVICE_NAME,
+                                        store_access_token=True, update_hs_url=False)
+            finally:
+                await fresh.api.session.close()
+            return own.user_id, own.device_id, own.access_token, 1
+        except (MatrixRequestError, KeyError) as err:
+            log.info("no login token from the session (%s); checking its device", err)
+        keys = await client.query_keys({who.user_id: [who.device_id]})
+        if (keys.device_keys.get(who.user_id) or {}).get(who.device_id):
+            raise ValueError("Táto relácia už má vlastné šifrovacie kľúče a server nedovolí z nej prihlásiť nové zariadenie. "
+                             "Prihlás sa heslom, alebo daj token novej relácie, ktorá ešte nič nešifrovala.")
+        return who.user_id, who.device_id, token, 0
 
     @staticmethod
     async def resolve_homeserver(given: str, username: str) -> str | None:
@@ -561,6 +646,9 @@ class Bridge:
                             base = found.rstrip("/")
             except (aiohttp.ClientError, ValueError, asyncio.TimeoutError):
                 pass
+            # A password never goes out unencrypted: plain http only to this machine.
+            if not re.match(r"^https://|^http://(127\.0\.0\.1|localhost|\[::1\])(:\d+)?(/|$)", base):
+                return None
             try:
                 async with http.get(f"{base}/_matrix/client/versions") as res:
                     return base if res.status == 200 else None
@@ -589,16 +677,20 @@ class Bridge:
                 await self.az.intent.send_notice(RoomID(local), "Matrix vo Wefte je odhlásený: tento chat sa už neaktualizuje.")
                 if puppet:
                     await puppet.leave_room(RoomID(local))
-                for (mxid,) in self.store.all("SELECT mxid FROM ghost"):
-                    try:
-                        await self.az.intent.user(UserID(mxid)).leave_room(RoomID(local))
-                    except MatrixError:
-                        pass
+                # Only the ghosts in this room, not every ghost ever seen.
+                for mxid in await self.az.intent.get_joined_members(RoomID(local)):
+                    if mxid.startswith("@matrix_"):
+                        try:
+                            await self.az.intent.user(UserID(mxid)).leave_room(RoomID(local))
+                        except MatrixError:
+                            pass
                 await self.az.intent.leave_room(RoomID(local))
             except MatrixError as err:
                 log.warning("leaving %s: %s", local, err)
-        for table in ("login", "portal", "message", "skipped"):
+        for table in ("login", "portal", "message", "skipped", "ghost"):
             self.store.run(f"DELETE FROM {table}")
+        for cache in (self.ghost_names, self.typing, self.admin_typing, self.portal_locks):
+            cache.clear()
         shutil.rmtree(r.dir, ignore_errors=True)
         return web.json_response({})
 
@@ -611,19 +703,25 @@ class Bridge:
             return self.error(400, "SK.KARCHI.NOT_LOGGED_IN", "Najprv sa prihlás na Matrix.")
         if not re.match(r"^@[^:\s]+:[^\s]+$", user):
             return self.error(400, "SK.KARCHI.INVALID_INPUT", "Adresa na Matrixe vyzerá ako @meno:server.")
+        name = user
         try:
-            profile = await r.client.get_profile(UserID(user))
+            name = getattr(await r.client.get_profile(UserID(user)), "displayname", None) or user
         except MatrixRequestError as err:
-            return self.error(404, "M_NOT_FOUND", f"{user}: {err.message}")
-        name = getattr(profile, "displayname", None) or user
+            # Many servers show profiles only to people who share a room; only "no such user" stops here.
+            if err.http_status == 404 and getattr(err, "errcode", "") == "M_NOT_FOUND":
+                return self.error(404, "M_NOT_FOUND", f"{user}: {err.message}")
         try:
             direct = (await r.client.get_account_data(EventType.DIRECT)) or {}
         except MatrixRequestError:
             direct = {}
         direct = {k: list(v) for k, v in dict(direct).items()}
-        # A DM Weft already shows opens again instead of a second one.
+        # A DM Karchi already has there (from Weft or another client) opens instead of a second one.
+        try:
+            joined = set(await r.client.get_joined_rooms())
+        except MatrixRequestError:
+            joined = set()
         for known in direct.get(user, []):
-            if (local := await self.portal(r, known, create=False)):
+            if (local := await self.portal(r, known, create=known in joined)):
                 return web.json_response({"room_id": local, "dm_room_mxid": local, "id": user, "name": name})
         room = await r.client.create_room(
             preset=RoomCreatePreset.TRUSTED_PRIVATE, is_direct=True, invitees=[UserID(user)],
