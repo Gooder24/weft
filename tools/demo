@@ -33,12 +33,13 @@ PEOPLE = {
     'nova': ('@discord_900000000000000001:' + HS, 'nova_byte'),
     'kubo': ('@discord_900000000000000002:' + HS, 'kubo'),
     'vargova': ('@teams_6f1c2a4e-0000-4000-8000-000000000001:' + HS, 'Ing. Jana Vargová'),
+    'ema': ('@matrix_ema=3aexample.org:' + HS, 'Ema Rybárová'),
     'hermes': ('@hermes:' + HS, 'Hermes'),
     'teacher': ('@edupage_ucitel_1001:' + HS, 'Mgr. Eva Šimková'),
     'teacher2': ('@edupage_ucitel_1002:' + HS, 'Mgr. Juraj Kollár'),
 }
 BRIDGES = {'messenger': ('facebookgo', 'Messenger'), 'instagram': ('instagramgo', 'Instagram'), 'whatsapp': ('whatsapp', 'WhatsApp'),
-           'discord': ('discord', 'Discord'), 'teams': ('teams', 'Microsoft Teams')}
+           'discord': ('discord', 'Discord'), 'teams': ('teams', 'Microsoft Teams'), 'matrix': ('matrix', 'Matrix')}
 CHATS = [
     {'id': 'tomas-m', 'net': 'messenger', 'people': ['tomas_m'], 'messages': [
         (190, 'tomas_m', 'Ideš v sobotu na ten koncert?'), (186, None, 'Asi hej, ešte riešim lístok'),
@@ -62,6 +63,9 @@ CHATS = [
         (70, 'kubo', 'nová verzia pixel editora je vonku'), (68, 'nova', 'konečne vrstvy!'), (20, 'kubo', 'kto robí výzvu na tento týždeň?')]},
     {'id': 'vargova', 'net': 'teams', 'people': ['vargova'], 'messages': [
         (22 * 60, 'vargova', 'Dobrý deň, pošlete mi prosím do piatka prezentáciu?'), (21 * 60, None, 'Dobrý deň, áno, pošlem ju do štvrtka.')]},
+    {'id': 'ema', 'net': 'matrix', 'people': ['ema'], 'messages': [
+        (9 * 60, 'ema', 'Skúšam ten tvoj most na Matrix, ide to aj šifrovane?'), (8 * 60, None, 'Áno, Weft má vlastné zariadenie s kľúčmi'),
+        (50, 'ema', 'Paráda, tak píšem sem')]},
     {'id': 'hermes', 'net': 'hermes', 'people': ['hermes'], 'messages': [
         (30, 'hermes', 'Ranný prehľad: 3 nové správy, zajtra test z matematiky, v piatok výlet.')]},
 ]
@@ -286,6 +290,7 @@ LOGINS = {
     'teams': [{'id': 'demo-teams', 'name': 'ty@skola.example.org', 'state': {'state_event': 'CONNECTED'}}],
     'gmail': [{'id': 'ty@example.com', 'name': 'ty@example.com', 'state': {'state_event': 'CONNECTED'}}],
     'outlook': [{'id': 'demo-outlook', 'name': 'ty@skola.example.org', 'state': {'state_event': 'CONNECTED'}}],
+    'matrix': [{'id': 'ty_example_org', 'name': '@ty:example.org', 'state': {'state_event': 'CONNECTED'}}],
 }
 
 WORLD = None

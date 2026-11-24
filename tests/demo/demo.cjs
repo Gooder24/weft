@@ -1,5 +1,5 @@
 // The demo works on a fresh clone: `tools/demo` starts, Weft shows the made-up inbox, opens a chat, the calendar and
-// Feed, Ctrl+K finds chats and messages without a filter bar, and Gmail says beta in Settings and in Ctrl+N.
+// Feed, Ctrl+K finds chats and messages without a filter bar, and Gmail and Matrix say beta in Settings and in Ctrl+N, which also starts Matrix chats.
 // Not one request may leave 127.0.0.1. Screenshots go to OUT (default tests/demo/out, ignored by git).
 //   npm ci --prefix tests/accessibility && node tests/demo/demo.cjs
 // Env: CHROME_PATH (else the usual Chromium paths), OUT, PORT (default: a free one).
@@ -51,7 +51,7 @@ async function main() {
     const rows = await text('.side .item');
     ok('inbox shows the made-up chats', ['Výlet na Kriváň', 'Lucia Králiková', 'Rodina', '#general'].every((t) => rows.some((r) => r.includes(t))), rows.length);
     const badges = await p.$$eval('.side .item img.badge', (els) => [...new Set(els.map((e) => e.getAttribute('src')))]);
-    ok('chats come from every chat network', ['/edupage.png', '/messenger.ico', '/instagram.png', '/whatsapp.webp', '/discord.png', '/teams.png'].every((b) => badges.includes(b)), badges);
+    ok('chats come from every chat network', ['/edupage.png', '/messenger.ico', '/instagram.png', '/whatsapp.webp', '/discord.png', '/teams.png', '/matrix.svg'].every((b) => badges.includes(b)), badges);
     ok('the calendar is beside the inbox', (await p.$$eval('.calev', (els) => els.length)) > 3);
     await shot('01-inbox');
 
@@ -99,6 +99,7 @@ async function main() {
     await sleep(800);
     const accounts = await text('.panel .acct');
     ok('Settings → Účty says Gmail (beta)', accounts.some((a) => a.startsWith('Gmail (beta)')), accounts.filter((a) => a.includes('Gmail')));
+    ok('Settings → Účty shows Matrix (beta) and its account', accounts.some((a) => a.startsWith('Matrix (beta)') && a.includes('@ty:example.org')), accounts.filter((a) => a.includes('Matrix')));
     const gmailRow = await p.evaluateHandle(() => [...document.querySelectorAll('.panel .acct')].find((e) => e.innerText.startsWith('Gmail (beta)')));
     if (gmailRow.asElement()) await gmailRow.asElement().evaluate((e) => e.scrollIntoView({ block: 'center' }));
     await shot('04-settings-gmail-beta');
@@ -112,6 +113,15 @@ async function main() {
     const newChat = await p.$eval('.cmd.new', (e) => e.innerText);
     ok('Ctrl+N Nový mail says Gmail (beta)', /Nový mail[\s\S]*Gmail \(beta\)/.test(newChat), newChat.slice(0, 160).replace(/\s+/g, ' '));
     await shot('05-new-mail-gmail-beta');
+    // …and, with a Matrix account, a new chat by @name:server and a room by #alias:server.
+    ok('Ctrl+N offers a new Matrix chat', newChat.includes('Nový chat na Matrixe'));
+    await p.type('.cmd.new .cmdinput', '@ana:example.org');
+    await sleep(300);
+    ok('…with the @name:server typed', (await p.$eval('.cmd.new', (e) => e.innerText)).includes('Nový chat na Matrixe s @ana:example.org'));
+    await p.click('.cmd.new .cmdinput', { clickCount: 3 });
+    await p.type('.cmd.new .cmdinput', '#weft:example.org');
+    await sleep(300);
+    ok('…and joins a room by #alias:server', (await p.$eval('.cmd.new', (e) => e.innerText)).includes('Vstúpiť do #weft:example.org'));
     await p.keyboard.press('Escape');
     await sleep(300);
 

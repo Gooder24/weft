@@ -77,6 +77,14 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   (ghosts `@teams_<Entra id>`, polled every 20 s): text, mentions, photos, files, replies, edits, deletions and
   reactions both ways, and Karchi's reading as Teams „videné“ (whole chat, only once he reached its newest message); an ended call or meeting comes as a call row („Call (3:12)“ marked `com.beeper.action_message`, `call_log`); Ctrl+N finds people of the school or work directory. No team channels. Checks:
   `overenie/microsoft/` (`check.py` bridge against a fake Microsoft, `races.py`, `run.sh` UI, `cli_mail.sh`).
+- `server/matrix/bridge.py` is Matrix as a network (beta; asus `~/matrix-spike/matrix/`, own venv with
+  `requirements.txt` and Debian's python3-olm, unit `matrix-spike-matrix`, appservice `appservices/matrix.yaml`,
+  127.0.0.1:29333 behind Caddy's `/_bridges/matrix/`). One account on another homeserver (matrix.org, beeper.com),
+  signed in by password or an access token, gets its own encrypted device „Weft“; chats come as rooms with ghosts
+  `@matrix_<escaped id>`: text, files, replies, edits, reactions, receipts and typing both ways, no backfill, no
+  invitations accepted, rooms that are bridges there left out. Ctrl+N starts a DM by `@name:server` and joins
+  `#alias:server`. Sign-out ends the device there and deletes keys, ids and rooms. Weft's homeserver keeps
+  federation off. Check: `tests/matrix/run.py` (two throwaway Tuwunels; `TUWUNEL=~/matrix-spike/bin/tuwunel`).
 - `server/gmail/cleanup.py` and `matrix-spike-gmail-cleanup.timer` move explicitly enabled accounts'
   Gmail Promotions and Social categories to Trash every five minutes on asus, including old mail.
   Policy: `gmail/state/cleanup-policy.json`; private audit/status alongside it. Never empty Trash or

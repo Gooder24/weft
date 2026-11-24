@@ -1250,4 +1250,11 @@ export default {
   "Zmazaná kategória nechá svojim kalendárom svoju farbu ako vlastnú.": "A deleted category leaves its calendars its colour as their own.",
   "Zmazať kategóriu {}": "Delete category {}",
   "Zrušené": "Cancelled",
+  "Do miestnosti sa nepodarilo vstúpiť: {}": "Could not join the room: {}",
+  "Nový chat na Matrixe s {}": "New Matrix chat with {}",
+  "Vstúpiť do {}": "Join {}",
+  "Nový chat na Matrixe": "New Matrix chat",
+  "Napíš @meno:server alebo #miestnosť:server": "Type @name:server or #room:server",
+  "Pripojiť prístupovým tokenom": "Connect with an access token",
+  "Pripojiť heslom": "Connect with a password",
 };

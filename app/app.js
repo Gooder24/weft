@@ -54,10 +54,10 @@ const BATCHES = 'sk.karchi.batches';
 // every feed answer.
 const WINDOW = 'sk.karchi.window';
 /** m.bridge protocol id -> app. */
-const NETWORKS = { facebookgo: 'messenger', facebook: 'messenger', instagramgo: 'instagram', instagram: 'instagram', discordgo: 'discord', discord: 'discord', whatsapp: 'whatsapp', teams: 'teams' };
+const NETWORKS = { facebookgo: 'messenger', facebook: 'messenger', instagramgo: 'instagram', instagram: 'instagram', discordgo: 'discord', discord: 'discord', whatsapp: 'whatsapp', teams: 'teams', matrix: 'matrix' };
 /** Matrix localpart of an agent bot -> app; its plain (unbridged) chat with Karchi shows in the inbox. */
 const AGENTS = { '@hermes': 'hermes' };
-const isBot = (id) => /^@(messenger|instagram|discord|edupage|whatsapp|teams)bot:/.test(id);
+const isBot = (id) => /^@(messenger|instagram|discord|edupage|whatsapp|teams|matrix)bot:/.test(id);
 /** A message sent again after it did not go out names the one it replaces; that one leaves the chat. */
 const RESEND_OF = 'sk.karchi.resend_of';
 /** A bridge's „⚠️ Your message was not bridged: …“ notice: what it is about and why, or null. The legacy Discord
@@ -5078,6 +5078,7 @@ const APPS = [
   { id: 'teams', name: 'Teams', icon: '/teams.png' },
   { id: 'gmail', name: 'Gmail', icon: '/gmail.ico' },
   { id: 'outlook', name: 'Outlook', icon: '/outlook.png' },
+  { id: 'matrix', name: 'Matrix', icon: '/matrix.svg' },
   { id: 'hermes', name: 'Hermes', icon: '/hermes.svg' },
 ];
 const hiddenApps = () => new Set(JSON.parse(localStorage.getItem('ep_hidden_apps') || '[]'));
@@ -9451,6 +9452,38 @@ function groupView(o) {
   ];
 }
 
+/** Ctrl+N's Matrix row while a Matrix account is connected: a whole @name:server (a DM) or #alias:server (a room),
+ *  or, with nothing typed or "matrix" typed, the row that starts one. */
+function matrixAsk(o) {
+  if (o.link || !S.links.matrix?.length || hiddenApps().has('matrix')) return null;
+  const text = o.query.trim();
+  if (/^@[^:\s]+:[^\s]+$/.test(text)) return { user: text };
+  if (/^[#!][^:\s]+:[^\s]+$/.test(text)) return { room: text };
+  const query = norm(text);
+  return !query || nameScore('novy chat matrix miestnost', query) >= 0 ? {} : null;
+}
+
+/** Opens the Matrix DM or joins the room; with nothing typed yet it puts "@" in the field to type the address. */
+async function matrixStart(o, mx) {
+  if (mx.user) return startChat({ app: 'matrix', contact: { id: mx.user } });
+  if (!mx.room) {
+    o.query = '@';
+    o.index = 0;
+    return render();
+  }
+  remoteDrop(o);
+  S.overlay = null;
+  render();
+  try {
+    const data = await prov(LINKS.find((a) => a.id === 'matrix'), 'POST', '/join', { room: mx.room });
+    S.focusComposer = true;
+    select(data.room_id);
+    render();
+  } catch (err) {
+    alert(T`Do miestnosti sa nepodarilo vstúpiť: ${err.message}`);
+  }
+}
+
 let chatOpening = null; // the chat being opened: a second Enter or click while the bridge answers opens nothing more
 async function startChat(x) {
   // Picked for an old chat's "Hľadať inak" (writeOther): the old history goes with the chosen one's chat.
@@ -9502,15 +9535,19 @@ function newChatView(o) {
   const waAsk = remoteAsk('whatsapp', o.query);
   const number = wa && waAsk.kind === 'id' ? waAsk.value : '';
   const group = wa && !o.link && (!query || nameScore('nova skupina whatsapp group', query) >= 0);
+  // Matrix: a chat with @name:server or a room by #alias:server, typed whole.
+  const mx = matrixAsk(o);
   const top = [
     ...(number ? [() => { openRemote(o, 'whatsapp'); remoteSearch(o); }] : []),
     ...(mail ? [() => openMail(mailTo)] : []),
     ...(group ? [() => openGroup(o)] : []),
+    ...(mx ? [() => matrixStart(o, mx)] : []),
   ];
   o.flat = [...top, ...people.map(({ x }) => () => startChat(x)), outside];
   if (o.index >= o.flat.length) o.index = 0;
   const shift = top.length;
   const waIcon = LINKS.find((a) => a.id === 'whatsapp').icon;
+  const mxApp = LINKS.find((a) => a.id === 'matrix');
   return [
     cmdInput(o, o.link ? T`Kto je ${S.rooms.get(o.link)?.bridgeName || 'to'}? Jeho stará história pôjde s ním` : T('Komu chceš napísať?')),
     h('div', { class: 'results', ...listScroll(o) },
@@ -9522,9 +9559,14 @@ function newChatView(o) {
         h('div', { class: 'avwrap' }, h('div', { class: 'icon mailicon' }, icon('mail')), h('img', { class: 'badge', src: (mailFrom()?.app || mailApps[0]).icon, alt: '' })),
         h('div', { class: 'rmeta' }, h('b', {}, mailTo ? T`Nový mail pre ${mailTo}` : T('Nový mail')), h('small', {}, mailApps.map(appLabel).join(' alebo '))),
       ]) : null,
-      group ? resultRow(o, null, shift - 1, [
+      group ? resultRow(o, null, shift - 1 - (mx ? 1 : 0), [
         h('div', { class: 'avwrap' }, h('div', { class: 'icon grpicon' }, icon('users')), h('img', { class: 'badge', src: waIcon, alt: '' })),
         h('div', { class: 'rmeta' }, h('b', {}, T('Nová skupina na WhatsAppe')), h('small', {}, T('Vyber ľudí a názov · WhatsApp im to hneď oznámi'))),
+      ]) : null,
+      mx ? resultRow(o, null, shift - 1, [
+        h('div', { class: 'avwrap' }, h('div', { class: 'icon grpicon' }, icon(mx.room ? 'users' : 'plus')), h('img', { class: 'badge', src: mxApp.icon, alt: '' })),
+        h('div', { class: 'rmeta' }, h('b', {}, mx.user ? T`Nový chat na Matrixe s ${mx.user}` : mx.room ? T`Vstúpiť do ${mx.room}` : T('Nový chat na Matrixe')),
+          h('small', {}, mx.user || mx.room ? appLabel(mxApp) : T('Napíš @meno:server alebo #miestnosť:server'))),
       ]) : null,
       people.length ? [h('div', { class: 'rsec' }, query ? T('Ľudia') : T('Nedávni')), people.map(({ x }, i) => resultRow(o, x, i + shift, [
         h('div', { class: 'avwrap' }, avatar(x.avatar, x.name, 40), APPS.find((a) => a.id === x.app) ? h('img', { class: 'badge', src: APPS.find((a) => a.id === x.app).icon, alt: '' }) : null),
@@ -12859,6 +12901,13 @@ const LINKS = [
   {
     id: 'teams', name: 'Teams', icon: '/teams.png', base: '/_bridges/teams/_matrix/provision/v3', flow: 'microsoft',
     anywhere: true, multi: true, noContactList: true,
+  },
+  // Karchi's account on another Matrix server (matrix.org, beeper.com): one login, its own encrypted device "Weft";
+  // a chat starts by @name:server or a room by #alias:server in Ctrl+N (server/matrix/bridge.py).
+  {
+    id: 'matrix', name: 'Matrix', icon: '/matrix.svg', base: '/_bridges/matrix/_matrix/provision/v3', flow: 'password',
+    beta: true, anywhere: true, noContactList: true, noSearch: true,
+    otherFlow: { password: ['token', T('Pripojiť prístupovým tokenom')], token: ['password', T('Pripojiť heslom')] },
   },
   {
     id: 'discord', name: 'Discord', icon: '/discord.png', legacy: '/_bridges/discord/_matrix/provision/v1',

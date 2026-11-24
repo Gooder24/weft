@@ -1,0 +1,4 @@
+mautrix[encryption]==0.21.2
+aiosqlite==0.22.1
+asyncpg==0.32.0
+# python-olm comes from the system (Debian: apt install python3-olm); make the venv with --system-site-packages.
