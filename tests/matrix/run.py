@@ -371,6 +371,36 @@ namespaces:
         local_redactions = [e for e in sync.events if e["room_id"] == room and e["type"] == "m.room.redaction"]
         ok("…once, with no loop", len(seen["redactions"]) == 1 and len(local_redactions) == 1, (len(seen["redactions"]), len(local_redactions)))
 
+        # Quick messages keep their order both ways; a deletion right after a send still reaches there.
+        for i in range(5):
+            await local.call("PUT", f"/rooms/{room}/send/m.room.message/q{i}", {"msgtype": "m.text", "body": f"rad {i}"})
+        await until(lambda: asyncio.sleep(0, sum(1 for m in seen["messages"] if m.content.body.startswith("rad ")) == 5))
+        order = [m.content.body for m in seen["messages"] if m.content.body.startswith("rad ")]
+        ok("quick messages from Weft arrive there in order", order == [f"rad {i}" for i in range(5)], order)
+        for i in range(5):
+            await friend.send_text(remote_room, f"poradie {i}")
+
+        async def five_here():
+            await sync.step()
+            return sum(1 for e in sync.events if e["room_id"] == room and e["content"].get("body", "").startswith("poradie ")) == 5
+        await until(five_here)
+        order = [e["content"]["body"] for e in sync.events if e["room_id"] == room and e["content"].get("body", "").startswith("poradie ")]
+        ok("quick messages from there arrive in Weft in order", order == [f"poradie {i}" for i in range(5)], order)
+        _, quick = await local.call("PUT", f"/rooms/{room}/send/m.room.message/qd", {"msgtype": "m.text", "body": "hned zmazem"})
+        await local.call("PUT", f"/rooms/{room}/redact/{quick['event_id']}/qd", {})
+        quick_there = await until(lambda: asyncio.sleep(0, next((m for m in seen["messages"] if m.content.body == "hned zmazem"), None)))
+        gone = await until(lambda: asyncio.sleep(0, bool(quick_there) and any(r.redacts == quick_there.event_id for r in seen["redactions"])))
+        ok("a message deleted right after sending is deleted there too", bool(gone))
+        # A file that cannot pass is never replaced by a note sent there in Karchi's name.
+        await local.call("PUT", f"/rooms/{room}/send/m.room.message/big", {"msgtype": "m.file", "body": "velky.zip",
+                                                                           "url": mxc, "info": {"size": 30 * 1024 * 1024}})
+
+        async def big_note():
+            await sync.step()
+            return sync.find(room, lambda e: e["content"].get("body", "").startswith("Neodoslané na Matrix"))
+        ok("a file over the limit is refused with a note in Weft", bool(await until(big_note)))
+        ok("…and nothing about it goes there", not any("velky" in (m.content.body or "") for m in seen["messages"]))
+
         # Joining a room by its #alias.
         club = await friend.create_room(alias_localpart="klub", preset=RoomCreatePreset.PUBLIC, name="Klub")
         status, joined = await prov.call("POST", "/join", {"room": "#klub:remote.test"}, base=P)

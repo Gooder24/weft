@@ -50,8 +50,9 @@ from mautrix.client import Client, InternalEventType
 from mautrix.client.state_store import SyncStore
 from mautrix.client.state_store.asyncpg import PgStateStore
 from mautrix.crypto import OlmMachine, PgCryptoStore
+from mautrix.client.encryption_manager import DecryptionDispatcher
 from mautrix.crypto.attachments import decrypt_attachment, encrypt_attachment
-from mautrix.errors import MatrixError, MatrixRequestError
+from mautrix.errors import DecryptionError, MatrixError, MatrixRequestError, SessionNotFound
 from mautrix.types import (EventType, LoginType, PresenceState, ReceiptType, RoomCreatePreset, RoomID, UserID)
 from mautrix.util.async_db import Database
 
@@ -156,6 +157,10 @@ class Remote:
         self.state = "CONNECTING"
         self.message = ""
         self.sent: set[str] = set()  # transaction ids of what the bridge sent, so their echoes are not copied back
+        # Events in the order the server gave them: mautrix runs each handler (and each decryption) as its own task,
+        # which let quick messages overtake each other and a reaction come before its message.
+        self.queue: asyncio.Queue = asyncio.Queue()
+        self.pump_task: asyncio.Task | None = None
 
     async def start(self) -> None:
         await self.db.start()
@@ -163,19 +168,55 @@ class Remote:
         await self.crypto_store.open()
         machine = OlmMachine(self.client, self.crypto_store, self.state_store)
         self.client.crypto = machine
+        self.client.remove_dispatcher(DecryptionDispatcher)  # decrypted in order by pump() instead
         await machine.load()
         if not await self.crypto_store.get_device_id():
             await self.crypto_store.put_device_id(self.client.device_id)
         if not machine.account.shared:
             await machine.share_keys()
-        for kind in MESSAGE_TYPES:
-            self.client.add_event_handler(kind, self.on_message)
-        self.client.add_event_handler(EventType.RECEIPT, self.on_receipt)
-        self.client.add_event_handler(EventType.TYPING, self.on_typing)
-        self.client.add_event_handler(EventType.ROOM_REDACTION, self.on_redaction)
+        for kind in (*MESSAGE_TYPES, EventType.ROOM_ENCRYPTED, EventType.RECEIPT, EventType.TYPING, EventType.ROOM_REDACTION):
+            self.client.add_event_handler(kind, self.enqueue)
+        self.pump_task = asyncio.create_task(self.pump())
         self.client.add_event_handler(InternalEventType.SYNC_SUCCESSFUL, self.on_sync_ok)
         self.client.add_event_handler(InternalEventType.SYNC_ERRORED, self.on_sync_error)
         self.client.start({"room": {"timeline": {"limit": 20}, "state": {"lazy_load_members": True}}})
+
+    async def enqueue(self, evt) -> None:
+        self.queue.put_nowait(evt)  # no await before this: tasks start in the order they were made
+
+    async def pump(self) -> None:
+        while True:
+            evt = await self.queue.get()
+            try:
+                if evt.type == EventType.ROOM_ENCRYPTED:
+                    evt = await self.decrypt(evt)
+                    if not evt:
+                        continue
+                if evt.type in MESSAGE_TYPES:
+                    await self.on_message(evt)
+                elif evt.type == EventType.ROOM_REDACTION:
+                    await self.on_redaction(evt)
+                elif evt.type == EventType.RECEIPT:
+                    await self.on_receipt(evt)
+                elif evt.type == EventType.TYPING:
+                    await self.on_typing(evt)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("event %s not handled", getattr(evt, "event_id", evt.type))
+
+    async def decrypt(self, evt):
+        """Its key may still be on the way (it comes to the device separately): wait a little for it."""
+        for attempt in range(2):
+            try:
+                return await self.client.crypto.decrypt_megolm_event(evt)
+            except SessionNotFound:
+                if attempt or not await self.client.crypto.wait_for_session(evt.room_id, evt.content.session_id, timeout=10):
+                    log.warning("no key for %s; it stays on the other server", evt.event_id)
+                    return None
+            except DecryptionError as err:
+                log.warning("cannot decrypt %s: %s", evt.event_id, err)
+                return None
 
     async def on_sync_ok(self, _evt) -> None:
         self.state, self.message = "CONNECTED", ""
@@ -190,6 +231,8 @@ class Remote:
 
     async def stop(self) -> None:
         self.client.stop()
+        if self.pump_task:
+            self.pump_task.cancel()
         await asyncio.sleep(0)
         try:
             await self.db.stop()
@@ -220,7 +263,11 @@ class Remote:
         else:
             intent = await self.bridge.ghost(self, portal, evt.sender)
         event_type = EventType.find(str(evt.type), EventType.Class.MESSAGE)
+        if content.get("msgtype") == "m.notice" and event_type == EventType.STICKER:
+            event_type = EventType.ROOM_MESSAGE  # a sticker that could not pass is a note
         content[FROM_THERE] = evt.event_id
+        if isinstance(content.get("m.new_content"), dict):
+            content["m.new_content"][FROM_THERE] = evt.event_id  # an edit is read back as its new content
         local = await intent.send_message_event(portal, event_type, content, timestamp=evt.timestamp)
         self.bridge.store.run("INSERT OR IGNORE INTO message VALUES (?, ?, ?)", evt.event_id, local, portal)
 
@@ -273,6 +320,7 @@ class Bridge:
         self.typing: dict[str, set[str]] = {}
         self.admin_typing: dict[str, bool] = {}
         self.portal_locks: dict[str, asyncio.Lock] = {}
+        self.local_locks: dict[str, asyncio.Lock] = {}
         self.ghost_names: dict[str, str] = {}
         routes = web.RouteTableDef()
         base = "/_matrix/provision/v3"
@@ -295,20 +343,29 @@ class Bridge:
         row = self.store.one("SELECT * FROM login")
         if row:
             self.remote = Remote(self, row)
-            self.starting = asyncio.create_task(self.keep_starting(self.remote))
+            self.starting = asyncio.create_task(self.keep_starting(row))
 
-    async def keep_starting(self, remote: Remote) -> None:
-        """The other server may be down when asus boots: try again, longer each time, until it answers."""
+    async def keep_starting(self, row: tuple) -> None:
+        """The other server may be down when asus boots: try again, longer each time, until it answers. A key store
+        once closed cannot open again, so each try is a fresh Remote."""
         delay = 10
-        while self.remote is remote:
+        while True:
+            remote = self.remote
+            if not remote:
+                return
             try:
                 await remote.start()
                 return
             except Exception as err:
-                await remote.stop()  # closes the key store, so the next try opens it afresh
+                await remote.stop()
+                await remote.client.api.session.close()
                 remote.state, remote.message = "TRANSIENT_DISCONNECT", str(err)[:200]
                 log.warning("start failed, again in %d s: %s", delay, err)
                 await asyncio.sleep(delay)
+                if self.remote is not remote:
+                    return  # signed out meanwhile
+                self.remote = Remote(self, row)
+                self.remote.state, self.remote.message = remote.state, remote.message
                 delay = min(delay * 2, 600)
 
     # -------------------------------------------------- rooms in Weft
@@ -338,9 +395,10 @@ class Bridge:
         content.pop("com.beeper.linkpreviews", None)
         return True
 
-    async def copy_media(self, content: dict, source, target, encrypt: bool) -> None:
+    async def copy_media(self, content: dict, source, target, encrypt: bool, outgoing: bool = False) -> None:
         """A file's bytes uploaded again on the other side: decrypted into Weft (its rooms are not encrypted), and
-        encrypted with fresh keys into an encrypted room there. Files over MEDIA_MAX become a note."""
+        encrypted with fresh keys into an encrypted room there. Coming into Weft, a file that cannot pass (over
+        MEDIA_MAX, a download error) becomes a note; going out it raises, so nothing goes there in Karchi's name."""
         try:
             info = content.get("info") or {}
             if int(info.get("size") or 0) > MEDIA_MAX:
@@ -368,6 +426,8 @@ class Bridge:
                 info.pop(key, None)
         except Exception as err:
             log.warning("media not copied: %s", err)
+            if outgoing:
+                raise ValueError(f"súbor neprešiel ({err})") from err
             content.pop("url", None)
             content.pop("file", None)
             content["msgtype"] = "m.notice"
@@ -441,6 +501,12 @@ class Bridge:
     # -------------------------------------------------- Weft → the other homeserver
 
     async def on_local_event(self, evt) -> None:
+        # One room's events one after another, in the order they came: a deletion or edit right after its message
+        # waits until that message is there, and quick messages keep their order.
+        async with self.local_locks.setdefault(evt.room_id, asyncio.Lock()):
+            await self.handle_local_event(evt)
+
+    async def handle_local_event(self, evt) -> None:
         remote = self.remote
         if not remote:
             return
@@ -482,7 +548,8 @@ class Bridge:
             return
         try:
             if any(k in content for k in MEDIA_KEYS):
-                await self.copy_media(content, self.az.intent, remote.client, encrypt=bool(await remote.state_store.is_encrypted(target)))
+                await self.copy_media(content, self.az.intent, remote.client, outgoing=True,
+                                      encrypt=bool(await remote.state_store.is_encrypted(target)))
             txn = f"weft{secrets.token_hex(8)}"
             remote.sent.add(txn)
             sent = await remote.client.send_message_event(target, evt.type, content, txn_id=txn)
