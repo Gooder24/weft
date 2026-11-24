@@ -7700,6 +7700,7 @@ function railJump(id) {
   const i = t.msgs.findIndex((ev) => ev.event_id === id);
   if (i < 0) return;
   showMsg(t, i);
+  S.pick = null; // a message picked before, now out of sight, must not take R, F or E
   S.pickScroll = { how: 'top', id };
   render();
 }
@@ -7870,6 +7871,7 @@ function chatView(r, e = null) {
   const from = chatFrom(t.holder, msgs);
   const items = [];
   let day = '';
+  let dayLine = null; // the day's separator, a note's when a note opened the day
   let prev = null;
   let last = msgs[from - 1] || null; // the message before, even across day and note rows
   let lastRoom = last && t.roomOf(last);
@@ -7881,7 +7883,7 @@ function chatView(r, e = null) {
   const notesUntil = (ts) => {
     for (; n < notes.length && notes[n].ts <= ts; n++) {
       const note = notes[n];
-      if (dayLabel(note.ts) !== day) { day = dayLabel(note.ts); items.push(h('div', { class: 'cday' }, day)); }
+      if (dayLabel(note.ts) !== day) { day = dayLabel(note.ts); items.push((dayLine = h('div', { class: 'cday' }, day))); }
       items.push(h('div', { class: 'cnote' }, note.text));
       prev = null;
     }
@@ -7901,6 +7903,7 @@ function chatView(r, e = null) {
     const block = startsBlock(msgs, i) ? ev.event_id : null;
     if (label !== day) { items.push(h('div', { class: 'cday', 'data-block': block }, label)); prev = null; }
     else if (block && i > 0 && dayOf(msgs[i - 1].origin_server_ts) === dayOf(ev.origin_server_ts)) { items.push(h('div', { class: 'cday', 'data-block': block }, timeLabel(ev.origin_server_ts))); prev = null; }
+    else if (block && dayLine) dayLine.setAttribute('data-block', block); // a note's day line heads this day's block
     day = label;
     // A merged chat says where the conversation goes on whenever the network changes, and where it starts.
     if (merged && er !== lastRoom) {
