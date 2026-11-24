@@ -169,7 +169,7 @@ const times = (plain) => [
   parser('SKBetween', /(?<![\p{L}\d])medzi\s(\d{1,2})(?:[:.](\d{2}))?\s(?:a|az)\s(\d{1,2})(?:[:.](\d{2}))?(?!\d|[:.,]\d)/u, (m) =>
     clock(m, { h: m[1], min: m[2], suf: null, eh: m[3], em: m[4], esuf: null, prefixed: 'medzi', plain })),
   // Words: "o pol 6" (5:30), "o štvrť na 8" (7:15), "o trištvrte na 5" (4:45), "o šiestej", "na obed".
-  parser('SKWordTime', new RegExp(String.raw`(?<![\p{L}\d])(?:o|okolo|na)\s(pol|stvrt na|tri ?stvrte na)\s(\d{1,2}|${ORDINALS.join('|')})(?![\p{L}\d])(?![\d:.,]|\s?\.?\s?hod)`, 'u'), (m) => {
+  parser('SKWordTime', new RegExp(String.raw`(?<![\p{L}\d])(?:o|okolo|na)\s(pol|stvrt na|tri ?stvrte na)\s(\d{1,2}|${ORDINALS.join('|')})(?![\p{L}\d])(?![\d:.,]|\s?\.?\s?hod)`, 'u'), (m) => { // i18n-ignore: a parser pattern, not text
     const n = /^\d+$/.test(m[2]) ? +m[2] : ORDINALS.indexOf(m[2]) + 1;
     if (!(n >= 1 && n <= 12) || UNIT.test(m.input.slice(m.index + m[0].length))) return null;
     return { h: n === 1 ? 12 : n - 1, m: m[1] === 'pol' ? 30 : m[1] === 'stvrt na' ? 15 : 45, word: true, prefixed: 'o', endH: null, endM: 0 };
