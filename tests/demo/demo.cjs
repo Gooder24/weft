@@ -118,8 +118,9 @@ async function main() {
     await p.type('.cmd.new .cmdinput', '@ana:example.org');
     await sleep(300);
     ok('…with the @name:server typed', (await p.$eval('.cmd.new', (e) => e.innerText)).includes('Nový chat na Matrixe s @ana:example.org'));
-    await p.click('.cmd.new .cmdinput', { clickCount: 3 });
-    await p.type('.cmd.new .cmdinput', '#weft:example.org');
+    await p.focus('.cmd.new .cmdinput');
+    await p.keyboard.down('Control'); await p.keyboard.press('a'); await p.keyboard.up('Control');
+    await p.keyboard.type('#weft:example.org');
     await sleep(300);
     ok('…and joins a room by #alias:server', (await p.$eval('.cmd.new', (e) => e.innerText)).includes('Vstúpiť do #weft:example.org'));
     await p.keyboard.press('Escape');
