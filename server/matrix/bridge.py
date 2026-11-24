@@ -39,6 +39,7 @@ import secrets
 import shutil
 import sqlite3
 import time
+import urllib.parse
 from pathlib import Path
 
 import aiohttp
@@ -102,6 +103,36 @@ def remote_of(ghost: str) -> str | None:
         return None
     raw = re.sub(r"(=[0-9a-f]{2})+", lambda g: bytes.fromhex(g.group(0).replace("=", "")).decode("utf-8", "replace"), m.group(1))
     return "@" + raw
+
+
+MATRIX_TO = re.compile(r"https://matrix\.to/#/(@[^\"'<>\s?/]+)")
+
+
+def translate_users(content: dict, to_local: bool, me: str) -> None:
+    """Mentions (m.mentions and matrix.to links) name the same people on the other side: going out a ghost becomes
+    its remote id and Karchi his remote account, and nothing names Weft's own server or carries Weft's own fields
+    (sk.karchi.*); coming in Karchi's remote account becomes him and anyone else a ghost."""
+    def other(uid: str) -> str | None:
+        if to_local:
+            return str(ADMIN) if uid == me else str(ghost_of(uid))
+        return me if uid == ADMIN else remote_of(uid)
+
+    def link(m: re.Match) -> str:
+        uid = urllib.parse.unquote(m.group(1))
+        mapped = other(uid)
+        return f"https://matrix.to/#/{urllib.parse.quote(mapped, safe='@:')}" if mapped else m.group(0)
+
+    for part in (content, content.get("m.new_content")):
+        if not isinstance(part, dict):
+            continue
+        if not to_local:
+            for key in [k for k in part if k.startswith("sk.karchi.")]:
+                part.pop(key)
+        mentions = part.get("m.mentions")
+        if isinstance(mentions, dict) and isinstance(mentions.get("user_ids"), list):
+            mentions["user_ids"] = [u for u in (other(str(u)) for u in mentions["user_ids"]) if u]
+        if isinstance(part.get("formatted_body"), str):
+            part["formatted_body"] = MATRIX_TO.sub(link, part["formatted_body"])
 
 
 class Store:
@@ -323,6 +354,7 @@ class Remote:
         content = evt.content.serialize()
         if not self.bridge.map_relations(content, to_local=True):
             return  # an edit or reaction of something Weft never had (no empty chat is made for it)
+        translate_users(content, to_local=True, me=self.user_id)
         portal = await self.bridge.portal(self, evt.room_id)
         if not portal:
             return
@@ -658,6 +690,7 @@ class Bridge:
             return  # deleted before it reached the bridge: nothing goes there
         if not self.map_relations(content, to_local=False):
             return
+        translate_users(content, to_local=False, me=remote.user_id)
         try:
             encrypted = await self.room_encrypted(remote, target)
             if any(k in content for k in MEDIA_KEYS):

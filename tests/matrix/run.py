@@ -338,6 +338,28 @@ namespaces:
         ok("typing there shows in Weft", await until(typing_here))
         await friend.set_typing(remote_room, timeout=0)
 
+        # Mentions name the same people on the other side; nothing names Weft's server or carries Weft's own fields.
+        await local.call("PUT", f"/rooms/{room}/send/m.room.message/mn", {
+            "msgtype": "m.text", "body": "friend: pozri", "format": "org.matrix.custom.html",
+            "formatted_body": f'<a href="https://matrix.to/#/{ghost}">friend</a>: pozri',
+            "m.mentions": {"user_ids": [ghost]}, "sk.karchi.resend_of": "$x"})
+        out = await until(lambda: asyncio.sleep(0, next((m for m in seen["messages"] if m.content.body == "friend: pozri"), None)))
+        raw_out = out.content.serialize() if out else {}
+        ok("a mention from Weft names the friend there", raw_out.get("m.mentions", {}).get("user_ids") == [friend_id]
+           and f"matrix.to/#/{friend_id}" in raw_out.get("formatted_body", ""), raw_out.get("m.mentions"))
+        ok("…and nothing of Weft's server or own fields goes there", "weft.test" not in json.dumps(raw_out) and not any(k.startswith("sk.karchi.") for k in raw_out),
+           [k for k in raw_out if k.startswith("sk.karchi.")])
+        await friend.send_message_event(remote_room, EventType.ROOM_MESSAGE, {
+            "msgtype": "m.text", "body": "karchi: hej", "format": "org.matrix.custom.html",
+            "formatted_body": f'<a href="https://matrix.to/#/{remote_karchi}">karchi</a>: hej', "m.mentions": {"user_ids": [remote_karchi]}})
+
+        async def mention_here():
+            await sync.step()
+            return sync.find(room, lambda e: e["type"] == "m.room.message" and e["content"].get("body") == "karchi: hej")
+        here = await until(mention_here)
+        ok("a mention of Karchi from there names him in Weft", bool(here) and here["content"].get("m.mentions", {}).get("user_ids") == [karchi]
+           and f"matrix.to/#/{karchi}" in here["content"].get("formatted_body", ""), here and here["content"].get("m.mentions"))
+
         # Files: an encrypted one from there arrives readable in Weft; one from Weft goes out encrypted.
         data = b"poznamky " + secrets.token_bytes(200)
         cipher, efile = encrypt_attachment(data)
