@@ -129,7 +129,7 @@ const S = {
   editing: null, // { room, event, draft } own message being edited in the composer; `draft` comes back after
   focusEvent: null, // event id to scroll to and highlight in the open chat
   pick: null, // { chat, event } the message the keyboard picked in the open chat (chatKey)
-  pickScroll: null, // 'top' | 'near': render brings the picked message into sight
+  pickScroll: null, // { how: 'top' | 'near', id }: render brings that message into sight
   focusComposer: false,
 };
 
@@ -7667,8 +7667,8 @@ const startsBlock = (msgs, i) => i === 0 || dayOf(msgs[i].origin_server_ts) !== 
   || msgs[i].origin_server_ts - msgs[i - 1].origin_server_ts >= BLOCK_GAP;
 
 /** The rail: one tick per block of the loaded chat, a day's longer. Resting on one shows its day, time and first
- *  message; a click picks that message (pickAt). The tick of the block at the top of the view is lit (railMark). */
-let railMemo = { msgs: null, n: 0, lang: '', el: null };
+ *  message; a click brings that message under the header (no pick: the keys stay for typing). The tick of the block at the top of the view is lit (railMark). */
+let railMemo = { msgs: null, n: 0, el: null };
 function chatRail(t) {
   const list = blocksOf(t.msgs);
   if (list.length < 2) return null;
@@ -7698,7 +7698,17 @@ function railJump(id) {
   if (!r) return;
   const t = timelineOf(r);
   const i = t.msgs.findIndex((ev) => ev.event_id === id);
-  if (i >= 0) pickAt(r, t, i, 'top');
+  if (i < 0) return;
+  showMsg(t, i);
+  S.pickScroll = { how: 'top', id };
+  render();
+}
+/** Message `i` of the open chat gets drawn: older ones are drawn down to it when it is above them. */
+function showMsg(t, i) {
+  spotWant = null;
+  let from = t.holder.drawFrom ? t.msgs.findIndex((x) => x.event_id === t.holder.drawFrom) : -1;
+  if (from < 0) from = Math.max(0, t.msgs.length - CHAT_FIRST);
+  if (i < from) t.holder.drawFrom = t.msgs[Math.max(0, i - 10)].event_id;
 }
 /** Lights the tick of the block at the top of the open chat's view and keeps it in sight on the rail. */
 let railFrame = 0;
@@ -7708,7 +7718,11 @@ function railMark(box) {
     railFrame = 0;
     const rail = box.isConnected && box.parentNode.querySelector(':scope > .crail');
     if (!rail) return;
-    const top = box.getBoundingClientRect().top + parseFloat(getComputedStyle(box).paddingTop) + 8;
+    // Between the floating header and the message box, however tall the box has grown.
+    const d = box.parentNode.getBoundingClientRect(), b = box.getBoundingClientRect();
+    const top = b.top + parseFloat(getComputedStyle(box).paddingTop) + 8;
+    rail.style.top = `${top - d.top + 12}px`;
+    rail.style.bottom = `${d.bottom - b.bottom + 12}px`;
     let cur = null;
     for (const sep of box.querySelectorAll('.cday[data-block]')) { if (sep.getBoundingClientRect().top <= top) cur = sep.dataset.block; else break; }
     // No separator above the view: the block of the first message drawn.
@@ -7746,20 +7760,17 @@ function pickAt(r, t, i, where = 'near') {
   const ev = t.msgs[i];
   if (!ev) return;
   S.pick = { chat: selKey(), event: ev.event_id };
-  S.pickScroll = where;
-  spotWant = null;
-  let from = t.holder.drawFrom ? t.msgs.findIndex((x) => x.event_id === t.holder.drawFrom) : -1;
-  if (from < 0) from = Math.max(0, t.msgs.length - CHAT_FIRST);
-  if (i < from) t.holder.drawFrom = t.msgs[Math.max(0, i - 10)].event_id;
+  S.pickScroll = { how: where, id: ev.event_id };
+  showMsg(t, i);
   const box = document.querySelector('[data-scroll=chat]');
   if (box && document.activeElement !== box) box.focus({ preventScroll: true }); // the keys leave the message box
   render();
 }
-/** The picked message comes into sight (after render has placed the chat). */
+/** The picked message (or the rail's) comes into sight, after render has placed the chat. */
 function pickScroll(box) {
-  const how = S.pickScroll;
+  const { how, id } = S.pickScroll;
   S.pickScroll = null;
-  const el = how && box.querySelector('.msg.picked');
+  const el = box.querySelector(`.msg[data-event="${CSS.escape(id)}"]`);
   if (!el) return;
   const a = el.getBoundingClientRect(), b = box.getBoundingClientRect();
   const top = b.top + parseFloat(getComputedStyle(box).paddingTop) + 34; // its bar shows above it
@@ -7781,7 +7792,7 @@ const pickable = (ev) => !ev.pending;
 function chatKey(e, key, typing) {
   const r = S.rooms.get(S.selected);
   const pane = document.querySelector('[data-scroll=chat]');
-  if (!r || !pane || e.defaultPrevented || e.isComposing || e.altKey) return false;
+  if (!r || !pane || S.menu || e.defaultPrevented || e.isComposing || e.altKey) return false;
   const ctrl = e.ctrlKey || e.metaKey;
   const p = pickedIn();
   if (!p) {
@@ -7818,7 +7829,7 @@ function chatKey(e, key, typing) {
     const j = ctrl ? blocksOf(t.msgs).find(([b]) => b > i)?.[0] ?? -1 : t.msgs.findIndex((x, k) => k > i && pickable(x));
     if (j >= 0 && pickable(t.msgs[j])) pickAt(r, t, j, ctrl ? 'top' : 'near');
     else unpick(true);
-  } else if (key === 'arrowright' && !ctrl && !e.shiftKey) go(before((x) => x.sender === S.userId));
+  } else if (key === 'arrowright' && !ctrl && !e.shiftKey) go(before((x) => x.sender === S.userId && pickable(x)));
   else if (key === 'arrowleft' && !ctrl && !e.shiftKey) go(before((x) => x.sender !== S.userId && pickable(x)));
   else if (key === 'escape') {
     // From its bar back to the message; from the message back to the message box.
@@ -7889,7 +7900,7 @@ function chatView(r, e = null) {
     // A block (blocksOf) starts under its separator: the day, or after an hour of silence its time. railMark finds them.
     const block = startsBlock(msgs, i) ? ev.event_id : null;
     if (label !== day) { items.push(h('div', { class: 'cday', 'data-block': block }, label)); prev = null; }
-    else if (block) { items.push(h('div', { class: 'cday', 'data-block': block }, timeLabel(ev.origin_server_ts))); prev = null; }
+    else if (block && i > 0 && dayOf(msgs[i - 1].origin_server_ts) === dayOf(ev.origin_server_ts)) { items.push(h('div', { class: 'cday', 'data-block': block }, timeLabel(ev.origin_server_ts))); prev = null; }
     day = label;
     // A merged chat says where the conversation goes on whenever the network changes, and where it starts.
     if (merged && er !== lastRoom) {
