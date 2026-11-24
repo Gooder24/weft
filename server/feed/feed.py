@@ -8,7 +8,8 @@ device and a restart return the same window; it never grows, and today's count n
 Instagram feed sessions are independent of message bridges; shared bridge credentials are never read.
 Only explicit POST /unfollow mutates Instagram; collection only performs GETs.
 A source is an RSS/Atom address, a YouTube channel (@handle, channel or video address; stored as the channel's feed)
-or an X profile (read without a login through FxTwitter's public API). Feed's refresh reads those at most every
+or an X profile (read without a login through FxTwitter's public API). A source may carry a `category`, Karchi's
+topic (Open-source platby, …), which Feed shows as its own tab. Feed's refresh reads those at most every
 WEB_EVERY seconds and Instagram once a day; expired stories are never shown.
 """
 import base64
@@ -663,7 +664,10 @@ def update_settings(body):
                     continue
                 sid = hashlib.sha256(found['url'].encode()).hexdigest()[:16]
                 if any(x['id'] == sid for x in sources): continue
-                sources.append({**found, 'id': sid, 'name': found.get('name') or ''})
+                # Karchi's own topic for the source, a Feed tab beside the networks; empty removes it.
+                category = clean(source['category'])[:40] if 'category' in source else found.get('category', '')
+                found = {k: v for k, v in found.items() if k != 'category'}
+                sources.append({**found, 'id': sid, 'name': found.get('name') or '', **({'category': category} if category else {})})
             if invalid: raise InvalidSources(invalid)
             cfg['sources'] = sources
         if 'hiddenStories' in body:

@@ -7,7 +7,7 @@ import { icon } from './icons.js';
 /** Tiles drawn at once; „Zobraziť ďalšie“ adds as many again (sixty YouTube channels bring hundreds of videos). */
 const PAGE = 120;
 export function createFeed({ h, api, kv, refresh, offline, user, settingsPanel, schedule, close, isOpen = () => false, readingWindow, onWindow, windowsLeft }) {
-  const state = { doc: null, busy: false, error: '', open: null, addUrl: '', addName: '', reader: null, sel: null, limit: PAGE };
+  const state = { doc: null, busy: false, error: '', open: null, addUrl: '', addName: '', addCat: '', reader: null, sel: null, limit: PAGE };
   const media = new Map();
   let generation = 0;
   let flushing = null;
@@ -212,8 +212,12 @@ export function createFeed({ h, api, kv, refresh, offline, user, settingsPanel, 
   }
   function retry(item, index) { media.delete(`${item.id}:${index}`); want(item, index); }
   // Which category an item is in, and the pictures of one role (avatar, media, quote, thumb …) with their index.
-  const CATS = ['all', 'x', 'youtube', 'instagram', 'rss'];
-  const catName = (c) => ({ all: T('Všetko'), x: 'X', youtube: 'YouTube', instagram: 'Instagram', rss: T('Novinky') })[c];
+  // Karchi's own topics (a source's `category`, set in Zdroje a filtre) follow the networks as `topic:<name>`;
+  // an item stays in its network's tab too.
+  const NETS = ['all', 'x', 'youtube', 'instagram', 'rss'];
+  const topics = () => [...new Set(cfg().sources.map((s) => s.category).filter(Boolean))];
+  const cats = () => [...NETS, ...topics().map((t) => `topic:${t}`)];
+  const catName = (c) => (c.startsWith('topic:') ? c.slice(6) : ({ all: T('Všetko'), x: 'X', youtube: 'YouTube', instagram: 'Instagram', rss: T('Novinky') })[c]);
   const cat = (i) => (i.kind === 'story' || i.kind === 'post' ? 'instagram' : i.kind === 'youtube' ? 'youtube' : i.kind === 'x' ? 'x' : 'rss');
   const assets = (item, role) => (item.media || []).map((a, n) => [a, n]).filter(([a]) => (a.role || 'media') === role);
   const posterOf = (item, a) => (Number.isInteger(a.poster) ? a.poster : null);
@@ -303,7 +307,9 @@ export function createFeed({ h, api, kv, refresh, offline, user, settingsPanel, 
     return (state.doc?.items || []).filter((i) => (i.source === 'instagram' ? c.instagram : c.sources.some((s) => s.id === i.source)) && !(i.kind === 'story' && (c.hiddenStories[i.user] || (i.expires || (i.at || 0) + 86400000) <= now)));
   }
   const filterKey = () => `ep_feed_filter:${user()}`;
-  const filter = () => (CATS.includes(localStorage.getItem(filterKey())) ? localStorage.getItem(filterKey()) : 'all');
+  const filter = () => (cats().includes(localStorage.getItem(filterKey())) ? localStorage.getItem(filterKey()) : 'all');
+  /** Whether an item belongs in tab `f`: everything, its network, or its source's topic. */
+  function inCat(i, f, topicOf) { return f === 'all' || cat(i) === f || (topicOf.get(i.source) && `topic:${topicOf.get(i.source)}` === f); }
   function setFilter(c) { localStorage.setItem(filterKey(), c); state.reader = null; state.limit = PAGE; refresh(); }
   /** YouTube's own list as one row a video: the title, then its line. */
   function videoRow(item) {
@@ -422,7 +428,7 @@ export function createFeed({ h, api, kv, refresh, offline, user, settingsPanel, 
     }, { rootMargin: '300px' });
     for (const el of document.querySelectorAll('.feed-tile[data-feed-id]')) if (!el._watched) { el._watched = true; io.observe(el); }
   }
-  /** Feed's keys while it has the keyboard: 1–5 categories, arrows move between tiles, Enter reads, O opens the
+  /** Feed's keys while it has the keyboard: 1–9 categories, arrows move between tiles, Enter reads, O opens the
    *  original; in the reader ←/→ move and Esc goes back. Returns whether the key was Feed's. */
   function onKey(e) {
     if (!isOpen() || e.ctrlKey || e.metaKey || e.altKey) return false;
@@ -438,7 +444,7 @@ export function createFeed({ h, api, kv, refresh, offline, user, settingsPanel, 
     if (!document.activeElement?.closest?.('.daily-feed')) return false;
     if ((k === 'o' || k === 'O') && item?.url) { window.open(item.url, '_blank', 'noopener'); return true; }
     if (state.reader) return false;
-    if (/^[1-5]$/.test(k)) { setFilter(CATS[Number(k) - 1]); return true; }
+    if (/^[1-9]$/.test(k)) { const c = cats()[Number(k) - 1]; if (c) setFilter(c); return true; }
     if (k === 'Enter' && item && document.activeElement?.classList.contains('feed-tile')) { openReader(item.id); return true; }
     const moves = { ArrowRight: 1, ArrowLeft: -1, j: 1, k: -1 };
     const grid = document.querySelector('.feed-grid');
@@ -463,9 +469,11 @@ export function createFeed({ h, api, kv, refresh, offline, user, settingsPanel, 
     const p = policy();
     const all = visible();
     const f = filter();
-    shown = f === 'all' ? all : all.filter((i) => cat(i) === f);
+    const topicOf = new Map(cfg().sources.filter((s) => s.category).map((s) => [s.id, s.category]));
+    const tabs = cats();
+    shown = all.filter((i) => inCat(i, f, topicOf));
     byId.clear(); for (const i of shown) byId.set(i.id, i);
-    const count = (c) => (c === 'all' ? all.length : all.filter((i) => cat(i) === c).length);
+    const count = (c) => all.filter((i) => inCat(i, c, topicOf)).length;
     const igProblem = instagramProblem(doc);
     const otherErrors = (doc?.errors || []).filter((e) => e.source !== 'instagram');
     const current = state.reader && shown.find((i) => i.id === state.reader);
@@ -488,11 +496,11 @@ export function createFeed({ h, api, kv, refresh, offline, user, settingsPanel, 
       locked ? h('p', { class: 'feed-empty' }, w?.end ? T`Dnešné okná sa minuli, posledné skončilo o ${hm(w.end)}. Ďalšie sa otvorí zajtra.` : T('Dnešné okná sa minuli. Ďalšie sa otvorí zajtra.'))
         : !open ? h('button', { class: 'primary', disabled: !!opening || offline(), onclick: openWindow }, opening ? T('Otváram…') : T`Otvoriť feed a správy na ${minutes()} min`)
         : [
-          h('div', { class: 'feed-filters', role: 'radiogroup', 'aria-label': T('Kategória') }, CATS.map((c, n) => {
+          h('div', { class: 'feed-filters', role: 'radiogroup', 'aria-label': T('Kategória') }, tabs.map((c, n) => {
             const warn = c === 'instagram' && igProblem;
-            return h('button', { class: f === c ? 'on' : '', role: 'radio', 'aria-checked': String(f === c), title: warn ? igProblem : T`Kláves ${n + 1}`, onclick: () => setFilter(c) },
-              c === 'all' ? null : logo(c), catName(c), h('span', { class: warn ? 'n warn' : 'n' }, warn ? '!' : String(count(c))));
-          }), h('span', { class: 'feed-keys' }, T('1–5 kategória, šípky, Enter čítať, O originál'))),
+            return h('button', { class: f === c ? 'on' : '', role: 'radio', 'aria-checked': String(f === c), title: warn ? igProblem : n < 9 ? T`Kláves ${n + 1}` : '', onclick: () => setFilter(c) },
+              c === 'all' || c.startsWith('topic:') ? null : logo(c), catName(c), h('span', { class: warn ? 'n warn' : 'n' }, warn ? '!' : String(count(c))));
+          }), h('span', { class: 'feed-keys' }, T`1–${Math.min(9, tabs.length)} kategória, šípky, Enter čítať, O originál`)),
           igProblem && (f === 'all' || f === 'instagram') ? instagramRow(doc, igProblem) : null,
           failed.map((err) => h('p', { class: 'feed-note', role: 'status' }, err.message)),
           current ? reader(current)
@@ -514,12 +522,29 @@ export function createFeed({ h, api, kv, refresh, offline, user, settingsPanel, 
     { url: 'https://simonwillison.net/atom/everything/', name: 'Simon Willison' },
     { url: 'https://feeds.arstechnica.com/arstechnica/technology-lab', name: 'Ars Technica' },
   ];
-  async function addAiNews() {
+  const PAYMENTS_TOPIC = 'Open-source platby'; // i18n-ignore: the topic's name is data, the same in every language
+  // Open-source payments: open secure chips (TROPIC01, OpenTitan), GNU Taler, Bolt Card, Flipper and Chameleon.
+  const PAYMENT_SOURCES = [
+    { url: 'https://taler.net/en/rss.xml', name: 'GNU Taler' },
+    { url: 'https://x.com/tropicsquare', name: 'Tropic Square' },
+    { url: 'https://github.com/tropicsquare/libtropic/releases.atom', name: 'TROPIC01 libtropic (vydania)' },
+    { url: 'https://lowrisc.org/feed/', name: 'lowRISC (OpenTitan)' },
+    { url: 'https://github.com/boltcard/boltcard/releases.atom', name: 'Bolt Card (vydania)' },
+    { url: 'https://github.com/lnbits/boltcards/releases.atom', name: 'LNbits Boltcards (vydania)' },
+    { url: 'https://blog.flipper.net/rss/', name: 'Flipper blog' },
+    { url: 'https://www.kickstarter.com/projects/flipper-devices/flipper-one/posts.atom', name: 'Flipper One (Kickstarter)' },
+    { url: 'https://github.com/RfidResearchGroup/ChameleonUltra/releases.atom', name: 'Chameleon Ultra (vydania)' },
+  ];
+  /** Adds a preset's sources not yet there; with `category` each one, new or already added, gets that topic. */
+  async function addPreset(list, category) {
     const c = cfg();
+    const wanted = new Map(list.map((s) => [s.url, s]));
+    const kept = c.sources.map((s) => (category && wanted.has(s.url) ? { ...s, category } : s));
     const existing = new Set(c.sources.map((s) => s.url));
-    const merged = [...c.sources, ...AI_SOURCES.filter((s) => !existing.has(s.url)).map((s) => ({ id: s.url, url: s.url, name: s.name }))];
-    await configure({ sources: merged });
+    const added = list.filter((s) => !existing.has(s.url)).map((s) => ({ id: s.url, url: s.url, name: s.name, ...(category ? { category } : {}) }));
+    await configure({ sources: [...kept, ...added] });
   }
+  const addAiNews = () => addPreset(AI_SOURCES);
   function extractYouTubeUrls(text) {
     const urls = new Set();
     const opml = text.match(/xmlUrl="([^"]+)"/gi) || [];
@@ -558,11 +583,16 @@ export function createFeed({ h, api, kv, refresh, offline, user, settingsPanel, 
         state.doc?.instagramConnected ? h('button', { class: 'ghost', disabled: state.busy || offline(), onclick: disconnectInstagram }, T('Odpojiť')) : null),
       !window.desktop?.collect ? h('p', { class: 'hint' }, T('Instagram pripojíš v desktopovej appke Weft. Potom feed uvidíš aj tu.')) : null,
       h('h3', {}, T('RSS, YouTube a X')),
-      c.sources.length ? c.sources.map((s) => h('div', { class: 'feed-source', 'data-feed-source': s.id }, h('span', {}, s.name || s.url), h('button', { class: 'ghost danger', onclick: () => configure({ sources: c.sources.filter((x) => x.id !== s.id) }) }, T('Odstrániť'))))
+      c.sources.length ? c.sources.map((s) => h('div', { class: 'feed-source', 'data-feed-source': s.id }, h('span', {}, s.name || s.url),
+        h('input', { class: 'feed-source-cat', value: s.category || '', placeholder: T('Kategória'), 'aria-label': T`Kategória zdroja ${s.name || s.url}`, list: 'feed-topics',
+          onchange: (e) => { const category = e.target.value.trim(); if (category !== (s.category || '')) configure({ sources: c.sources.map((x) => (x.id === s.id ? { ...x, category } : x)) }); } }),
+        h('button', { class: 'ghost danger', onclick: () => configure({ sources: c.sources.filter((x) => x.id !== s.id) }) }, T('Odstrániť'))))
         : h('p', { class: 'hint' }, T('Zatiaľ žiadny zdroj.')),
-      h('form', { class: 'feed-add', onsubmit: (e) => { e.preventDefault(); if (!state.addUrl.trim()) return; const s = { id: state.addUrl, url: state.addUrl.trim(), name: state.addName.trim() }; state.addUrl = ''; state.addName = ''; configure({ sources: [...c.sources, s] }); } },
+      h('datalist', { id: 'feed-topics' }, topics().map((t) => h('option', { value: t }))),
+      h('form', { class: 'feed-add', onsubmit: (e) => { e.preventDefault(); if (!state.addUrl.trim()) return; const s = { id: state.addUrl, url: state.addUrl.trim(), name: state.addName.trim(), category: state.addCat.trim() }; state.addUrl = ''; state.addName = ''; state.addCat = ''; configure({ sources: [...c.sources, s] }); } },
         h('input', { value: state.addUrl, required: true, placeholder: T('RSS, kanál YouTube alebo profil na X'), 'aria-label': T('Adresa zdroja'), 'data-root': '__feedUrl', oninput: (e) => { state.addUrl = e.target.value; } }),
         h('input', { value: state.addName, placeholder: T('Názov (nepovinné)'), 'aria-label': T('Názov zdroja'), 'data-root': '__feedName', oninput: (e) => { state.addName = e.target.value; } }),
+        h('input', { value: state.addCat, placeholder: T('Kategória (nepovinné)'), 'aria-label': T('Kategória nového zdroja'), list: 'feed-topics', 'data-root': '__feedCat', oninput: (e) => { state.addCat = e.target.value; } }),
         h('button', { class: 'primary', type: 'submit' }, T('Pridať zdroj'))),
       h('p', { class: 'hint' }, T('Napríklad youtube.com/@theo, odkaz na video z kanála, x.com/theo alebo adresa RSS. Videá YouTube sú iba textové; X sa číta bez prihlásenia. Obnoviť ich načíta znova najskôr po 10 minútach, Instagram raz denne.')),
       h('h3', {}, T('YouTube odbery (hromadný import)')),
@@ -576,6 +606,9 @@ export function createFeed({ h, api, kv, refresh, offline, user, settingsPanel, 
       h('h3', {}, T('AI novinky (modely a firmy)')),
       h('p', { class: 'hint' }, T('Pridá predvolené zdroje: OpenAI, Google DeepMind, Google AI, Hugging Face, The Verge, TechCrunch, MIT Tech Review, Simon Willison, Ars Technica.')),
       h('button', { class: 'ghost', disabled: state.busy || offline(), onclick: addAiNews }, T('Pridať AI novinky')),
+      h('h3', {}, T('Open-source platby')),
+      h('p', { class: 'hint' }, T('Pridá zdroje v kategórii Open-source platby: GNU Taler, Tropic Square (TROPIC01), lowRISC (OpenTitan), Bolt Card, LNbits Boltcards, Flipper, Flipper One na Kickstarteri a Chameleon Ultra.')),
+      h('button', { class: 'ghost', disabled: state.busy || offline(), onclick: () => addPreset(PAYMENT_SOURCES, PAYMENTS_TOPIC) }, T('Pridať open-source platby')),
       h('h3', {}, T('Skryté stories')),
       hidden.length ? hidden.map(([id, name]) => h('div', { class: 'feed-source' }, h('span', {}, `@${name}`),
         h('button', { class: 'ghost', onclick: () => hide({ user: id }, false) }, T('Znova zobrazovať')))) : h('p', { class: 'hint' }, T('Žiadne. Účet skryješ pri jeho story; skrytie platí iba vo Wefte.')),

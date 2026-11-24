@@ -1063,6 +1063,7 @@ a.rnote.rlink { color: var(--link); text-decoration: none; }
 .feed-actions .ghost { font-size: var(--fs); padding: 5px 8px; }
 .feed-source { display: flex; align-items: center; gap: 10px; font-size: var(--fs); margin: 6px 0; }
 .feed-source span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.feed-source .feed-source-cat { flex: 0 1 170px; min-width: 0; }
 .feed-add { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 0; }
 .feed-add input[type=url] { flex: 2 1 220px; min-width: 0; }
 .feed-add input:not([type]) { flex: 1 1 140px; min-width: 0; }
