@@ -8214,7 +8214,8 @@ function chatCompose(r, m, t = null) {
       // The lists of commands, emoji and people follow what is typed.
       if (slashWord(e.target.value) !== was || word !== colonWas || who !== whoWas) render();
     },
-    onblur: () => typingStop(),
+    // A list opening under the box (@names, :emoji) blurs it for a moment; only a box that stays without the keys stops.
+    onblur: () => setTimeout(() => { if (typingOut && document.activeElement?.dataset?.root !== typingOut.room) typingStop(); }),
     onkeydown: (e) => {
       const draft = S.drafts.get(r.id) || '';
       const found = colonHits(r);
