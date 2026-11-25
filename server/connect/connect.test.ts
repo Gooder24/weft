@@ -1,0 +1,188 @@
+// bun test server/connect: the rules over made-up mails, then the host against a fake homeserver and a throwaway
+// archive. Nothing here reaches a network or a real account.
+import { Database } from 'bun:sqlite';
+import { afterEach, describe, expect, test } from 'bun:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { parse as packeta, place } from './connectors/packeta.ts';
+import { parse as vinted, vinted as vintedConnector } from './connectors/vinted.ts';
+import { packeta as packetaConnector } from './connectors/packeta.ts';
+import { Host } from './host.ts';
+import { flatten } from './mail.ts';
+import { Matrix } from './matrix.ts';
+
+const CSS = `\n @media screen and (max-width: 600px) {\n .email-container {\n width: 100% !important;\n }\n }\n .x { color: red }\n`;
+const mail = (subject: string, text: string, from = 'Vinted <no-reply@vinted.sk>', id = 'm1', ts = 1_800_000_000_000) =>
+  ({ id, from, ts, ...flatten(`${subject}\n${CSS}\n Vinted Email \n ${text}`) });
+
+describe('mail', () => {
+  test('flatten drops <style> rules and folds whitespace', () => {
+    expect(flatten(`Hello there\n${CSS}\n  one \n\n two `)).toEqual({ subject: 'Hello there', text: 'one two' });
+  });
+});
+
+describe('vinted', () => {
+  test('a new message names who wrote, in the item\'s chat', () => {
+    const [item] = vinted(mail('New message about Lampa retro', 'kupec42, predajca77 just sent you a message about Lampa retro. View message This email was sent by Vinted'));
+    expect(item).toEqual({ thread: 'item:Lampa retro', title: 'Lampa retro', from: 'predajca77', text: 'Nová správa. Prečítaš ju a odpíšeš vo Vinted.' });
+  });
+  test('an offer keeps both prices', () => {
+    const [item] = vinted(mail('New offer for Hrnček', 'kupec42, zberatel just offered to sell you Hrnček for a lower price. 4,00 € New offer: 4,00 € instead of 5,50 € Respond to offer Follow us:'));
+    expect(item?.from).toBe('zberatel');
+    expect(item?.text).toBe('Ponuka: 4,00 € namiesto 5,50 €.');
+  });
+  test('a receipt sums up what was paid, in the same chat as the item', () => {
+    const [item] = vinted(mail('Your receipt for "Lampa retro“', 'Hello kupec42, Your payment has been received. Your Vinted purchase receipt: Seller predajca77 Order Lampa retro Paid €9.10 Item €6.00 Postage €2.10 Vinted fee €1.00 Payment method Visa'));
+    expect(item).toEqual({ thread: 'item:Lampa retro', title: 'Lampa retro', text: 'Zaplatené €9.10 (tovar €6.00, poštovné €2.10, poplatok €1.00), predajca predajca77.' });
+  });
+  test('an order update keeps Vinted\'s sentence without greeting or footer', () => {
+    const [item] = vinted(mail('Order update for Lampa retro', 'Hi, Your parcel is waiting for you at Z-BOX Horná Dolná, Hlavná 1. Please pick it up. Go to conversation This email was sent by Vinted'));
+    expect(item?.text).toBe('Your parcel is waiting for you at Z-BOX Horná Dolná, Hlavná 1. Please pick it up.');
+  });
+  test('anything else goes to one chat „Vinted“ by its subject', () => {
+    expect(vinted(mail('Leave feedback for the seller', 'Hi'))).toEqual([{ thread: 'vinted', title: 'Vinted', text: 'Leave feedback for the seller' }]);
+  });
+  test('Packeta\'s mails forwarded by Vinted are not Vinted\'s', () => {
+    expect(vintedConnector.mail.from('Vinted <no-reply@vinted.sk>')).toBe(true);
+    expect(vintedConnector.mail.from('Packeta Slovakia via Vinted <shipping@relay.vinted.com>')).toBe(false);
+    expect(packetaConnector.mail.from('Packeta Slovakia via Vinted <shipping@relay.vinted.com>')).toBe(true);
+    expect(vintedConnector.mail.from('Someone <someone@example.com>')).toBe(false);
+  });
+});
+
+describe('packeta', () => {
+  const P = 'Packeta Slovakia <noreply@packeta.sk>';
+  const ready = 'Zásielka Z 111 2222 333 Dobrý deň, vaša zásielka od odosielateľa Obchodík je pre vás pripravená na vyzdvihnutie v Z-BOXe. Kód pre otvorenie schránky 1 2 3 4 5 6 Miesto, kde je vaša zásielka uložená Z-BOX Horná Dolná, Hlavná 1 Hlavná 1 000 00 Horná Dolná Zobraziť na mape Po–Ne 00:00–23:59 Na vyzdvihnutie najneskôr do 2.3.2030 23:59. Zaplatené';
+  test('the box keeps its street once', () => {
+    expect(place(ready)).toBe('Z-BOX Horná Dolná, Hlavná 1');
+  });
+  test('ready: box, deadline and code, in the parcel\'s chat', () => {
+    expect(packeta(mail('Zásielka je pripravená na vyzdvihnutie', ready, P))).toEqual([{
+      thread: 'parcel:Z1112222333', title: 'Zásielka Z 111 2222 333 od Obchodík',
+      text: 'Pripravená na vyzdvihnutie: Z-BOX Horná Dolná, Hlavná 1, do 2.3.2030 23:59, kód 123456.',
+    }]);
+  });
+  test('handed over by the sender', () => {
+    const [item] = packeta(mail('Zásielka bola prijatá do prepravy', 'Dobrý deň, internetový obchod Obchodík nám odovzdal Vašu zásielku číslo Z 111 2222 333, ktorá bude doručená', P));
+    expect(item?.thread).toBe('parcel:Z1112222333');
+    expect(item?.text).toBe('Obchodík ju odovzdal Packete.');
+  });
+  test('an unknown mail without a number goes to „Packeta“', () => {
+    expect(packeta(mail('Novinky z Packety', 'Ahoj', P))).toEqual([{ thread: 'packeta', title: 'Packeta', text: 'Novinky z Packety' }]);
+  });
+});
+
+// ---------------------------------------------------------------- the host
+
+type Call = { method: string; path: string; user: string | null; body: Record<string, unknown> };
+const dirs: string[] = [];
+const servers: { stop: () => void }[] = [];
+afterEach(() => {
+  for (const s of servers.splice(0)) s.stop();
+  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+});
+
+/** A homeserver that answers what the host asks and remembers every call. */
+function fakeHomeserver() {
+  const calls: Call[] = [];
+  let n = 0;
+  const server = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      const url = new URL(req.url);
+      const path = decodeURIComponent(url.pathname.replace('/_matrix/client/v3', ''));
+      const body: Record<string, unknown> = req.method === 'GET' ? {} : await req.json().catch(() => ({}));
+      calls.push({ method: req.method, path, user: url.searchParams.get('user_id'), body });
+      if (path === '/createRoom') return Response.json({ room_id: `!r${++n}:test` });
+      if (path.includes('/send/')) return Response.json({ event_id: `$e${++n}` });
+      return Response.json({});
+    },
+  });
+  servers.push(server);
+  return { calls, url: `http://127.0.0.1:${server.port}` };
+}
+
+const NOW = 1_800_000_000_000;
+function setup() {
+  const dir = mkdtempSync(join(tmpdir(), 'connect-'));
+  dirs.push(dir);
+  const archive = new Database(join(dir, 'archive.db'), { strict: true });
+  archive.exec(`CREATE TABLE chats (id TEXT PRIMARY KEY, network TEXT, title TEXT, room TEXT, source TEXT NOT NULL);
+    CREATE TABLE messages (id TEXT PRIMARY KEY, chat TEXT NOT NULL, ts INTEGER NOT NULL, sender TEXT NOT NULL, me INTEGER NOT NULL, body TEXT NOT NULL);
+    INSERT INTO chats VALUES ('gmail:a:1', 'gmail', 't', NULL, 'gmail'), ('messenger:x', 'messenger', 't', NULL, 'x');`);
+  const add = (id: string, sender: string, body: string, ts = NOW - 60_000, chat = 'gmail:a:1') =>
+    archive.query('INSERT OR REPLACE INTO messages VALUES (?, ?, ?, ?, 0, ?)').run(id, chat, ts, sender, body);
+  const hs = fakeHomeserver();
+  const matrix = new Matrix(hs.url, 'as', 'puppet', '@karchi:test', '@connectbot:test');
+  const host = new Host({ archive: join(dir, 'archive.db'), state: join(dir, 'connect.db'), matrix, connectors: [vintedConnector, packetaConnector], now: () => NOW });
+  return { add, hs, host };
+}
+const V = 'Vinted <no-reply@vinted.sk>';
+const sends = (calls: Call[]) => calls.filter((c) => c.path.includes('/send/'));
+
+describe('host', () => {
+  test('posts each item once into its thread\'s room, as the right ghost, Karchi joined', async () => {
+    const { add, hs, host } = setup();
+    add('g1', V, 'New message about Lampa retro\n predajca77 just sent you a message about Lampa retro.');
+    add('g2', V, 'Your receipt for "Lampa retro“\n Seller predajca77 Paid €9.10');
+    add('g3', 'Someone <a@example.com>', 'Hello\n nothing to see');
+    add('x1', V, 'New message about Lampa retro\n not a mail', NOW - 60_000, 'messenger:x');
+    expect(await host.round()).toBe(2);
+    expect(hs.calls.filter((c) => c.path === '/createRoom')).toHaveLength(1);
+    const [msg, paid] = sends(hs.calls);
+    expect(msg?.user).toBe(`@cx_vinted_${new Bun.CryptoHasher('sha256').update('predajca77').digest('hex').slice(0, 12)}:test`);
+    expect(paid?.user).toBe('@cx_vinted:test');
+    expect(hs.calls.some((c) => c.path === '/join/!r1:test' && c.user === '@karchi:test')).toBe(true);
+    expect(hs.calls.some((c) => c.path.includes('/receipt/'))).toBe(false); // a minute old: news, left unread
+    expect(await host.round()).toBe(0);
+    add('g1', V, 'New message about Lampa retro\n predajca77 just sent you a message about Lampa retro.'); // the archive wrote it again: new rowid
+    expect(await host.round()).toBe(0);
+    expect(host.status().find((s) => s.id === 'vinted')).toMatchObject({ on: true, chats: 1, items: 2 });
+  });
+
+  test('history older than a day comes read; older than 30 days not at all', async () => {
+    const { add, hs, host } = setup();
+    add('old', V, 'Order update for Hrnček\n Hi, Shipped.', NOW - 3 * 86_400_000);
+    add('ancient', V, 'Order update for Váza\n Hi, Shipped.', NOW - 40 * 86_400_000);
+    expect(await host.round()).toBe(1);
+    expect(hs.calls.filter((c) => c.path.includes('/receipt/m.read/'))).toEqual([expect.objectContaining({ user: '@karchi:test' })]);
+  });
+
+  test('off stops new items; on again catches up without repeating', async () => {
+    const { add, hs, host } = setup();
+    add('g1', V, 'Order update for Hrnček\n Hi, Shipped.');
+    await host.round();
+    host.setOn('vinted', false);
+    add('g2', V, 'Order update for Hrnček\n Hi, Delivered.');
+    expect(await host.round()).toBe(0);
+    expect(host.setOn('nope', true)).toBe(false);
+    host.setOn('vinted', true);
+    expect(await host.round()).toBe(1);
+    expect(sends(hs.calls).map((c) => c.body.body)).toEqual(['Shipped.', 'Delivered.']);
+  });
+
+  test('a homeserver failure leaves the mail for the next round', async () => {
+    const { add, hs, host } = setup();
+    add('g1', V, 'Order update for Hrnček\n Hi, Shipped.');
+    const broken = new Matrix('http://127.0.0.1:9', 'as', 'puppet', '@karchi:test', '@connectbot:test');
+    const failing = new Host({ ...host.opts, matrix: broken });
+    await expect(failing.round()).rejects.toThrow();
+    expect(await host.round()).toBe(1);
+    expect(sends(hs.calls)).toHaveLength(1);
+  });
+});
+
+describe('order', () => {
+  test('mail the archive took newest first still goes into the chat oldest first', async () => {
+    const { add, hs, host } = setup();
+    add('b', V, 'Order update for Hrnček\n Hi, Delivered.', NOW - 60_000);
+    add('a', V, 'Order update for Hrnček\n Hi, Shipped.', NOW - 120_000);
+    await host.round();
+    expect(sends(hs.calls).map((c) => c.body.body)).toEqual(['Shipped.', 'Delivered.']);
+  });
+  test('a pick-up point\'s street comes once', () => {
+    const [item] = vinted(mail('Order update for Hrnček', 'Hi, Your parcel is waiting for you at Z-BOX Horná Dolná, Hlavná 1, Hlavná 1, 000 00 Horná Dolná. Please pick it up. Go to conversation'));
+    expect(item?.text).toBe('Your parcel is waiting for you at Z-BOX Horná Dolná, Hlavná 1, 000 00 Horná Dolná. Please pick it up.');
+  });
+});

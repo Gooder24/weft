@@ -1316,4 +1316,12 @@ export default {
   "Prenesie históriu chatov z Beeper Desktopu do Weftu. Najprv ukáže, čo pribudne; v Beeperi nič nezmení. Siete pripoj vo Wefte vyššie, prihlásenia sa z Beeperu neprenášajú.": "Moves your chat history from Beeper Desktop into Weft. It first shows what will come and changes nothing in Beeper. Connect the networks in Weft above; sign-ins are not taken over from Beeper.",
   "Ešte dobieha predchádzajúce počítanie. Skús to o chvíľu znova.": "The previous count is still finishing. Try again in a moment.",
   "Serveru na tento Beeper nestačila pamäť.": "The server ran out of memory for this Beeper.",
+  "Nákupy, ponuky a nové správy, chat ku každej veci.": "Purchases, offers and new messages, one chat per item.",
+  "Zásielky: kde sú, do kedy a kód na Z-BOX.": "Parcels: where they are, until when, and the Z-BOX code.",
+  "Z mailov, ktoré ti posiela {} · iba na čítanie ": "From the mails {} sends you · read-only ",
+  "Z mailov": "From mail",
+  "Weft číta len maily, ktoré ti tieto služby už posielajú, a robí z nich chaty. Nikam sa neprihlasuje ani nič neposiela, takže ti účet nemôžu zablokovať.": "Weft only reads the mails these services already send you and turns them into chats. It signs in nowhere and sends nothing, so they cannot block your account.",
+  "služba neodpovedá": "the service does not answer",
+  "{} Chatov: {}, správ: {}.": "{} Chats: {}, messages: {}.",
+  "Vypnuté: nové maily nečíta, chaty ostávajú.": "Off: new mail is not read, the chats stay.",
 };

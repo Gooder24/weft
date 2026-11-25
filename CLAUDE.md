@@ -251,6 +251,13 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   the same lines, `weft link <url>` reads one. A mail's generic links are read only on purpose (click tracking).
   Cards say plainly whether a transcript was read (TikTok subtitles) or only listed (YouTube). Checks:
   `overenie/shared-links/` (`cards.mjs`, `resolver_test.py`, `ui.cjs`, `live.txt`).
+- `server/connect/` is the connector host (TypeScript on Bun; asus `~/matrix-spike/connect/`, unit
+  `matrix-spike-connect`, 127.0.0.1:29335 behind Caddy's `/_connect/`, appservice `appservices/connect.yaml`, ghosts
+  `@cx_*`): chats made from the mails a platform already sends (Vinted: one chat per item; Packeta: one per parcel
+  with box, deadline and code), read from `archive.db` read-only, so no platform is ever contacted. Rooms are
+  read-only (`isConnector` in app.js, `READ_ONLY` in `weft`); Settings → Účty → „Z mailov“ switches each. A new
+  platform is one file in `server/connect/connectors/` plus its icon and `CONNECTORS` line (README there). Design and
+  the later steps (phone, official APIs): `docs/navrhy/2026-11-konektory/`. Checks: `bun run check` there, `bun dry-run.ts`.
 - `server/sendlater/` is the send-later service (source of truth here, deployed to asus `~/matrix-spike/sendlater/`,
   unit `matrix-spike-sendlater`): it sends the messages Weft keeps in account data `sk.karchi.sendlater` when due.
 - Voice messages play from the keyboard too: Space or K on the player, ← → 5 s, Ctrl+S downloads, and Ctrl+Shift+Space

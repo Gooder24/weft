@@ -61,7 +61,7 @@ const BATCHES = 'sk.karchi.batches';
 // every feed answer.
 const WINDOW = 'sk.karchi.window';
 /** m.bridge protocol id -> app. */
-const NETWORKS = { facebookgo: 'messenger', facebook: 'messenger', instagramgo: 'instagram', instagram: 'instagram', discordgo: 'discord', discord: 'discord', whatsapp: 'whatsapp', teams: 'teams', matrix: 'matrix' };
+const NETWORKS = { facebookgo: 'messenger', facebook: 'messenger', instagramgo: 'instagram', instagram: 'instagram', discordgo: 'discord', discord: 'discord', whatsapp: 'whatsapp', teams: 'teams', matrix: 'matrix', vinted: 'vinted', packeta: 'packeta' };
 /** Matrix localpart of an agent bot -> app; its plain (unbridged) chat with Karchi shows in the inbox. */
 const AGENTS = { '@hermes': 'hermes' };
 const isBot = (id) => /^@(messenger|instagram|discord|edupage|whatsapp|teams|matrix)bot:/.test(id);
@@ -5157,6 +5157,13 @@ const EDU_MAX_FILE = 25 * 1024 * 1024;
 // ------------------------------------------------------------------ inbox, panels, shortcuts
 
 /** Apps that can feed the inbox; each chat belongs to one. */
+/** Connectors (server/connect): chats made from the mails a platform sends, read-only. The host on asus has the rules;
+ *  here are their name, icon, page and what Settings → Účty says about them. */
+const CONNECTORS = [
+  { id: 'vinted', name: 'Vinted', icon: '/vinted.png', link: 'https://www.vinted.sk/inbox', about: T('Nákupy, ponuky a nové správy, chat ku každej veci.') },
+  { id: 'packeta', name: 'Packeta', icon: '/packeta.png', link: 'https://tracking.packeta.com/', about: T('Zásielky: kde sú, do kedy a kód na Z-BOX.') },
+];
+const isConnector = (r) => !!r && CONNECTORS.some((c) => c.id === r.app);
 const APPS = [
   { id: 'edupage', name: 'EduPage', icon: '/edupage.png' },
   { id: 'messenger', name: 'Messenger', icon: '/messenger.ico' },
@@ -5168,6 +5175,7 @@ const APPS = [
   { id: 'outlook', name: 'Outlook', icon: '/outlook.png' },
   { id: 'matrix', name: 'Matrix', icon: '/matrix.svg' },
   { id: 'hermes', name: 'Hermes', icon: '/hermes.svg' },
+  ...CONNECTORS,
 ];
 const hiddenApps = () => new Set(JSON.parse(localStorage.getItem('ep_hidden_apps') || '[]'));
 function toggleApp(id) {
@@ -5191,7 +5199,7 @@ function togglePanel(name, tab) {
   S.panel = S.panel === name && !tab ? null : name; // a section asked for opens, never closes
   S.menu = false;
   S.overlay = null;
-  if (S.panel === 'settings') { calNewCal.asking = null; refreshLinks(); if (S.links.discord?.length) loadDiscordServers(); }
+  if (S.panel === 'settings') { calNewCal.asking = null; refreshLinks(); loadConnectors(); if (S.links.discord?.length) loadDiscordServers(); }
   render();
   // With a mouse the cursor waits in the search; on a phone that would pop the keyboard over the map.
   if (S.panel === 'people' && matchMedia('(pointer: fine)').matches) pm.input?.focus();
@@ -5265,7 +5273,7 @@ function archiveAllRead() {
 
 function replyToLast() {
   const open = S.rooms.get(S.selected);
-  if (!open || open.archiveOnly) return;
+  if (!open || open.archiveOnly || isConnector(open)) return;
   const t = timelineOf(open);
   const ev = t.msgs.findLast((x) => x.sender !== S.userId && !x.pending && !isRedacted(roomModel(t.roomOf(x)), x));
   if (!ev) return;
@@ -7278,7 +7286,7 @@ function bubbleView(r, m, ev, grouped, group, sug = null) {
   const quoted = reply && m.byId.get(reply);
   const reacts = m.reactions.get(ev.event_id);
   const member = r.members.get(ev.sender);
-  const acts = !(gone || ev.pending || ev.archived);
+  const acts = !(gone || ev.pending || ev.archived || isConnector(r));
   const fail = mine && !gone ? (ev.pending ? (ev.failed ? { reason: ev.failed, sure: true } : null) : m.failed?.get(ev.event_id)) : null;
   return h('div', {
     class: `msg${mine ? ' mine' : lookClass(r, ev.sender)}${grouped ? ' grouped' : ''}${ev.pending && !fail ? ' pending' : ''}${fail ? ' failed' : ''}${S.focusEvent === ev.event_id ? ' focus' : ''}${S.actsFor === ev.event_id ? ' acts' : ''}${S.pick?.event === ev.event_id ? ' picked' : ''}`,
@@ -8187,7 +8195,7 @@ function chatView(r, e = null) {
       h('div', { class: 'tonew', 'data-key': '__tonew' }, h('button', { type: 'button', title: T('Na najnovšie správy (Ctrl+↓)'), 'aria-label': T('Na najnovšie správy'), hidden: !S.chatAway, onclick: chatToNew }, icon('arrow-down'), h('kbd', {}, 'Ctrl+↓')))),
     rail,
     forwardBar(t.parts),
-    r.archiveOnly ? archiveCompose(r) : chatCompose(r, m, merged ? t : null));
+    r.archiveOnly ? archiveCompose(r) : isConnector(r) ? connectorCompose(r) : chatCompose(r, m, merged ? t : null));
 }
 
 /* An old chat only the archive has (an export) knows its person by name alone: Instagram's export keeps a slug of
@@ -8239,6 +8247,13 @@ async function reachArchived(r) {
 }
 
 /** Under an old chat only the archive has: whom to write to (at once, one click each), or why there is nobody. */
+/** A connector's chat takes no message: it says where it comes from and opens the platform. */
+function connectorCompose(r) {
+  const c = CONNECTORS.find((x) => x.id === r.app);
+  return h('div', { class: 'cnote' }, T`Z mailov, ktoré ti posiela ${c.name} · iba na čítanie `,
+    h('button', { class: 'primary', type: 'button', onclick: () => window.open(c.link, '_blank', 'noopener') }, T`Otvoriť ${c.name}`));
+}
+
 function archiveCompose(r) {
   const to = r.archiveTo;
   const app = to && APPS.find((a) => a.id === to.app);
@@ -13644,8 +13659,43 @@ function accountSettings() {
           logins === undefined ? T('zisťujem…') : logins === null ? T('most neodpovedá') : T('nepripojené'))),
         logins === null ? null : h('button', { class: 'primary', onclick: () => startLink(app) }, T('Pripojiť')));
     }),
+    connectorSettings(),
     callSettings(),
     beeperSettings(),
+  ];
+}
+
+/* Settings → Účty → „Z mailov“: each connector on or off (server/connect, GET/PUT /_connect/connectors). Off stops
+ * new items at once and keeps its chats; on again catches up on the last 30 days without repeating any. */
+async function loadConnectors(change) {
+  try {
+    const res = await fetch(change ? `/_connect/connectors/${q(change.id)}` : '/_connect/connectors', {
+      method: change ? 'PUT' : 'GET', cache: 'no-store',
+      headers: { Authorization: `Bearer ${S.token}`, ...(change ? { 'Content-Type': 'application/json' } : {}) },
+      body: change ? JSON.stringify({ on: change.on }) : undefined,
+    });
+    if (!res.ok) throw new Error(res.status);
+    S.connectors = (await res.json()).connectors;
+  } catch {
+    if (change) alert(T('Nastavenie sa neuložilo.'));
+    S.connectors ??= null;
+  }
+  render();
+}
+function connectorSettings() {
+  const state = S.connectors;
+  return [
+    h('h3', {}, T('Z mailov')),
+    h('p', { class: 'hint' }, T('Weft číta len maily, ktoré ti tieto služby už posielajú, a robí z nich chaty. Nikam sa neprihlasuje ani nič neposiela, takže ti účet nemôžu zablokovať.')),
+    CONNECTORS.map((c) => {
+      const st = state?.find((x) => x.id === c.id);
+      const what = state === undefined ? T('zisťujem…') : !st ? T('služba neodpovedá')
+        : st.on ? T`${c.about} Chatov: ${st.chats}, správ: ${st.items}.` : T('Vypnuté: nové maily nečíta, chaty ostávajú.');
+      return h('label', { class: 'toggle', 'data-key': `connector:${c.id}` },
+        h('img', { class: 'appicon', src: c.icon, alt: '' }),
+        h('span', {}, c.name, h('small', {}, what)),
+        h('input', { type: 'checkbox', checked: !!st?.on, disabled: !st, onchange: (e) => loadConnectors({ id: c.id, on: e.currentTarget.checked }) }));
+    }),
   ];
 }
 

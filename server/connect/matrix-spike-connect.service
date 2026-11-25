@@ -1,0 +1,14 @@
+[Unit]
+Description=matrix-spike: Weft's connectors (chats made from platforms' mails, /_connect/)
+After=matrix-spike-homeserver.service
+
+[Service]
+WorkingDirectory=%h/matrix-spike/connect
+EnvironmentFile=%h/.config/weft/weft.env
+ExecStart=%h/.local/share/vite-plus/bin/bun run %h/matrix-spike/connect/main.ts
+Restart=always
+RestartSec=10
+MemoryMax=128M
+
+[Install]
+WantedBy=default.target

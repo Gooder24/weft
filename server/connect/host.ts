@@ -1,0 +1,158 @@
+// The connector host: reads new mail from the archive (read-only), lets each switched-on connector make items of
+// it, and posts them into one Matrix room per thread through the appservice. Its own state (where each connector
+// is in the archive, rooms, ghosts, what was posted, the switches) is one SQLite file.
+import { Database } from 'bun:sqlite';
+import { flatten } from './mail.ts';
+import { Matrix, MatrixError } from './matrix.ts';
+import type { Connector, Item, Mail } from './types.ts';
+
+const DAY = 86_400_000;
+export const BACK = 30 * DAY; // how far back a connector looks the first time (and after being off)
+const SEEN = DAY; // an item older than this when it comes is posted read: it is history, not news
+const MARK = 'sk.karchi.connect';
+
+type Row = { rowid: number; id: string; ts: number; sender: string; body: string };
+
+export class Host {
+  readonly db: Database;
+  readonly archive: Database;
+  private busy: Promise<number> | null = null;
+
+  constructor(readonly opts: { archive: string; state: string; matrix: Matrix; connectors: Connector[]; now?: () => number }) {
+    this.db = new Database(opts.state, { create: true, strict: true });
+    this.db.exec(`PRAGMA journal_mode = WAL;
+      CREATE TABLE IF NOT EXISTS cursors (connector TEXT PRIMARY KEY, rowid INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS switches (connector TEXT PRIMARY KEY, active INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS rooms (connector TEXT NOT NULL, thread TEXT NOT NULL, room TEXT NOT NULL, PRIMARY KEY (connector, thread));
+      CREATE TABLE IF NOT EXISTS ghosts (mxid TEXT PRIMARY KEY, name TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS members (room TEXT NOT NULL, mxid TEXT NOT NULL, PRIMARY KEY (room, mxid));
+      CREATE TABLE IF NOT EXISTS posted (key TEXT PRIMARY KEY, connector TEXT NOT NULL, room TEXT NOT NULL, event TEXT NOT NULL, ts INTEGER NOT NULL);`);
+    this.archive = new Database(opts.archive, { readonly: true, strict: true });
+  }
+
+  now() {
+    return (this.opts.now ?? Date.now)();
+  }
+
+  isOn(id: string) {
+    const row = this.db.query<{ active: number }, [string]>('SELECT active FROM switches WHERE connector = ?').get(id);
+    return row ? row.active === 1 : true; // a connector reads only mail already here: on unless Karchi turns it off
+  }
+
+  /** Off stops new items at once; on again catches up on the last BACK as on the first start (nothing comes twice). */
+  setOn(id: string, active: boolean) {
+    if (!this.opts.connectors.some((c) => c.id === id)) return false;
+    this.db.query('INSERT INTO switches VALUES (?, ?) ON CONFLICT (connector) DO UPDATE SET active = excluded.active').run(id, active ? 1 : 0);
+    if (!active) this.db.query('DELETE FROM cursors WHERE connector = ?').run(id);
+    return true;
+  }
+
+  status() {
+    return this.opts.connectors.map((c) => {
+      const n = this.db.query<{ chats: number }, [string]>('SELECT COUNT(*) AS chats FROM rooms WHERE connector = ?').get(c.id);
+      const p = this.db.query<{ items: number; last: number | null }, [string]>('SELECT COUNT(*) AS items, MAX(ts) AS last FROM posted WHERE connector = ?').get(c.id);
+      return { id: c.id, name: c.name, on: this.isOn(c.id), chats: n?.chats ?? 0, items: p?.items ?? 0, last: p?.last ?? null };
+    });
+  }
+
+  /** One pass over new mail for every connector that is on; returns how many items it posted. Never two at once. */
+  round() {
+    this.busy ??= this.pass().finally(() => { this.busy = null; });
+    return this.busy;
+  }
+
+  private async pass() {
+    let posted = 0;
+    for (const c of this.opts.connectors) {
+      if (!this.isOn(c.id)) continue;
+      const cursor = this.db.query<{ rowid: number }, [string]>('SELECT rowid FROM cursors WHERE connector = ?').get(c.id)?.rowid ?? 0;
+      const rows = this.archive.query<Row, [number, number]>(`SELECT m.rowid AS rowid, m.id AS id, m.ts AS ts, m.sender AS sender, m.body AS body
+        FROM messages m JOIN chats c ON c.id = m.chat
+        WHERE c.network IN ('gmail', 'outlook') AND m.me = 0 AND m.rowid > ? AND m.ts > ? ORDER BY m.rowid LIMIT 2000`).all(cursor, this.now() - BACK);
+      // The archive takes old mail newest first: a batch goes in by time, so a chat reads in order. The cursor moves
+      // only past a whole batch; a failure retries it, and what was posted is not posted again.
+      for (const row of rows.toSorted((a, b) => a.ts - b.ts)) {
+        if (!c.mail.from(row.sender)) continue;
+        const mail: Mail = { id: row.id, from: row.sender, ts: row.ts, ...flatten(row.body) };
+        for (const [i, item] of c.mail.parse(mail).entries()) if (await this.post(c, mail, i, item)) posted++;
+      }
+      const last = rows.at(-1);
+      if (last) this.db.query('INSERT INTO cursors VALUES (?, ?) ON CONFLICT (connector) DO UPDATE SET rowid = excluded.rowid').run(c.id, last.rowid);
+    }
+    return posted;
+  }
+
+  private async post(c: Connector, mail: Mail, i: number, item: Item) {
+    const key = `${c.id}:${mail.id}:${i}`;
+    if (this.db.query('SELECT 1 FROM posted WHERE key = ?').get(key)) return false;
+    const room = await this.room(c, item);
+    const sender = await this.ghost(c, item.from);
+    await this.join(room, sender);
+    const txn = `cx-${new Bun.CryptoHasher('sha256').update(key).digest('hex').slice(0, 32)}`;
+    const content = { msgtype: 'm.text', body: item.text, [MARK]: { connector: c.id, mail: mail.id } };
+    const sent = await this.opts.matrix.call('PUT', `/rooms/${q(room)}/send/m.room.message/${txn}`, content, { user: sender, query: { ts: mail.ts } });
+    const event = String(sent.event_id);
+    this.db.query('INSERT INTO posted VALUES (?, ?, ?, ?, ?)').run(key, c.id, room, event, mail.ts);
+    if (this.now() - mail.ts > SEEN) {
+      await this.opts.matrix.call('POST', `/rooms/${q(room)}/receipt/m.read/${q(event)}`, {}, { user: this.opts.matrix.admin });
+    }
+    return true;
+  }
+
+  /** The connector's own ghost („Vinted“) or a person's in it („kupec42“). */
+  private async ghost(c: Connector, person?: string) {
+    const m = this.opts.matrix;
+    const local = person ? `cx_${c.id}_${new Bun.CryptoHasher('sha256').update(person).digest('hex').slice(0, 12)}` : `cx_${c.id}`;
+    const mxid = `@${local}:${m.server}`;
+    const name = person ?? c.name;
+    const known = this.db.query<{ name: string }, [string]>('SELECT name FROM ghosts WHERE mxid = ?').get(mxid);
+    if (known?.name === name) return mxid;
+    if (!known) {
+      try {
+        await m.call('POST', '/register', { type: 'm.login.application_service', username: local }, { user: null });
+      } catch (err) {
+        if (!(err instanceof MatrixError && err.errcode === 'M_USER_IN_USE')) throw err;
+      }
+    }
+    await m.call('PUT', `/profile/${q(mxid)}/displayname`, { displayname: name }, { user: mxid });
+    this.db.query('INSERT INTO ghosts VALUES (?, ?) ON CONFLICT (mxid) DO UPDATE SET name = excluded.name').run(mxid, name);
+    return mxid;
+  }
+
+  private async room(c: Connector, item: Item) {
+    const known = this.db.query<{ room: string }, [string, string]>('SELECT room FROM rooms WHERE connector = ? AND thread = ?').get(c.id, item.thread);
+    if (known) return known.room;
+    const m = this.opts.matrix;
+    const bridge = {
+      bridgebot: m.bot, creator: m.bot,
+      protocol: { id: c.id, displayname: c.name, external_url: c.link },
+      channel: { id: item.thread, displayname: item.title },
+    };
+    const made = await m.call('POST', '/createRoom', {
+      preset: 'private_chat', invite: [m.admin], name: item.title,
+      initial_state: [{ type: 'm.bridge', state_key: `${c.id}://${item.thread}`, content: bridge }],
+      creation_content: { 'm.federate': false },
+    });
+    const room = String(made.room_id);
+    this.db.query('INSERT INTO rooms VALUES (?, ?, ?)').run(c.id, item.thread, room);
+    this.db.query('INSERT OR IGNORE INTO members VALUES (?, ?)').run(room, m.bot);
+    await this.join(room, m.admin);
+    return room;
+  }
+
+  private async join(room: string, mxid: string) {
+    if (this.db.query('SELECT 1 FROM members WHERE room = ? AND mxid = ?').get(room, mxid)) return;
+    const m = this.opts.matrix;
+    if (mxid !== m.admin) {
+      try {
+        await m.call('POST', `/rooms/${q(room)}/invite`, { user_id: mxid });
+      } catch (err) {
+        if (!(err instanceof MatrixError && err.errcode === 'M_FORBIDDEN')) throw err; // already in
+      }
+    }
+    await m.call('POST', `/join/${q(room)}`, {}, { user: mxid });
+    this.db.query('INSERT OR IGNORE INTO members VALUES (?, ?)').run(room, mxid);
+  }
+}
+
+const q = encodeURIComponent;

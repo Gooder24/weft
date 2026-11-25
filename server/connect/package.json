@@ -1,0 +1,7 @@
+{
+  "name": "weft-connect",
+  "private": true,
+  "type": "module",
+  "scripts": { "check": "tsc -p . && bun test" },
+  "devDependencies": { "@types/bun": "1.3.3", "typescript": "5.9.3" }
+}

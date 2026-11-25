@@ -2,7 +2,8 @@
 
 Návrh, ako do Weftu pridávať ďalšie účty (Vinted, SMS, TikTok, Spotify a podobné) rýchlo a tak, aby žiadny účet
 nemohli zablokovať. Napísali ho agenti 23. 11. 2026 (architektúra Claude Fable 5.2, prieskum a zhrnutie Claude
-Opus 5.5) ako plánovací dokument; nič z neho ešte nie je postavené. Zdroje sú na konci.
+Opus 5.5) ako plánovací dokument. Postavený je krok 1 v menšej podobe (`server/connect/`, 25. 11.: Vinted a
+Packeta z mailov, bez regulátora, ktorý potrebujú až oficiálne API); ostatné čaká. Zdroje sú na konci.
 
 ## Hlavná myšlienka
 
