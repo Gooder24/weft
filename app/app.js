@@ -15178,7 +15178,7 @@ function welcomeView() {
         onclick: () => { sessionStorage.setItem('ep_welcome', '1'); setLang(id); if (id !== LANG) location.reload(); else render(); } }, label))),
     // Without the installer's code a new account needs an invitation code (registerView asks for it).
     setup ? h('button', { class: 'primary', type: 'button', onclick: () => show('register') }, T('Vytvoriť účet')) : null,
-    h('button', { class: setup ? 'ghost' : 'primary', type: 'button', onclick: () => { setLang(LANG); show('login'); } }, T('Mám už účet')),
+    h('button', { class: setup ? 'ghost' : 'primary', type: 'button', onclick: () => { sessionStorage.removeItem('ep_welcome'); setLang(LANG); show('login'); } }, T('Mám už účet')),
     setup ? null : h('button', { class: 'ghost', type: 'button', onclick: () => { setLang(LANG); show('register'); } }, T('Mám pozvánku')));
 }
 
