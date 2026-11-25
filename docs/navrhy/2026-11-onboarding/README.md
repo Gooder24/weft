@@ -127,6 +127,9 @@ Na čo ešte nie je zdroj:
 
 ## Návrh: pripojenie s otázkou „koľko histórie“
 
+*Nahradené 25. 11.:* Karchi rozhodol, že pripojená sieť prinesie len nové správy a všetka stará história príde
+exportmi, spolu v jednom kroku po pripojení účtov. Platí [plán](plan.md). Návrh nižšie ostáva ako rozbor.
+
 1. **Prvé spustenie** bez povinnej EduPage: po prihlásení sprievodca „Čo chceš mať vo Wefte?“ so sieťami ako
    dlaždicami. EduPage je jedna z nich a Weft funguje aj bez nej. V Nastaveniach → Účty dostane EduPage tlačidlo
    Pripojiť ako ostatné.
@@ -152,12 +155,8 @@ Na čo ešte nie je zdroj:
 
 ## Rozhodnutia pre teba
 
-1. **Gmail a Outlook budú pýtať rozsah a predvolené budú 3 mesiace** (dnes celá pošta bez otázky)? Odporúčam áno. Pre
-   teba sa nič nezmení, tvoje účty už sú celé.
-2. **Messenger a Instagram: história len cez export z Mety a posúvanie, nikdy hromadne cez most?** Odporúčam áno
-   (pravidlo bez banu, rovnaké ako v [konektoroch](../2026-11-konektory/README.md)).
-3. **WhatsApp: otázka na rozsah pred QR kódom** (`request_full_sync`, `days_limit`)? Mení to konfiguráciu mosta, preto
-   tvoje áno. Pre teba platí až pri ďalšom spárovaní.
+1. **Rozsah histórie pri každej sieti (pôvodne body 1 až 3):** rozhodnuté 25. 11., siete len nové správy a stará história len cez
+   exporty, pozri [plán](plan.md).
 4. **„Kde“:** rozhodnuté 25. 11., pozri [plán](plan.md).
 5. **EduPage nepovinná pri prvom spustení**: toto je oprava bez rozhodnutia. Treba ju ale skúsiť s novým prázdnym
    účtom na skúšobnom homeserveri a nasadiť do `~/matrix-spike`, kde má byť naraz len jedno vlákno. Spravím ju,

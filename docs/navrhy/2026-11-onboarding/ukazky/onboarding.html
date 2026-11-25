@@ -72,10 +72,18 @@ td:first-child { color: var(--muted); width: 36%; }
 .check b { width: 12px; height: 12px; border: var(--bw) solid var(--line-strong); border-radius: 3px; font-weight: 400; }
 .check.on b { border-color: var(--warning); background: var(--warning); }
 .check.off { color: var(--muted); }
+.check .t { display: flex; flex-direction: column; gap: 2px; }
+.check .d { color: var(--muted); }
+.picks { display: flex; flex-direction: column; gap: 10px; }
+.picks .check { align-items: flex-start; }
+.picks .check b { margin-top: 2px; flex: none; }
+ul.info { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 10px; }
+ul.info .d { color: var(--muted); }
 .drop { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; border: var(--bw) dashed var(--line-strong); border-radius: var(--radius-l); }
 .drop.over { border-color: var(--link); background: var(--panel); }
 .file { display: flex; gap: 10px; padding: 6px 10px; border-radius: var(--radius-s); background: var(--soft); }
 .file span:last-child { margin-left: auto; color: var(--muted); }
+.file .net { color: var(--link); }
 .qr { width: 132px; height: 132px; padding: 8px; background: #f0f0eb; border-radius: var(--radius-s); display: grid; grid-template-columns: repeat(21, 1fr); }
 .qr i { background: #000a07; }
 .qr i.w { background: transparent; }
@@ -143,16 +151,20 @@ const where = sel => ({ html: `${bar_top('Vitaj', 1, 5)}<div class="body"><h1>Kd
   ${opt('hosted', 'Na serveri, kam ma pozvali', 'Máš pozvánku. Server drží len posledných 30 dní, šifrovane. Celá história je len v tvojom počítači alebo telefóne.', sel === 'hosted')}
   </div>${foot('Pokračovať', 'Späť')}</div>` });
 
-// "How much history" for Messenger and Instagram, before any download.
-const metaHistory = sel => ({ html: `${bar_top('Messenger', 2, 6)}<div class="body"><h1>Koľko starej histórie?</h1>
-  <p><span class="ok">Messenger je pripojený.</span> <span class="muted">Nové správy chodia hneď. Staré si vyber:</span></p>
-  <div class="opts">
-  ${opt('new', 'Len nové správy', 'V každom chate ostane posledných 50 správ, ako dnes.', sel === 'new')}
-  ${opt('export', 'Všetko cez export z Mety', 'Pár minút klikania podľa návodu, Meta súbor pripraví do pár hodín. Meta ho dáva oficiálne, účet tým neriskuješ.', sel === 'export', 'odporúčané')}
-  ${opt('pull', 'Postupne doťahovať v tomto počítači', 'Weft listuje chatmi pomaly za teba, asi deň. Malé riziko, že Meta bude chcieť overenie.', sel === 'pull')}
-  </div>${foot('Pokračovať')}</div>` });
-
-const tut = (n, title, body, next = 'Ďalej') => ({ html: `${bar_top('Export z Mety', n, 6)}<div class="body"><h1>${n}/6 · ${title}</h1>${body}${foot(next)}</div>` });
+// Connecting a network brings only new messages; old history comes later from all the exports together.
+const netsScreen = done => `${bar_top('Siete', 1, 2)}<div class="body"><h1>Pripoj siete</h1>
+  <p class="muted">Ktorékoľvek, v akomkoľvek poradí. Žiadna nie je povinná, ďalšie pridáš v Nastaveniach → Účty.</p>
+  ${tiles(done)}
+  <div class="note info">Pripojená sieť posiela odteraz nové správy. Starú históriu prinesú exporty v ďalšom kroku, zo všetkých sietí naraz.</div>
+  ${foot('Ďalej: stará história')}</div>`;
+const signin = (net, page, what, button) => `${bar_top(net, 1, 2)}<div class="body"><h1>${net}</h1>
+  <p class="muted">${what}</p>
+  <div class="fake"><span class="crumb">${page}</span><span>Prihlás sa ako vždy. Weft tvoje heslo nevidí.</span>
+  <span class="row"><span class="hl" data-id="signin">${button}</span></span></div>
+  <div class="foot"><button class="ghost" data-id="back">Späť</button></div></div>`;
+const pick = (id, name, desc, on = true) => `<div class="check${on ? ' on' : ''}" data-id="${id}"><b></b>
+  <span class="t"><span>${name}</span><span class="d">${desc}</span></span></div>`;
+const tut = (n, title, body, next = 'Ďalej') => ({ html: `${bar_top('Exporty', n, 7)}<div class="body"><h1>${n}/7 · ${title}</h1>${body}${foot(next)}</div>` });
 
 // Weft's own account: e-mail and password (or Google), then the e-mail is confirmed by a link.
 const account = (title, n, of, h1, note) => [
@@ -214,11 +226,11 @@ const PATHS = {
     { ...where(''), click: 'self' },
     { ...where('self'), click: 'next', hold: 700 },
     { html: `${bar_top('Vlastný server', 2, 5)}<div class="body"><h1>Čo budeš potrebovať</h1>
-      <div class="opts">
-      ${opt('a', 'Počítač, ktorý stále beží', 'Linux, 2 GB RAM, miesto podľa histórie (odhad ti Weft povie pri každej sieti). Starý notebook stačí.', false)}
-      ${opt('b', 'Asi 15 minút', 'Inštalátor spraví zvyšok: homeserver, mosty, aktualizácie.', false)}
-      ${opt('c', 'Účet Tailscale (zadarmo)', 'K serveru sa dostaneš len ty, z internetu nie je vidieť.', false)}
-      </div>${foot('Ukáž mi príkazy')}</div>`, hold: 2600, click: 'next' },
+      <ul class="info">
+      <li><span>Počítač, ktorý stále beží</span><br><span class="d">Linux, 2 GB RAM, miesto podľa histórie (odhad ti Weft povie pri exportoch). Starý notebook stačí.</span></li>
+      <li><span>Asi 15 minút</span><br><span class="d">Inštalátor spraví zvyšok: homeserver, mosty, aktualizácie.</span></li>
+      <li><span>Účet Tailscale (zadarmo)</span><br><span class="d">K serveru sa dostaneš len ty, z internetu nie je vidieť.</span></li>
+      </ul>${foot('Ukáž mi príkazy')}</div>`, hold: 2600, click: 'next' },
     ...[0, 1, 2].map(k => ({ html: `${bar_top('Vlastný server', 3, 5)}<div class="body"><h1>1 · Nainštaluj Weft na server</h1>
       <p class="muted">Na serveri v termináli:</p>
       <span class="code">git clone https://github.com/Gooder24/weft
@@ -227,16 +239,12 @@ cd weft &amp;&amp; ./install.sh</span>
       ${k === 0 ? '<p class="warn">Čakám na server…</p>' : k === 1 ? '<p class="warn">Server odpovedá, kontrolujem mosty…</p>' : '<p class="ok">Server beží: weft.tvoj-tailnet.ts.net · 7 mostov · aktualizácie zapnuté</p>'}
       ${foot('Pokračovať')}</div>`, hold: k === 2 ? 1800 : 1300, click: k === 2 ? 'next' : null })),
     ...account('Vlastný server', 4, 5, '2 · Tvoj účet', 'Na tento e-mail ti tvoj server pošle odkaz na overenie a neskôr aj na obnovenie hesla. Odosielanie nastaví inštalátor, napríklad cez heslo aplikácie Gmailu.'),
-    { html: `${bar_top('Vlastný server', 5, 5)}<div class="body"><h1>3 · Pripoj siete</h1>
-      <p class="muted">Ktorékoľvek, v akomkoľvek poradí. Žiadna nie je povinná, ďalšie pridáš v Nastaveniach → Účty.</p>
-      ${tiles([])}<p class="muted">Pri každej sa Weft spýta, koľko starej histórie chceš, a povie, koľko miesta zaberie.</p>
-      ${foot('Do schránky', 'Späť')}</div>`, hold: 2200, click: 'messenger' },
-    { html: `${bar_top('Messenger', 2, 6)}<div class="body"><h1>Kde má byť história?</h1>
+    { html: `${bar_top('Vlastný server', 5, 5)}<div class="body"><h1>3 · Kde má byť stará história?</h1>
       <p class="muted">Server je tvoj, takže môže byť na ňom. Kópiu v počítači pridáš aj neskôr.</p>
       <div class="opts">
       ${opt('srv', 'Na mojom serveri', 'Vidia ju všetky tvoje zariadenia, vyhľadávanie aj agenti.', true, 'odporúčané')}
       ${opt('both', 'Na serveri aj v tomto počítači', 'Desktopová appka si drží celú kópiu. Funguje aj bez spojenia so serverom.', false)}
-      </div><p class="muted">Ďalej: Koľko histórie? (ukážka „Export z Mety“)</p>${foot('Pokračovať')}</div>`, hold: 2400, click: 'next', then: ['export', 0] },
+      </div>${foot('Pokračovať')}</div>`, hold: 2400, click: 'next', then: ['siete', 0] },
   ] },
 
   hostovany: { title: 'Pozvánka na cudzí server', frames: [
@@ -269,126 +277,81 @@ Ra1G kP5w Nx8v Dc2Q  mH7j Yt4L sB9f Wq3K</span>
       ${opt('pc', 'V tomto počítači', 'Desktopová appka · voľné 212 GB', true, 'odporúčané')}
       ${opt('phone', 'V telefóne', 'Appka v telefóne · voľné 18 GB · veľké exporty radšej v počítači', false)}
       ${opt('none', 'Nikde, stačí mi 30 dní', 'Staršie správy sa nebudú sťahovať vôbec.', false)}
-      </div>${foot('Pokračovať')}</div>`, hold: 2400, click: 'next' },
-    { html: `${bar_top('Pozvánka', 6, 6)}<div class="body"><h1>Pripoj siete</h1>
-      <p class="muted">Pri každej sa Weft spýta na históriu a povie, koľko zaberie v tomto počítači.</p>
-      ${tiles([])}${foot('Do schránky')}</div>`, hold: 2400 },
+      </div>${foot('Pokračovať')}</div>`, hold: 2400, click: 'next', then: ['siete', 0] },
   ] },
 
-  export: { title: 'Export z Mety', frames: [
-    { ...metaHistory(''), hold: 1800 },
-    { ...metaHistory(''), click: 'export' },
-    { ...metaHistory('export'), click: 'next', hold: 700 },
-    { ...tut(1, 'Otvor stránku Mety', `<p class="muted">Weft otvorí stránku Mety v prehliadači. Prihlasuješ sa tam ty, Weft heslo nevidí.</p>
-      <div class="fake"><span class="crumb">Accounts Center › Tvoje informácie a povolenia ›</span><span class="hl">Stiahnuť tvoje informácie</span></div>
-      <div class="row"><button class="ghost" data-id="open">Otvoriť stránku Mety</button></div>`), hold: 2400, click: 'open' },
-    { ...tut(2, 'Vyber len Správy', `<div class="fake"><span class="crumb">Stiahnuť alebo preniesť › Niektoré tvoje informácie</span>
+  siete: { title: 'Pripoj siete', frames: [
+    { html: netsScreen([]), hold: 2600, click: 'messenger' },
+    { html: signin('Messenger', 'Okno Mety · messenger.com', 'Weft otvorí prihlásenie Mety v desktopovej appke. Potom chodia nové správy.', 'Prihlásiť sa'), hold: 2000, click: 'signin' },
+    { html: netsScreen(['messenger']), hold: 1600, click: 'instagram' },
+    { html: signin('Instagram', 'Okno Mety · instagram.com', 'To isté okno ako pri Messengeri.', 'Prihlásiť sa'), hold: 1600, click: 'signin' },
+    { html: netsScreen(['messenger', 'instagram']), hold: 1600, click: 'whatsapp' },
+    { html: `${bar_top('WhatsApp', 1, 2)}<div class="body"><h1>Naskenuj kód telefónom</h1>
+      <div class="cols"><div>${qr()}</div><div class="opts">
+      <p>1. Otvor WhatsApp v telefóne</p><p>2. Nastavenia › Prepojené zariadenia</p><p>3. Prepojiť zariadenie a namier na kód</p>
+      <p class="muted">Odteraz chodia nové správy. Staré chaty pridáš v ďalšom kroku exportom. Bez kamery: Prepojiť číslom telefónu.</p></div></div>
+      ${foot('Prepojiť číslom', 'Späť')}</div>`, hold: 2800 },
+    { html: netsScreen(['messenger', 'instagram', 'whatsapp']), hold: 1600, click: 'gmail' },
+    { html: signin('Gmail', 'accounts.google.com', 'Weft otvorí stránku Googlu v prehliadači. Pošta sa bude čítať a posielať cez tvoj účet.', 'Povoliť'), hold: 2000, click: 'signin' },
+    { html: netsScreen(['messenger', 'instagram', 'whatsapp', 'gmail']), hold: 2200, click: 'next', then: ['exporty', 0] },
+  ] },
+
+  exporty: { title: 'Stará história: exporty', frames: [
+    { html: `${bar_top('Stará história', 2, 2)}<div class="body"><h1>Odkiaľ chceš aj starú históriu?</h1>
+      <p class="muted">Siete posielajú len nové správy. Staré prinesú oficiálne exporty. Vyžiadaš ich teraz všetky naraz a kým ich
+      služby pripravia, Weft normálne funguje.</p>
+      <div class="picks">
+      ${pick('meta', 'Messenger a Instagram', 'Jeden export z Mety pre oba účty · pripraví ho do pár hodín, niekedy do 2 dní')}
+      ${pick('wa', 'WhatsApp', 'Export chatov v telefóne · hneď, chat po chate, len tie, ktoré chceš')}
+      ${pick('gm', 'Gmail · ema@example.com', 'Google Takeout, len Pošta · do pár hodín, pri veľkej schránke aj dni')}
+      </div>
+      <p class="muted">EduPage prinesie celý školský rok sám. Weft bez exportov nič staré nesťahuje, takže účet tým neriskuješ.</p>
+      ${foot('Vyžiadať exporty', 'Späť', '<button class="ghost" data-id="new">Stačia nové správy</button>')}</div>`, hold: 3600, click: 'next' },
+    { ...tut(1, 'Meta: oba účty naraz', `<p class="muted">Weft otvorí stránku Mety v prehliadači. Prihlasuješ sa tam ty, Weft heslo nevidí.</p>
+      <div class="fake"><span class="crumb">Accounts Center › Tvoje informácie a povolenia › Stiahnuť tvoje informácie ›</span>
+      <span>Profily:</span><div class="check on"><b></b><span class="hl">Facebook · Ema Nováková</span></div>
+      <div class="check on"><b></b><span class="hl">Instagram · ema.nov</span></div></div>
+      <div class="row"><button class="ghost" data-id="open">Otvoriť stránku Mety</button></div>`), hold: 2600, click: 'open' },
+    { ...tut(2, 'Meta: len Správy', `<div class="fake"><span class="crumb">Niektoré tvoje informácie</span>
       <div class="check on"><b></b><span class="hl">Správy</span></div>
       <div class="check off"><b></b><span>Príspevky</span></div><div class="check off"><b></b><span>Komentáre</span></div>
-      <div class="check off"><b></b><span>Reklamy a záujmy</span></div><div class="check off"><b></b><span>Poloha</span></div></div>
-      <div class="note info">Začiarkni len Správy. Weft nič iné nepotrebuje, a keby v súbore bolo aj niečo iné, nečíta to.</div>`), hold: 3200, click: 'next' },
-    { ...tut(3, 'Formát a obdobie', `<div class="fake"><span class="crumb">Stiahnuť do zariadenia</span>
-      <span>Obdobie: <span class="hl">Celé obdobie</span></span><span>Formát: <span class="hl">JSON</span></span>
-      <span>Kvalita médií: <span class="hl">Vysoká</span> <span class="muted">(Nízka zmenší fotky asi na tretinu)</span></span></div>
-      <p class="muted">Potom „Vytvoriť súbory“. Meta pošle upozornenie, keď sú hotové.</p>`), hold: 2800, click: 'next' },
-    { ...tut(4, 'Šifrované chaty zvlášť', `<p class="muted">Väčšina chatov na Messengeri je šifrovaná a tie má Meta v inom exporte. Len v počítači:</p>
+      <div class="check off"><b></b><span>Reklamy a záujmy</span></div><div class="check off"><b></b><span>Poloha</span></div>
+      <span>Obdobie: <span class="hl">Celé obdobie</span> · Formát: <span class="hl">JSON</span> · Kvalita médií: <span class="hl">Vysoká</span></span></div>
+      <div class="note info">Začiarkni len Správy. Weft nič iné nepotrebuje, a keby v súbore bolo aj niečo iné, nečíta to.</div>`), hold: 3400, click: 'next' },
+    { ...tut(3, 'Meta: šifrované chaty zvlášť', `<p class="muted">Väčšina chatov na Messengeri je šifrovaná a tie má Meta v inom exporte. Len v počítači:</p>
       <div class="fake"><span class="crumb">messenger.com › Nastavenia › Súkromie a bezpečnosť › Šifrované chaty › Úložisko správ ›</span>
       <span class="hl">Stiahnuť dáta z bezpečného úložiska</span></div>
       <p class="muted">Môže chcieť tvoj PIN k Messengeru. Súbor sa volá messages.zip.</p>`), hold: 3000, click: 'next' },
-    { ...tut(5, 'Meta pripravuje súbory', `<p>Zvyčajne do pár hodín, niekedy až 2 dni. Weft medzitým funguje a nové správy chodia.</p>
-      <div class="opts">${opt('rem', 'Pripomenúť zajtra o 18:00', 'Ak súbory ešte nebudú, pripomenie znova.', true)}</div>`, 'Hotovo, mám súbory'), hold: 2200, click: 'next' },
-    { ...tut(6, 'Pusti sem súbory', `<div class="drop"><span>Pusti sem stiahnuté ZIP súbory</span><span class="muted">alebo</span><button class="ghost">Vybrať súbory</button></div>`, 'Importovať'), hold: 1400 },
-    { ...tut(6, 'Pusti sem súbory', `<div class="drop over"><span>facebook-ema-2026-11-25.zip · messages.zip</span></div>`, 'Importovať'), hold: 700 },
-    { ...tut(6, 'Kontrola súborov', `<div class="file"><span>facebook-ema-2026-11-25.zip</span><span>1,3 GB</span></div>
-      <div class="file"><span>messages.zip</span><span>240 MB</span></div>
-      <p class="ok">Obsahuje len Správy · 412 chatov · 38 210 správ · 2016 až 2026</p>
-      <p>V tomto počítači zaberie <span class="link">1,5 GB</span> <span class="muted">(voľné 212 GB)</span></p>
-      <p class="muted">Súbory sa čítajú v tomto počítači. Na server neodchádzajú.</p>`, 'Importovať'), hold: 3000, click: 'next' },
-    ...[12, 47, 83].map(p => ({ ...tut(6, 'Importujem', `<p>Chaty: ${Math.round(412 * p / 100)} z 412 · správy: ${Math.round(38210 * p / 100).toLocaleString('sk')}</p>${bar(p)}
+    { ...tut(4, 'Google Takeout: len Pošta', `<div class="fake"><span class="crumb">takeout.google.com › Zrušiť výber všetkého</span>
+      <div class="check on"><b></b><span class="hl">Pošta</span></div>
+      <div class="check off"><b></b><span>Disk</span></div><div class="check off"><b></b><span>Fotky Google</span></div><div class="check off"><b></b><span>YouTube</span></div>
+      <span>Formát: <span class="hl">MBOX</span> · Ďalší krok › <span class="hl">Exportovať raz</span></span></div>
+      <p class="muted">Google pošle mail, keď je export hotový.</p>`), hold: 3000, click: 'next' },
+    { ...tut(5, 'WhatsApp: chaty, ktoré chceš celé', `<p class="muted">V telefóne, pri každom chate zvlášť:</p>
+      <div class="fake"><span class="crumb">Chat › ⋮ Viac ›</span><span class="hl">Exportovať chat</span><span>› Pripojiť médiá › ulož súbor alebo si ho pošli do počítača</span></div>
+      <p class="muted">Pri dlhom chate WhatsApp dá s médiami len asi posledných 10 000 správ, bez médií asi 40 000.</p>`), hold: 3000, click: 'next' },
+    { ...tut(6, 'Čakám na exporty', `<p>Weft medzitým funguje a nové správy chodia.</p>
+      <table><tr><td>Meta · Messenger a Instagram</td><td class="warn">pripravuje sa · vyžiadané dnes 10:12</td></tr>
+      <tr><td>Meta · šifrované chaty</td><td class="ok">stiahnuté</td></tr>
+      <tr><td>Google Takeout · Pošta</td><td class="warn">pripravuje sa</td></tr>
+      <tr><td>WhatsApp</td><td class="ok">3 chaty uložené</td></tr></table>
+      <div class="opts">${opt('rem', 'Pripomenúť zajtra o 18:00', 'Ak súbory ešte nebudú, pripomenie znova.', true)}</div>`, 'Hotovo, mám súbory'), hold: 3000, click: 'next' },
+    { ...tut(7, 'Pusti sem všetky súbory', `<div class="drop"><span>Pusti sem stiahnuté súbory, všetky naraz</span><span class="muted">Weft spozná, čo je z ktorej siete.</span><button class="ghost">Vybrať súbory</button></div>`, 'Importovať'), hold: 1400 },
+    { ...tut(7, 'Pusti sem všetky súbory', `<div class="drop over"><span>7 súborov</span></div>`, 'Importovať'), hold: 700 },
+    { ...tut(7, 'Kontrola súborov', `<div class="file"><span>facebook-ema-2026-11-25.zip</span><span class="net">Messenger</span><span>1,3 GB</span></div>
+      <div class="file"><span>instagram-ema.nov-2026-11-25.zip</span><span class="net">Instagram</span><span>0,9 GB</span></div>
+      <div class="file"><span>messages.zip</span><span class="net">Messenger šifrované</span><span>240 MB</span></div>
+      <div class="file"><span>takeout-20261125.zip</span><span class="net">Gmail</span><span>2,1 GB</span></div>
+      <div class="file"><span>WhatsApp Chat - Jana.zip a 2 ďalšie</span><span class="net">WhatsApp</span><span>310 MB</span></div>
+      <p class="ok">Len správy a pošta · 412 chatov z Messengera, 96 z Instagramu, 3 z WhatsAppu, 5 100 mailov</p>
+      <p>Zaberie <span class="link">4,6 GB</span> <span class="muted">(voľné 212 GB). Súbory sa čítajú v tomto počítači: na vlastný server idú len hotové správy, na cudzí nič.</span></p>`, 'Importovať'), hold: 3400, click: 'next' },
+    ...[[100, 40, 0], [100, 100, 35], [100, 100, 88]].map(([m, ig, gm]) => ({ ...tut(7, 'Importujem', `<table>
+      <tr><td>Messenger a WhatsApp</td><td>${m} %</td></tr><tr><td>Instagram</td><td>${ig} %</td></tr><tr><td>Gmail</td><td>${gm ? `${gm} %` : 'čaká'}</td></tr></table>
+      ${bar(Math.round((m + ig + gm) / 3))}
       <p class="muted">Môžeš Weft používať, import beží v pozadí. Zastaviť sa dá kedykoľvek a pokračuje, kde skončil.</p>`, 'Zastaviť'), hold: 900 })),
-    { ...tut(6, 'Hotovo', `<p class="ok">38 210 správ zo 412 chatov je vo Wefte, aj so šifrovanými.</p>${bar(100)}
-      <p class="muted">ZIP súbory už Weft nepotrebuje. Obsahujú všetky tvoje správy, preto ich radšej zmaž.</p>
-      <div class="row"><button class="ghost">Zmazať ZIP súbory</button></div>`, 'Do schránky'), hold: 2600, click: 'next' },
-  ] },
-
-  dotahovanie: { title: 'Postupne doťahovať', frames: [
-    { ...metaHistory(''), hold: 1200 },
-    { ...metaHistory(''), click: 'pull' },
-    { ...metaHistory('pull'), click: 'next', hold: 700 },
-    { html: `${bar_top('Messenger', 3, 6)}<div class="body"><h1>Postupne doťahovať</h1>
-      <p class="muted">Weft listuje tvojimi chatmi ako ty pri posúvaní nahor: jedna strana (50 správ) za minútu, len keď je tento počítač
-      zapnutý, v noci nie. Staré správy idú rovno sem, server si ich nenechá.</p>
-      <div class="opts">
-      ${opt('3m', '3 mesiace', 'asi 6 000 správ · do 2 hodín', false)}
-      ${opt('1y', 'Rok', 'asi 21 000 správ · asi pol dňa', true)}
-      ${opt('all', 'Všetko', 'asi 38 000 správ · asi deň', false)}
-      </div>
-      <div class="note">Meta to môže zbadať a chcieť overenie (kód alebo selfie). Vtedy Weft hneď prestane a nič neskúša znova.</div>
-      ${foot('Začať')}</div>`, hold: 3600, click: 'next' },
-    ...[[8, '10:14', 'asi 19 300'], [37, '13:02', 'asi 13 200'], [64, '16:40', 'asi 7 600']].map(([p, t, left]) => ({ html: `${bar_top('Nastavenia › Účty', 6, 6)}<div class="body"><h1>Účty</h1>
-      <div class="acct"><div class="row"><img src="${IMG}messenger.ico" alt=""><span>Messenger · ema.novakova</span>
-      <span class="muted" style="margin-left:auto">dnes ${t}</span></div>
-      <span>História: rok · ${p} % · ${left} správ ešte</span>${bar(p)}
-      <div class="row"><button class="ghost" data-id="pause">Pozastaviť</button><button class="ghost">Zastaviť</button>
-      <span class="muted" style="margin-left:auto">v noci stojí · ďalšia strana o 40 s</span></div></div>
-      <div class="acct"><div class="row"><img src="${IMG}instagram.png" alt=""><span>Instagram · ema.nov</span><span class="muted" style="margin-left:auto">len nové správy</span></div></div>
-      </div>`, hold: 1100 })),
-    { html: `${bar_top('Nastavenia › Účty', 6, 6)}<div class="body"><h1>Účty</h1>
-      <div class="acct"><div class="row"><img src="${IMG}messenger.ico" alt=""><span>Messenger · ema.novakova</span>
-      <span class="warn" style="margin-left:auto">zastavené</span></div>
-      <span class="warn">Meta chce overiť, že si to ty. Doťahovanie stojí a samo sa nespustí.</span>${bar(71)}
-      <div class="row"><button class="ghost">Otvoriť overenie</button><button class="ghost" data-id="export">Radšej export z Mety</button></div></div>
-      <p class="muted">Takto vyzerá, keď Meta zasiahne: nič sa neskúša znova, ty rozhodneš.</p></div>`, hold: 3200, click: 'export', then: ['export', 2] },
-  ] },
-
-  whatsapp: { title: 'WhatsApp', frames: [
-    ...['', '', '1y'].map((sel, i) => ({ html: `${bar_top('WhatsApp', 1, 4)}<div class="body"><h1>Koľko histórie, ešte pred QR kódom</h1>
-      <p class="muted">Telefón pošle históriu len pri prepojení. Neskôr sa rozsah zmeniť nedá.</p>
-      <div class="opts">
-      ${opt('new', 'Len nové správy', '', sel === 'new')}
-      ${opt('3m', '3 mesiace', 'to dnes WhatsApp pošle sám', sel === '3m')}
-      ${opt('1y', 'Rok', '', sel === '1y', 'odporúčané')}
-      ${opt('all', 'Všetko, čo telefón dá', 'najviac asi 3 roky', sel === 'all')}
-      </div>
-      <p class="muted">Koľko to zaberie, ukáže telefón: Nastavenia › Úložisko a dáta › Spravovať úložisko.</p>
-      ${foot('Ukázať QR kód')}</div>`, hold: i === 0 ? 2600 : 700, click: i === 1 ? '1y' : i === 2 ? 'next' : null })),
-    { html: `${bar_top('WhatsApp', 2, 4)}<div class="body"><h1>Naskenuj kód telefónom</h1>
-      <div class="cols"><div>${qr()}</div><div class="opts">
-      <p>1. Otvor WhatsApp v telefóne</p><p>2. Nastavenia › Prepojené zariadenia</p><p>3. Prepojiť zariadenie a namier na kód</p>
-      <p class="muted">Rozsah: rok. Bez kamery: Prepojiť číslom telefónu.</p></div></div>${foot('Prepojiť číslom', 'Späť')}</div>`, hold: 2800 },
-    ...[18, 54, 91].map(p => ({ html: `${bar_top('WhatsApp', 3, 4)}<div class="body"><h1>Telefón posiela históriu</h1>
-      <p>${Math.round(214 * p / 100)} z 214 chatov · ${p} %</p>${bar(p)}
-      <p class="muted">Nechaj telefón zapnutý, s internetom a WhatsAppom. Fotky dôjdu po textoch.</p></div>`, hold: 1000 })),
-    { html: `${bar_top('WhatsApp', 4, 4)}<div class="body"><h1>Hotovo</h1>
-      <p class="ok">214 chatov za posledný rok · 0,9 GB v tomto počítači</p>${bar(100)}
-      <p class="muted">Staršie ako rok už WhatsApp tomuto prepojeniu nepošle. Chat, ktorý chceš celý, sa dá v telefóne exportovať
-      (Chat › Viac › Exportovať chat) a pustiť do Weftu.</p>${foot('Do schránky')}</div>`, hold: 2800, click: 'next' },
-  ] },
-
-  gmail: { title: 'Gmail', frames: [
-    ...['', '', '1y'].map((sel, i) => ({ html: `${bar_top('Gmail', 2, 3)}<div class="body"><h1>Koľko pošty?</h1>
-      <p><span class="ok">ema@example.com je pripojený.</span> <span class="muted">Odhad z veľkostí, ktoré Gmail povie bez sťahovania:</span></p>
-      <div class="opts">
-      ${opt('new', 'Len nová pošta', '', sel === 'new')}
-      ${opt('3m', '3 mesiace', '1 260 mailov · 140 MB', sel === '3m', sel ? '' : 'predvolené')}
-      ${opt('1y', 'Rok', '5 100 mailov · 610 MB', sel === '1y')}
-      ${opt('all', 'Všetko od 2014', '41 800 mailov · 6,2 GB', sel === 'all')}
-      </div>
-      <p class="muted">Na serveri ostane 30 dní, staršie len v tomto počítači (voľné 212 GB).</p>${foot('Stiahnuť')}</div>`,
-      hold: i === 0 ? 2800 : 700, click: i === 1 ? '1y' : i === 2 ? 'next' : null })),
-    ...[22, 58].map(p => ({ html: `${bar_top('Nastavenia › Účty', 3, 3)}<div class="body"><h1>Účty</h1>
-      <div class="acct"><div class="row"><img src="${IMG}gmail.ico" alt=""><span>Gmail · ema@example.com</span></div>
-      <span>Pošta: rok · ${Math.round(5100 * p / 100).toLocaleString('sk')} z 5 100 · ${p} %</span>${bar(p)}
-      <div class="row"><button class="ghost" data-id="pause">Pozastaviť</button><button class="ghost">Zastaviť</button></div></div>
-      </div>`, hold: 1000, click: p === 58 ? 'pause' : null })),
-    { html: `${bar_top('Nastavenia › Účty', 3, 3)}<div class="body"><h1>Účty</h1>
-      <div class="acct"><div class="row"><img src="${IMG}gmail.ico" alt=""><span>Gmail · ema@example.com</span><span class="warn" style="margin-left:auto">pozastavené</span></div>
-      <span>Pošta: rok · 2 958 z 5 100 · 58 %</span>${bar(58)}
-      <div class="row"><button class="ghost">Pokračovať</button><button class="ghost">Zastaviť</button></div>
-      <table><tr><td>Na serveri</td><td>30 dní · 38 MB</td></tr>
-      <tr><td>V tomto počítači</td><td>358 MB zo 610 MB</td></tr></table>
-      <div class="row"><button class="ghost">Pridať staršiu poštu</button><button class="ghost">Zmazať z tohto počítača</button></div></div>
-      ${foot('Do schránky')}</div>`, hold: 3200, click: 'next' },
+    { ...tut(7, 'Hotovo', `<p class="ok">Stará história je vo Wefte: Messenger aj šifrované chaty, Instagram, 3 chaty z WhatsAppu a Gmail.</p>${bar(100)}
+      <p class="muted">Súbory už Weft nepotrebuje. Obsahujú všetky tvoje správy, preto ich radšej zmaž. Ďalší export pridáš kedykoľvek v Nastaveniach → Účty.</p>
+      <div class="row"><button class="ghost">Zmazať súbory</button></div>`, 'Do schránky'), hold: 2600, click: 'next' },
   ] },
 };
 
@@ -415,17 +378,15 @@ else live();
 function live() {
   document.body.classList.add('live');
   // A choice or a network opens its own path: [path, frame].
-  const BRANCH = {
-    login: ['prihlasenie', 0], self: ['vlastny', 2], hosted: ['hostovany', 2], export: ['export', 2], pull: ['dotahovanie', 2],
-    messenger: ['export', 0], instagram: ['export', 0], whatsapp: ['whatsapp', 0], gmail: ['gmail', 0], outlook: ['gmail', 0],
-  };
+  const BRANCH = { login: ['prihlasenie', 0], self: ['vlastny', 2], hosted: ['hostovany', 2] };
   const nav = document.getElementById('nav');
   // Not drawn in the mockup: a short note instead of a dead click.
   const NOTE = {
-    discord: 'Discord sa pripája ako dnes: okno v desktopovej appke, potom servery v Nastaveniach.',
-    teams: 'Teams ako Outlook: stránka Microsoftu, potom rozsah histórie ako pri Gmaile.',
+    discord: 'Discord sa pripája ako dnes: okno v desktopovej appke, potom servery v Nastaveniach. Jeho export má len tvoje vlastné správy, preto ho medzikrok neponúka.',
+    outlook: 'Outlook: stránka Microsoftu ako pri Gmaile. Starú poštu by priniesol export schránky (súbor .pst), ten je v pláne neoverený.',
+    teams: 'Teams: stránka Microsoftu, potom nové správy. Školský Teams vlastný export nemá.',
     edupage: 'EduPage: meno a heslo, celý školský rok príde sám (pár MB), bez otázky.',
-    new: 'Len nové: nič staré sa nesťahuje, ďalej rovno do schránky.',
+    new: 'Stačia nové správy: exporty preskočíš a ideš rovno do schránky. Pridať ich ide aj neskôr v Nastaveniach → Účty.',
     google: 'Cez Google: server Weftu to vie sám (prihlásenie cez OIDC), potrebuje však vlastného Google klienta. Heslo do Weftu potom netreba.',
     forgot: 'Zabudnuté heslo: odkaz príde na e-mail. Staré šifrované správy potom otvorí len druhé zariadenie alebo kľúč na obnovenie.',
     resend: 'Poslať znova: ten istý odkaz, najviac raz za minútu.',
@@ -480,7 +441,7 @@ function live() {
     if (NOTE[id]) { note = NOTE[id]; menu(); return; }
     if (id === 'next') next();
     else if (!f.click) go(path, i + 1);
-    else if (el.classList.contains('opt')) { note = 'V ukážke vedie ďalej označená možnosť. V appke by platila aj táto.'; menu(); }
+    else if (el.matches('.opt, .tile, .check')) { note = 'V ukážke vedie ďalej označená možnosť. V appke by platila aj táto.'; menu(); }
   });
   document.addEventListener('keydown', e => {
     if (e.key === 'ArrowRight') next();
