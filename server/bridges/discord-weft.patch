@@ -48,7 +48,7 @@ index 0c1ab13..a23fdef 100644
      proxy:
      # Should mxc uris copied from Discord be cached?
 diff --git a/portal.go b/portal.go
-index 922ef9a..11430c7 100644
+index 922ef9a..0e6f7f2 100644
 --- a/portal.go
 +++ b/portal.go
 @@ -1258,6 +1258,8 @@ func errorToStatusReason(err error) (reason event.MessageStatusReason, status ev
@@ -80,7 +80,14 @@ index 922ef9a..11430c7 100644
  			if isWebhookSend {
  				// TODO start thread with bot?
  				go portal.sendMessageMetrics(evt, errCantStartThread, "Dropping")
-@@ -1628,12 +1636,20 @@ func (portal *Portal) handleMatrixMessage(sender *User, evt *event.Event) {
+@@ -1624,16 +1632,27 @@ func (portal *Portal) handleMatrixMessage(sender *User, evt *event.Event) {
+ 			}
+ 			var err error
+ 			threadID, err = portal.startThreadFromMatrix(sender, threadRoot)
++			if err == nil && threadID == "" {
++				err = errors.New("no thread ID in Discord's answer") // Weft: never the parent channel instead
++			}
+ 			if err != nil {
  				portal.log.Warn().Err(err).
  					Str("thread_root_mxid", threadRoot.String()).
  					Msg("Failed to start thread from Matrix")
@@ -664,10 +671,10 @@ index 0000000..7f982b6
 +}
 diff --git a/weft_open.go b/weft_open.go
 new file mode 100644
-index 0000000..9794752
+index 0000000..549deaf
 --- /dev/null
 +++ b/weft_open.go
-@@ -0,0 +1,103 @@
+@@ -0,0 +1,108 @@
 +package main
 +
 +// POST /v1/channels/{channelID}/open: one of Karchi's existing Discord DMs or groups as a live room, what
@@ -757,6 +764,11 @@ index 0000000..9794752
 +			jsonResponse(w, http.StatusBadGateway, Error{Error: "Discord did not give the channel", ErrCode: "SK.KARCHI.WEFT.DISCORD"})
 +			return
 +		}
++		// A second account may have signed in meanwhile; a new group room would invite it too.
++		if _, status = weftOwnChannel(p.bridge.DB, user, account, channel); status != 0 {
++			jsonResponse(w, http.StatusConflict, Error{Error: "The bridge has another logged-in account", ErrCode: "SK.KARCHI.WEFT.OTHER_ACCOUNTS"})
++			return
++		}
 +		if err = portal.CreateMatrixRoom(user, meta); err != nil {
 +			p.log.Warnfln("Weft: failed to create room for %s: %v", channel, err)
 +			jsonResponse(w, http.StatusInternalServerError, Error{Error: "The room was not created", ErrCode: "M_UNKNOWN"})
@@ -773,10 +785,10 @@ index 0000000..9794752
 +}
 diff --git a/weft_open_test.go b/weft_open_test.go
 new file mode 100644
-index 0000000..b794abb
+index 0000000..4ae1eca
 --- /dev/null
 +++ b/weft_open_test.go
-@@ -0,0 +1,116 @@
+@@ -0,0 +1,131 @@
 +package main
 +
 +import (
@@ -892,6 +904,21 @@ index 0000000..b794abb
 +	if got := f.requests(); len(got) != 1 || got[0] != "GET /api/v9/channels/13" {
 +		t.Errorf("want only the channel's GET: %v", got)
 +	}
++	// A group whose GET lets a second account sign in meanwhile: refused, no room (it would invite that one too).
++	f.portalRow("14", "", discordgo.ChannelTypeGroupDM, "")
++	f.user.MarkInPortal(database.UserPortal{DiscordID: "14", Type: database.UserPortalTypeDM, Timestamp: time.Now()})
++	f.reply = func(w http.ResponseWriter, r *http.Request) {
++		other := f.br.DB.User.New()
++		other.MXID, other.DiscordID, other.DiscordToken = "@other:example", "them", "token2"
++		other.Insert()
++		_, _ = w.Write([]byte(`{"id":"14","type":3}`))
++	}
++	if code, _ := f.serve(t, "POST", "/v1/channels/14/open", route, open); code != http.StatusConflict {
++		t.Errorf("a second account during the group's GET: %d", code)
++	}
++	if p := f.br.GetExistingPortalByID(database.NewPortalKey("14", "")); p == nil || p.MXID != "" {
++		t.Errorf("a room was made: %v", p)
++	}
 +}
 diff --git a/weft_reply.go b/weft_reply.go
 new file mode 100644
@@ -954,10 +981,10 @@ index 0000000..7332cbc
 +}
 diff --git a/weft_reply_test.go b/weft_reply_test.go
 new file mode 100644
-index 0000000..330baa2
+index 0000000..f5671bf
 --- /dev/null
 +++ b/weft_reply_test.go
-@@ -0,0 +1,203 @@
+@@ -0,0 +1,207 @@
 +package main
 +
 +import (
@@ -1108,6 +1135,7 @@ index 0000000..330baa2
 +		"target in another thread":  inReplyTo("$inThread"),
 +		"in a thread, target not":   {"rel_type": "m.thread", "event_id": "$inThread", "is_falling_back": false, "m.in_reply_to": map[string]any{"event_id": "$known"}},
 +		"thread that did not start": {"rel_type": "m.thread", "event_id": "$root", "is_falling_back": true, "m.in_reply_to": map[string]any{"event_id": "$root"}},
++		"thread without an id":      {"rel_type": "m.thread", "event_id": "$root", "is_falling_back": true, "m.in_reply_to": map[string]any{"event_id": "$root"}},
 +		// refused before Discord is asked to start the thread
 +		"new thread, unknown target":  {"rel_type": "m.thread", "event_id": "$root", "is_falling_back": false, "m.in_reply_to": map[string]any{"event_id": "$nobody"}},
 +		"new thread, target its root": {"rel_type": "m.thread", "event_id": "$root", "is_falling_back": false, "m.in_reply_to": map[string]any{"event_id": "$root"}},
@@ -1124,13 +1152,16 @@ index 0000000..330baa2
 +			if name == "thread that did not start" {
 +				f.reply = func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusForbidden) }
 +			}
++			if name == "thread without an id" {
++				f.reply = func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(`{}`)) }
++			}
 +			portal.handleMatrixMessage(f.user, weftEvt(t, relates))
 +			for _, req := range f.requests() {
 +				if strings.HasSuffix(req, "/messages") {
 +					t.Fatalf("a refused message reached Discord: %v", f.requests())
 +				}
 +			}
-+			if name != "thread that did not start" && len(f.requests()) != 0 {
++			if !strings.HasPrefix(name, "thread ") && len(f.requests()) != 0 {
 +				t.Fatalf("no request at all expected: %v", f.requests())
 +			}
 +		})
