@@ -104,13 +104,17 @@ autentifikácia, `login_id`).
    `portal.name`, inak z archívu, inak z `puppet`) a miestnosťou, ak je. Prepojiť sa dá len kanál z tohto
    zoznamu a otvoriť len kanál, ktorý rovnakým pravidlom uzná most (krok 2). Skupinu otvorí, len kým má most jediného prihláseného používateľa (dnes áno): pri
    vzniku miestnosti most pozýva každého účastníka, ktorý je sám prihlásený v moste (`portal.go:1046-1056`).
+   Počet účtov sa kontroluje tesne pred vznikom miestnosti; prihlásenie v tej chvíli sa nezamyká, lebo účet
+   prihlásený neskôr most do miestností jeho skupín pozve sám pri READY (`handlePrivateChannel` → `UpdateInfo`,
+   test `TestWeftLaterAccountIsInvitedByUpstream`), zámok by ho len o chvíľu zdržal.
 2. F1, otvorenie robí most, nie klient ani archív, a vždy podľa kanála: `POST /v1/channels/<id>/open`
    v provisioningu (Weft cez `/_bridges/discord/_matrix/provision/v1`, Karchiho token ako pri `contacts`).
    Rovnako sa otvára chat z Ctrl+N, keď človek kanál už má. Je to kód príkazu `create-portal` bez príkazu
    v miestnosti bota (19.–25. 11. ho posielal archív a čakal, či miestnosť vznikne; odpoveď bota nemá väzbu na
    príkaz, Z6).
    - Len Karchiho kanál: DM s `receiver` = jeho Discord ID, skupina s riadkom v `user_portal` a len kým je
-     v moste jediný prihlásený používateľ (inak 409). Cudzí alebo neznámy kanál → 404; most bez READY → 503.
+     v moste jediný prihlásený používateľ (inak 409; kontrola pred GET kanála a znova tesne pred vznikom
+     miestnosti, súbežné prihlásenie sa nezamyká, pozri krok 1). Cudzí alebo neznámy kanál → 404; most bez READY → 503.
    - Miestnosť je a Karchi je v nej → `joined`, nula požiadaviek na Discord. Je, ale Karchi v nej nie je → most
      ho znova pozve (double puppet ho pridá sám) a vráti `invited`; Weft pozvánku prijme. Nie je → jedna GET
      kanála na Discord a vznik miestnosti s poslednými správami ako pri novej správe; Discord kanál odmietne

@@ -673,10 +673,10 @@ index 0000000..7f982b6
 +}
 diff --git a/weft_open.go b/weft_open.go
 new file mode 100644
-index 0000000..a49792c
+index 0000000..8159ff5
 --- /dev/null
 +++ b/weft_open.go
-@@ -0,0 +1,110 @@
+@@ -0,0 +1,111 @@
 +package main
 +
 +// POST /v1/channels/{channelID}/open: one of Karchi's existing Discord DMs or groups as a live room, what
@@ -690,10 +690,11 @@ index 0000000..a49792c
 +//	502 Discord did not answer
 +//
 +// Only Karchi's own channels, known to the bridge already: a DM whose receiver is his Discord account, or a group
-+// he is in (user_portal). A group room is made only while no other account is logged in (CreateMatrixRoom invites
-+// every logged-in member). An account that signs in later, also while the room is being made, is invited into its
-+// groups' rooms by the bridge's own sync on READY (handlePrivateChannel -> UpdateInfo), as into any group room, so
-+// no lock here could keep it out. One opening at a time.
++// he is in (user_portal). A group is refused while another account is logged in (CreateMatrixRoom invites every
++// logged-in member); the count is checked before the channel GET and again immediately before CreateMatrixRoom.
++// A login at that moment is allowed, not locked out: an account that signs in later is invited into its groups'
++// rooms by the bridge's own sync on READY (handlePrivateChannel -> UpdateInfo), as into any group room, so a lock
++// would only delay it. One opening at a time.
 +
 +import (
 +	"net/http"
