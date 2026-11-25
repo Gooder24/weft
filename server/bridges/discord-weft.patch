@@ -48,7 +48,7 @@ index 0c1ab13..a23fdef 100644
      proxy:
      # Should mxc uris copied from Discord be cached?
 diff --git a/portal.go b/portal.go
-index 922ef9a..3128ec4 100644
+index 922ef9a..11430c7 100644
 --- a/portal.go
 +++ b/portal.go
 @@ -1258,6 +1258,8 @@ func errorToStatusReason(err error) (reason event.MessageStatusReason, status ev
@@ -60,7 +60,27 @@ index 922ef9a..3128ec4 100644
  	case errors.Is(err, errDMingStranger):
  		return event.MessageStatusGenericError, event.MessageStatusFail, true, true, "You can't message users who aren't on your friends list. Use the Discord app to chat or add them as a friend to continue.", nil
  	case errors.Is(err, errRelationshipsNotReady):
-@@ -1628,12 +1630,20 @@ func (portal *Portal) handleMatrixMessage(sender *User, evt *event.Event) {
+@@ -1586,6 +1588,7 @@ func (portal *Portal) handleMatrixMessage(sender *User, evt *event.Event) {
+ 		}
+ 	}
+ 	var threadID string
++	weftTarget := func(mxid id.EventID) *database.Message { return portal.bridge.DB.Message.GetByMXID(portal.Key, mxid) }
+ 
+ 	if editMXID := content.GetRelatesTo().GetReplaceID(); editMXID != "" && content.NewContent != nil {
+ 		edits := portal.bridge.DB.Message.GetByMXID(portal.Key, editMXID)
+@@ -1617,6 +1620,11 @@ func (portal *Portal) handleMatrixMessage(sender *User, evt *event.Event) {
+ 			threadID = existingThread.ID
+ 			existingThread.initialBackfillAttempted = true
+ 		} else {
++			// Weft (weft_reply.go): checked before Discord starts a thread; nothing is in a thread it does not have yet.
++			if err := weftReplyCheck(content, weftTarget, weftNewThread); err != nil {
++				go portal.sendMessageMetrics(evt, err, "Dropping")
++				return
++			}
+ 			if isWebhookSend {
+ 				// TODO start thread with bot?
+ 				go portal.sendMessageMetrics(evt, errCantStartThread, "Dropping")
+@@ -1628,12 +1636,20 @@ func (portal *Portal) handleMatrixMessage(sender *User, evt *event.Event) {
  				portal.log.Warn().Err(err).
  					Str("thread_root_mxid", threadRoot.String()).
  					Msg("Failed to start thread from Matrix")
@@ -74,7 +94,7 @@ index 922ef9a..3128ec4 100644
  		channelID = threadID
  	}
 +	// Weft (weft_reply.go): a reply that would lose its target goes nowhere, not to the whole channel.
-+	if err := weftReplyCheck(content, func(mxid id.EventID) *database.Message { return portal.bridge.DB.Message.GetByMXID(portal.Key, mxid) }, threadID); err != nil {
++	if err := weftReplyCheck(content, weftTarget, threadID); err != nil {
 +		go portal.sendMessageMetrics(evt, err, "Dropping")
 +		return
 +	}
@@ -875,10 +895,10 @@ index 0000000..b794abb
 +}
 diff --git a/weft_reply.go b/weft_reply.go
 new file mode 100644
-index 0000000..b74c43c
+index 0000000..7332cbc
 --- /dev/null
 +++ b/weft_reply.go
-@@ -0,0 +1,50 @@
+@@ -0,0 +1,53 @@
 +package main
 +
 +// Weft's reply guard (DISCORD-PLAN.md, point 1, step 4). The stock bridge sends a reply whose target it cannot
@@ -913,6 +933,9 @@ index 0000000..b74c43c
 +	return ""
 +}
 +
++// weftNewThread: the thread of a message that would start one; no row of the bridge is in it.
++const weftNewThread = "\x00new thread"
++
 +// weftReplyCheck: nil when the message may go to Discord in thread `threadID` ("" for the channel itself) as far as
 +// its reply goes; `target` is the bridge's row of the replied-to event (nil: unknown).
 +func weftReplyCheck(content *event.MessageEventContent, target func(id.EventID) *database.Message, threadID string) error {
@@ -931,10 +954,10 @@ index 0000000..b74c43c
 +}
 diff --git a/weft_reply_test.go b/weft_reply_test.go
 new file mode 100644
-index 0000000..bf36974
+index 0000000..330baa2
 --- /dev/null
 +++ b/weft_reply_test.go
-@@ -0,0 +1,200 @@
+@@ -0,0 +1,203 @@
 +package main
 +
 +import (
@@ -1085,6 +1108,9 @@ index 0000000..bf36974
 +		"target in another thread":  inReplyTo("$inThread"),
 +		"in a thread, target not":   {"rel_type": "m.thread", "event_id": "$inThread", "is_falling_back": false, "m.in_reply_to": map[string]any{"event_id": "$known"}},
 +		"thread that did not start": {"rel_type": "m.thread", "event_id": "$root", "is_falling_back": true, "m.in_reply_to": map[string]any{"event_id": "$root"}},
++		// refused before Discord is asked to start the thread
++		"new thread, unknown target":  {"rel_type": "m.thread", "event_id": "$root", "is_falling_back": false, "m.in_reply_to": map[string]any{"event_id": "$nobody"}},
++		"new thread, target its root": {"rel_type": "m.thread", "event_id": "$root", "is_falling_back": false, "m.in_reply_to": map[string]any{"event_id": "$root"}},
 +	} {
 +		t.Run(name, func(t *testing.T) {
 +			f := newWeftFake(t)
