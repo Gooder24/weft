@@ -93,7 +93,9 @@ const POLL_END = ['org.matrix.msc3381.poll.end', 'm.poll.end'];
 // on the poll start (Weft's patch of the Discord bridge, kept current by edits) and on archived Discord polls.
 const DISCORD_POLL = 'sk.karchi.discord.poll';
 const POLL_TYPES = [...POLL_START, ...POLL_RESPONSE, ...POLL_END];
-const TIMELINE_TYPES = ['m.room.message', 'm.sticker', 'm.reaction', 'm.room.redaction', 'm.room.create', 'm.room.member', 'm.room.name', 'm.room.avatar', 'm.bridge', ...POLL_TYPES];
+// What a room's bridge says the network allows (edit, delete and their limits); read by msgRules.
+const ROOM_FEATURES = 'com.beeper.room_features';
+const TIMELINE_TYPES = ['m.room.message', 'm.sticker', 'm.reaction', 'm.room.redaction', 'm.room.create', 'm.room.member', 'm.room.name', 'm.room.avatar', 'm.bridge', ROOM_FEATURES, ...POLL_TYPES];
 const DEFAULT_PREFS = { polls: true, arrivals: false, meals: false };
 const DAYS = [T('Nedeľa'), T('Pondelok'), T('Utorok'), T('Streda'), T('Štvrtok'), T('Piatok'), T('Sobota')];
 const MONTHS = LANG === 'en' ? ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] : ['jan', 'feb', 'mar', 'apr', 'máj', 'jún', 'júl', 'aug', 'sep', 'okt', 'nov', 'dec']; // i18n-ignore: each language's own names
@@ -1077,7 +1079,7 @@ const FILTER = JSON.stringify({
   presence: { not_types: ['*'] },
   room: {
     timeline: { limit: 40, types: TIMELINE_TYPES },
-    state: { types: ['m.room.create', 'm.room.member', 'm.room.name', 'm.room.avatar', 'm.bridge'] },
+    state: { types: ['m.room.create', 'm.room.member', 'm.room.name', 'm.room.avatar', 'm.bridge', ROOM_FEATURES] },
     ephemeral: { types: ['m.receipt', 'm.typing'] },
     account_data: { not_types: ['*'] },
   },
@@ -8070,9 +8072,13 @@ const LIMITS = {
 };
 /** What the room's bridge says Karchi may do with a sent message (its com.beeper.room_features: a level above 0
  *  is allowed, ages in seconds), or LIMITS when it says nothing. */
+// What the room's bridge announces, else LIMITS by network. Of several announcements the one under the same
+// state key as the room's m.bridge wins, else the first by key; an empty one announces nothing.
 function msgRules(r) {
-  let f = null;
-  for (const [key, c] of r.state) if (key.startsWith('com.beeper.room_features|')) f = c;
+  const bridgeKey = [...r.state.keys()].find((k) => k.startsWith('m.bridge|'))?.slice('m.bridge|'.length);
+  const found = [...r.state].filter(([k, c]) => k.startsWith(`${ROOM_FEATURES}|`) && c && Object.keys(c).length)
+    .map(([k, c]) => [k.slice(ROOM_FEATURES.length + 1), c]).sort(([a], [b]) => (a === bridgeKey ? -1 : b === bridgeKey ? 1 : a < b ? -1 : a > b ? 1 : 0));
+  const f = found[0]?.[1];
   if (!f) return { editOk: true, deleteOk: true, ...(LIMITS[r.app] || {}) };
   return { editOk: f.edit > 0, edit: f.edit_max_age, edits: f.edit_max_count, deleteOk: f.delete > 0, delete: f.delete_max_age };
 }
