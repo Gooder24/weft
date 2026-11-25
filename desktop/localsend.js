@@ -173,11 +173,13 @@ function createPeer(opts) {
   try { st = { ...st, ...JSON.parse(fs.readFileSync(statePath, 'utf8')) }; } catch { /* a first start */ }
   if (!st.tls?.cert || !st.tls?.key) { st.tls = makeIdentity(); st.fingerprint = st.tls.fingerprint; }
   for (const it of st.items) if (['sending', 'receiving'].includes(it.status)) it.status = 'stopped'; // the app quit midway
-  // State of an earlier version may hold one certificate under two spellings: one record, a default only if both were.
+  // State of an earlier version may hold one certificate under two spellings: one record (the HTTPS one, which pins
+  // the certificate, else the newer), a default only if both were.
+  const better = (x, y) => ((x.protocol === 'https') !== (y.protocol === 'https') ? (x.protocol === 'https' ? x : y) : x.seen > y.seen ? x : y);
   st.devices = Object.values(st.devices || {}).reduce((all, d) => {
     const k = fpKey(d.fingerprint);
     const had = all[k];
-    all[k] = had ? { ...(had.seen > d.seen ? had : d), fingerprint: k, default: had.default && d.default, chosen: had.chosen || d.chosen || had.default !== d.default }
+    all[k] = had ? { ...better(had, d), fingerprint: k, default: had.default && d.default, chosen: had.chosen || d.chosen || had.default !== d.default }
       : { ...d, fingerprint: k };
     return all;
   }, {});
@@ -476,9 +478,10 @@ function createPeer(opts) {
 
   async function run(item, targets) {
     const payload = item.text != null ? { text: item.text } : { files: item.files };
-    await Promise.all(targets.map(async (dev, i) => {
+    await Promise.all(targets.map(async (dev) => {
       const res = await sendOne(dev, payload, (n) => { item.got += n; emitSoon(); });
-      Object.assign(item.targets[i], res);
+      // By the device, not the position: a retry sends only to some of the item's targets.
+      Object.assign(item.targets.find((t) => fpKey(t.fingerprint) === dev.fingerprint) || {}, res);
       if (res.status !== 'offline') { dev.seen = Date.now(); }
     }));
     const states = item.targets.map((t) => t.status);

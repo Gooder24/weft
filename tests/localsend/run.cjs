@@ -335,6 +335,13 @@ const settled = (p, id) => until(() => { const it = item(p, id); return it && ![
     o.setDefault(fpUp.toLowerCase(), true);
     assert.equal(o.state().devices.find((x) => x.fingerprint === fpUp).default, true);
     await o.stop();
+    // Of an HTTPS and a newer HTTP spelling, the HTTPS one stays: it keeps the certificate pinned.
+    fs.writeFileSync(path.join(tmp, 'old2.json'), JSON.stringify({ lan: false, items: [], devices: {
+      [fpUp.toLowerCase()]: dev(fpUp.toLowerCase(), true, 1), [fpUp]: { ...dev(fpUp, true, 2), protocol: 'http', port: 7 } } }));
+    const o2 = await peer('old2');
+    const one = o2.state().devices.filter((x) => x.fingerprint.toUpperCase() === fpUp);
+    assert.deepEqual(one.map((x) => [x.protocol, x.port]), [['https', 9]]);
+    await o2.stop();
   });
 
   await check('a device first heard on the local network becomes a default once the tailnet shows it', async () => {
@@ -429,6 +436,26 @@ const settled = (p, id) => until(() => { const it = item(p, id); return it && ![
     assert.equal(b.retry(r.id), true);
     assert.equal((await settled(b, r.id)).status, 'done');
     assert.equal(fs.readFileSync(path.join(tmp, 'e', 'in', 'later.txt'), 'utf8'), 'later');
+    await e2.stop();
+  });
+
+  await check('a retry of a half-delivered item reaches only the missing device, and the item ends „done“', async () => {
+    const e = await peer('e3');
+    const port = e.port;
+    const efp = e.info().fingerprint;
+    const afp = a.info().fingerprint;
+    b.onMulticast(Buffer.from(JSON.stringify({ ...e.info(), announce: false })), { address: '127.0.0.1' });
+    await e.stop();
+    const r = await b.send({ text: 'čiastočne', to: [efp, afp] }); // the missing one first
+    assert.equal((await settled(b, r.id)).status, 'partial');
+    const e2 = await peer('e3', { port });
+    assert.equal(b.retry(r.id), true);
+    const out = await settled(b, r.id);
+    assert.equal(out.status, 'done');
+    assert.deepEqual(out.targets.map((t) => t.status), ['done', 'done']);
+    assert.equal(a.state().items.filter((x) => x.text === 'čiastočne').length, 1);
+    assert.equal(e2.state().items.filter((x) => x.text === 'čiastočne').length, 1);
+    assert.equal(b.retry(r.id), false);
     await e2.stop();
   });
 
