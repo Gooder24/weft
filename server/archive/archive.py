@@ -8,6 +8,8 @@ asks for it when Karchi scrolls past a chat's first message on Matrix.
     archive.py serve                  HTTP for Weft on 127.0.0.1:29324 (Caddy: /_archive/), every hour
                                       a copy of every message on the homeserver (`mirror`), and every read
                                       receipt of others as it comes (GET /_archive/rooms/{room}/receipts)
+                                      (install.sh runs it with ARCHIVE_OWNER_FILE: only the HTTP, for
+                                      „Prejsť z Beeperu“ and old chats, owned by the server's first account)
     archive.py mirror                 that copy once
     archive.py instagram ZIP...       import Instagram's "Download your information" exports (JSON)
     import_messenger.py ZIP --dry-run validate/count Messenger's encrypted-chat export, without writing
@@ -36,13 +38,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import discord_weft
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SPIKE = os.path.expanduser("~/matrix-spike")
+SPIKE = os.environ.get("ARCHIVE_SPIKE", os.path.expanduser("~/matrix-spike"))
 HS = os.environ.get("HS", "http://127.0.0.1:8008")
 DB = os.environ.get("ARCHIVE_DB", os.path.join(HERE, "archive.db"))
 TOKEN_FILE = os.path.join(HERE, "token")
 MEDIA = os.environ.get("ARCHIVE_MEDIA", os.path.join(HERE, "media"))
 THUMBS = os.environ.get("ARCHIVE_THUMBS", os.path.join(HERE, "thumbs"))
-PORT = 29324
+PORT = int(os.environ.get("ARCHIVE_PORT", "29324"))
+# install.sh's Weft: no login of its own (no mirror, receipts or bridge pages); the server's first account that calls it
+# owns it, kept in this file. Without it (asus) the owner is the account of ./token.
+OWNER_FILE = os.environ.get("ARCHIVE_OWNER_FILE")
 # Bridges patched with messenger-archivefetch.patch (Instagram: instagram-archivefetch.patch), and the token they expect (./bridge-token, 0600).
 BRIDGES = {"messenger": "http://127.0.0.1:29325", "instagram": "http://127.0.0.1:29326"}
 BRIDGE_TOKEN_FILE = os.path.join(HERE, "bridge-token")
@@ -1357,6 +1362,7 @@ class Api(BaseHTTPRequestHandler):
         if token in self.tokens: return True
         try: who = call("GET", "/_matrix/client/v3/account/whoami", token=token, timeout=10)["user_id"]
         except Exception: return False
+        if Api.owner is None and OWNER_FILE: claim_owner(who)
         if who != Api.owner: return False
         self.tokens[token] = now
         return True
@@ -1693,7 +1699,28 @@ def export_ends(c):
     return _ends[1]
 
 
+_claim = threading.Lock()
+
+
+def claim_owner(who):
+    """The first account to call an install.sh archive becomes its owner, for good (the file is written once)."""
+    with _claim:
+        if Api.owner is not None: return
+        try:
+            fd = os.open(OWNER_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            try: os.write(fd, who.encode())
+            finally: os.close(fd)
+            Api.owner = who
+        except FileExistsError: Api.owner = open(OWNER_FILE).read().strip() or None
+        print("archive: owned by", Api.owner, flush=True)
+
+
 def serve():
+    if OWNER_FILE:
+        Api.owner = (open(OWNER_FILE).read().strip() or None) if os.path.exists(OWNER_FILE) else None
+        print("archive: serving", DB, "for", Api.owner or "the first account that calls it", flush=True)
+        ThreadingHTTPServer(("127.0.0.1", PORT), Api).serve_forever()
+        return
     token = login()
     Api.owner = call("GET", "/_matrix/client/v3/account/whoami", token=token)["user_id"]
     Api.hs_token = token

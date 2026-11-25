@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Weft on one Debian or Ubuntu machine, or on Windows inside Debian in WSL (install.ps1 runs this there):
-# the homeserver, the app on http://localhost:8790 and a daily update from the repository.
+# the homeserver, the app on http://localhost:8790, the archive of old chats (for „Prejsť z Beeperu“; it belongs to
+# the first account made here) and a daily update from the repository.
 #
 #   sudo ./install.sh            install or repair; the last line is the address that creates the first account
 #   sudo ./install.sh --update   what the daily timer runs: pull the repository, then install again
@@ -22,8 +23,8 @@ die() { printf 'weft: %s\n' "$*" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || exec sudo -E "$0" "$@"
 
 if [ "${1:-}" = --remove ]; then
-  systemctl disable --now weft-update.timer weft-web.service weft-homeserver.service 2>/dev/null || true
-  rm -f "$UNITS"/weft-{homeserver,web,update}.service "$UNITS"/weft-update.timer
+  systemctl disable --now weft-update.timer weft-web.service weft-archive.service weft-homeserver.service 2>/dev/null || true
+  rm -f "$UNITS"/weft-{homeserver,web,archive,update}.service "$UNITS"/weft-update.timer
   systemctl daemon-reload
   rm -rf "$ROOT"
   say "removed; your messages and settings are still in $DATA and $ETC (delete them to start over)"
@@ -47,11 +48,11 @@ fi
 [ -d /run/systemd/system ] || die "needs a machine that runs systemd"
 [ "$(uname -m)" = x86_64 ] || die "only x86_64 for now (this is $(uname -m))"
 
-say "installing packages (git, curl, zstd, caddy)"
+say "installing packages (git, curl, zstd, caddy, python3)"
 export DEBIAN_FRONTEND=noninteractive
 had_caddy=$(dpkg-query -W -f='${Status}' caddy 2>/dev/null | grep -c 'install ok installed' || true)
 apt-get update -qq
-apt-get install -y -qq git curl zstd caddy ca-certificates >/dev/null
+apt-get install -y -qq git curl zstd caddy ca-certificates python3 >/dev/null
 # Debian's caddy package also starts its own caddy.service on port 80 of every interface. Weft runs a separate Caddy,
 # so when this installed the package, that one is switched off; a Caddy that was here before stays as it was.
 [ "$had_caddy" = 1 ] || systemctl disable -q --now caddy.service
@@ -59,6 +60,7 @@ apt-get install -y -qq git curl zstd caddy ca-certificates >/dev/null
 id weft >/dev/null 2>&1 || useradd --system --home-dir "$DATA" --shell /usr/sbin/nologin weft
 install -d -m 755 "$ROOT" "$ROOT/bin" "$ETC"
 install -d -m 750 -o weft -g weft "$DATA"
+install -d -m 700 -o weft -g weft "$DATA/archive"
 
 # The checkout that updates pull. Run from a clone (also one on Windows, under /mnt/c), it starts from that clone.
 if [ ! -d "$SRC/.git" ]; then
@@ -120,6 +122,9 @@ cat > "$ETC/Caddyfile" <<EOF
 	handle /_matrix/* {
 		reverse_proxy 127.0.0.1:6167
 	}
+	handle /_archive/* {
+		reverse_proxy 127.0.0.1:29324
+	}
 	handle {
 		root * $SRC/app
 		file_server
@@ -156,6 +161,26 @@ MemoryMax=200M
 [Install]
 WantedBy=multi-user.target
 EOF
+# The archive keeps old chats and takes Beeper's history in (Settings → Účty → Prejsť z Beeperu). Its import runs
+# as a child process and may need much memory for a big Beeper: when it runs out, only the child is ended.
+cat > "$UNITS/weft-archive.service" <<EOF
+[Unit]
+Description=Weft archive of old chats (127.0.0.1:29324)
+After=weft-homeserver.service
+
+[Service]
+User=weft
+WorkingDirectory=$DATA/archive
+Environment=HS=http://127.0.0.1:6167 ARCHIVE_DB=$DATA/archive/archive.db ARCHIVE_MEDIA=$DATA/archive/media
+Environment=ARCHIVE_THUMBS=$DATA/archive/thumbs ARCHIVE_OWNER_FILE=$DATA/archive/owner ARCHIVE_SPIKE=$DATA/bridges
+ExecStart=/usr/bin/python3 -u $SRC/server/archive/archive.py serve
+Restart=on-failure
+MemoryMax=2500M
+OOMPolicy=continue
+
+[Install]
+WantedBy=multi-user.target
+EOF
 cat > "$UNITS/weft-update.service" <<EOF
 [Unit]
 Description=Update Weft from its repository
@@ -179,8 +204,8 @@ Persistent=true
 WantedBy=timers.target
 EOF
 systemctl daemon-reload
-systemctl enable -q weft-homeserver.service weft-web.service weft-update.timer
-systemctl restart weft-homeserver.service weft-web.service
+systemctl enable -q weft-homeserver.service weft-web.service weft-archive.service weft-update.timer
+systemctl restart weft-homeserver.service weft-web.service weft-archive.service
 systemctl start weft-update.timer
 
 for _ in $(seq 60); do
