@@ -967,6 +967,7 @@ export default {
   "Úprava sa neuložila.": "The edit was not saved.",
   "Túto správu už sieť nedovolí upraviť.": "The network no longer lets you edit this message.",
   "Túto správu sieť nedovolí odstrániť.": "The network does not let you delete this message.",
+  "Upravovaná správa sa ešte načítava. Skús to o chvíľu.": "The message you are editing is still loading. Try again in a moment.",
   "Správu sa nepodarilo odstrániť.": "The message could not be deleted.",
   "{} neodpovedá": "{} is not answering",
   "{} nie je pripojený": "{} is not connected",

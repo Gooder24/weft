@@ -8134,6 +8134,7 @@ async function saveEdit(r) {
   const text = (S.drafts.get(r.id) || '').trim();
   const before = ev && plainBody(contentOf(m, ev));
   const said = textMessage(r, text, (S.drafts.get(r.id) || '').search(/\S|$/)); // before endEdit brings the draft back
+  if (!ev && S.editing?.event) return alert(T('Upravovaná správa sa ešte načítava. Skús to o chvíľu.')); // the editor stays
   // What the network allows may have changed while the editor was open: the editor stays, nothing is sent.
   if (ev && text !== before && !(text ? canEdit(r, m, ev) : canDelete(r, m, ev))) {
     return alert(text ? T('Túto správu už sieť nedovolí upraviť.') : T('Túto správu sieť nedovolí odstrániť.'));
@@ -9217,7 +9218,8 @@ function viaSwitch(r, t) {
 
 /** `t`: a merged chat's timeline (timelineOf); its composer writes to `r` and can switch to another of its chats. */
 function chatCompose(r, m, t = null) {
-  const editing = S.editing?.room === r.id ? m.byId.get(S.editing.event) : null;
+  // Still editing while the message itself is not loaded (a limited sync drops what is held): Enter never sends the edit as a new message.
+  const editing = S.editing?.room === r.id;
   const reply = S.replyTo?.room === r.id ? m.byId.get(S.replyTo.event) : null;
   const files = S.attach.get(r.id) || [];
   const area = h('textarea', {
