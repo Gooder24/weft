@@ -48,15 +48,10 @@ class Sync : JobService() {
             while (true) {
                 val waiting = store.pending(50)
                 if (waiting.isEmpty()) break
-                // SMS switched off or an app unticked after its items came in: they stay on the phone.
-                // A notification from before its app was last ticked (an older build's queue) stays out too.
-                val (batch, off) = waiting.partition {
-                    if (it.optString("kind") == "sms") store.sms
-                    else it.optString("app").let { app -> app in store.apps && it.optLong("ts") >= store.since(app) }
-                }
+                val (batch, off) = waiting.partition { wanted(store, it) }
                 store.done(off.map { it.getString("id") })
                 if (batch.isEmpty()) continue
-                val taken = send(server, store.ca, token, batch)
+                val taken = send(store, server, token, batch)
                 val gone = store.done(taken)
                 store.sent = System.currentTimeMillis()
                 store.error = null
@@ -66,13 +61,20 @@ class Sync : JobService() {
 
         /** The ids Weft took. A batch it refuses as a whole (too big, or one item it cannot read) goes one by one, and
          *  an item refused alone is dropped, so one bad item never holds up the queue behind it. */
-        private fun send(server: String, ca: String?, token: String, batch: List<JSONObject>): List<String> = try {
-            val taken = Net.post(server, ca, "/_connect/phone/items", JSONObject().put("items", JSONArray(batch)), token).getJSONArray("taken")
+        private fun send(store: Store, server: String, token: String, batch: List<JSONObject>): List<String> = try {
+            val taken = Net.post(server, store.ca, "/_connect/phone/items", JSONObject().put("items", JSONArray(batch)), token).getJSONArray("taken")
             (0 until taken.length()).map { taken.getString(it) }
         } catch (e: Net.HttpError) {
             if (e.code != 400 && e.code != 413) throw e
-            if (batch.size == 1) listOf(batch[0].getString("id")) else batch.flatMap { send(server, ca, token, listOf(it)) }
+            if (batch.size == 1) listOf(batch[0].getString("id"))
+            else batch.flatMap { if (wanted(store, it)) send(store, server, token, listOf(it)) else listOf(it.getString("id")) }
         }
+
+        /** SMS switched off or an app unticked after its items came in: they stay on the phone (asked again before each
+         *  request). A notification from before its app was last ticked (an older build's queue) stays out too. */
+        private fun wanted(store: Store, item: JSONObject) =
+            if (item.optString("kind") == "sms") store.sms
+            else item.optString("app").let { app -> app in store.apps && item.optLong("ts") >= store.since(app) }
 
         fun soon(context: Context, delay: Long) {
             val job = JobInfo.Builder(NOW, ComponentName(context, Sync::class.java))

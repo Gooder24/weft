@@ -97,6 +97,7 @@ afterEach(() => {
 /** A homeserver that answers what the host asks and remembers every call; `seen` null: Karchi has no „seen up to“ yet. */
 function fakeHomeserver(seen: Record<string, unknown> | null = { keep: 5 }) {
   const calls: Call[] = [];
+  const fail = { receipts: 0 }; // the next this many read receipts fail
   let n = 0;
   const server = Bun.serve({
     port: 0,
@@ -105,6 +106,7 @@ function fakeHomeserver(seen: Record<string, unknown> | null = { keep: 5 }) {
       const path = decodeURIComponent(url.pathname.replace('/_matrix/client/v3', ''));
       const body: Record<string, unknown> = req.method === 'GET' ? {} : await req.json().catch(() => ({}));
       calls.push({ method: req.method, path, user: url.searchParams.get('user_id'), body });
+      if (path.includes('/receipt/') && fail.receipts > 0 && fail.receipts--) return Response.json({ errcode: 'M_UNKNOWN' }, { status: 500 });
       if (path === '/createRoom') return Response.json({ room_id: `!r${++n}:test` });
       if (path.includes('/send/')) return Response.json({ event_id: `$e${++n}` });
       if (req.method === 'GET' && path.includes('/account_data/')) return seen ? Response.json(seen) : Response.json({ errcode: 'M_NOT_FOUND' }, { status: 404 });
@@ -112,7 +114,7 @@ function fakeHomeserver(seen: Record<string, unknown> | null = { keep: 5 }) {
     },
   });
   servers.push(server);
-  return { calls, url: `http://127.0.0.1:${server.port}` };
+  return { calls, fail, url: `http://127.0.0.1:${server.port}` };
 }
 
 const NOW = 1_800_000_000_000;
@@ -294,6 +296,21 @@ describe('phone', () => {
     const { hs, host } = setup();
     await host.phone('p1', [sms('1', '0900123456', 'Včera', NOW - 2 * 86_400_000)]);
     expect(hs.calls.some((c) => c.path.includes('/receipt/m.read/'))).toBe(true);
+  });
+
+  test('a read receipt that failed is tried again, with the same message, counted once', async () => {
+    const { hs, host } = setup();
+    hs.fail.receipts = 1;
+    let counted = 0;
+    const old = sms('1', '0900123456', 'Včera', NOW - 2 * 86_400_000);
+    await expect(host.phone('p1', [old], () => counted++)).rejects.toThrow();
+    expect(counted).toBe(0);
+    expect((await host.phone('p1', [old], () => counted++)).posted).toBe(1);
+    const txns = sends(hs.calls).map((c) => c.path);
+    expect(txns).toHaveLength(2);
+    expect(txns[1]).toBe(txns[0]!); // the same transaction: the homeserver gives back the same event
+    expect(hs.calls.filter((c) => c.path.includes('/receipt/m.read/'))).toHaveLength(2);
+    expect(counted).toBe(1);
   });
 
   test('an SMS Karchi sent is his own message in the chat, through his own account', async () => {

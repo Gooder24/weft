@@ -158,7 +158,7 @@ export class Host {
   }
 
   /** `key` makes it once; `origin` says in the event where it came from (a mail's archive id, a phone). `stored` hears
-   *  it the moment it is in the chat, before the read receipt that may still fail. */
+   *  each one posted (in its chat and, when old, read). */
   private async post(c: Connector, key: string, ts: number, item: Item, origin: Record<string, string>, stored = () => {}) {
     if (this.db.query('SELECT 1 FROM posted WHERE key = ?').get(key)) return false;
     const room = await this.room(c, item);
@@ -168,12 +168,14 @@ export class Host {
     const content = { msgtype: 'm.text', body: item.text, [MARK]: { connector: c.id, ...origin } };
     const sent = await this.opts.matrix.call('PUT', `/rooms/${q(room)}/send/m.room.message/${txn}`, content, { user: sender, query: { ts } });
     const event = String(sent.event_id);
-    this.db.query('INSERT INTO posted VALUES (?, ?, ?, ?, ?)').run(key, c.id, room, event, ts);
-    stored();
+    // Old history comes read. Only then is it posted: a failed receipt sends again with the same transaction id,
+    // which the homeserver answers with the same event, and the receipt is tried again.
     if (!item.mine && this.now() - ts > SEEN) {
       this.db.query('INSERT INTO unseen VALUES (?, ?) ON CONFLICT (room) DO UPDATE SET ts = MAX(ts, excluded.ts)').run(room, ts);
       await this.opts.matrix.call('POST', `/rooms/${q(room)}/receipt/m.read/${q(event)}`, {}, { user: this.opts.matrix.admin });
     }
+    this.db.query('INSERT INTO posted VALUES (?, ?, ?, ?, ?)').run(key, c.id, room, event, ts);
+    stored();
     return true;
   }
 
