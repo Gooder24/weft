@@ -1560,7 +1560,6 @@ button.prof-status:hover { background: var(--hover); }
 .cmd.broadcast .att small { white-space: nowrap; }
 .cmd.broadcast .attx { top: 50%; right: 6px; transform: translateY(-50%); background: none; color: var(--muted); }
 .cmd.broadcast .attx:hover { background: var(--hover); color: var(--text); }
-.cmd.broadcast label.ghost input { display: none; }
 .cmd.broadcast .pace { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .cmd.broadcast .split { flex: 1; min-height: 0; display: grid; grid-template-columns: 290px 1fr; }
 .cmd.broadcast .split .pane { border-right: var(--bw) solid var(--line); }

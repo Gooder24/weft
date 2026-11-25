@@ -3192,13 +3192,14 @@ function mentionText(parts, find) {
 
 const laterItems = () => S.account[LATER]?.items || [];
 let laterChain = Promise.resolve();
-/** Changes the list as it stands on the server now: the service marks what it sent in the same list. */
+/** Changes the list as it stands on the server now: the service marks what it sent in the same list. `change` may
+ *  be async (it may read other account data just before the write). */
 function saveLater(change) {
   laterChain = laterChain.then(async () => {
     const seen = S.account[LATER];
     const now = await call('GET', `/user/${q(S.userId)}/account_data/${LATER}`).catch((err) => (err.status === 404 ? {} : Promise.reject(err)));
     const base = now.items || [];
-    const next = { items: change(base) };
+    const next = { items: await change(base) };
     if (next.items === base) {
       // Nothing to change (another device wrote it already): a write would only put back what was read, maybe stale.
       // The window still takes what it read, so callers find their items.
@@ -3457,8 +3458,8 @@ function bcBuild(o) {
 const bcItem = (o, state) => ({ id: o.id, title: bcTitle(o.tpl), text: o.tpl, files: o.files.filter((f) => !(f instanceof File)), state, at: Date.now(),
   to: o.to.map(({ guessed, ...t }) => t) });
 /** Why the preview refuses to send: more than BC_DAY people on one network today. */
-function bcRefusal(o) {
-  const over = Object.entries(dayCounts({ id: o.id, to: o.to }, laterItems())).filter(([, n]) => n > BC_DAY);
+function bcRefusal(o, later = laterItems()) {
+  const over = Object.entries(dayCounts({ id: o.id, to: o.to }, later)).filter(([, n]) => n > BC_DAY);
   return over.map(([net, n]) => T`${appOf(net)?.name || net}: dnes by to bolo ${n} ľudí, najviac je ${BC_DAY}. Vyhoď ${n - BC_DAY} (Delete) alebo zvyšok rozošli zajtra.`).join(' ');
 }
 /** Confirming: the messages go to send-later first, then the broadcast is noted as sent. */
@@ -3474,10 +3475,19 @@ async function bcSend(o) {
     if (now.items?.find((x) => x.id === o.id)?.state !== 'sent') {
       const item = bcItem(o, 'sent');
       const { items, at, gap } = laterItemsOf(item, Date.now() + 3e3);
-      await saveLater((list) => addOnce(list, items));
-      if (!items.every((x) => laterItems().some((y) => y.id === x.id))) return;
+      // The day's limit once more against the list as the server has it (another tab may have added to it).
+      let over = false;
+      await saveLater((list) => (bcRefusal(o, list) ? ((over = true), list) : addOnce(list, items)));
+      if (over || !items.every((x) => laterItems().some((y) => y.id === x.id))) return;
       item.to = item.to.map((t) => ({ ...t, at: at[t.key], gap: gap[t.key] }));
-      await saveBroadcast((d) => ({ ...d, items: bcUpsert(d.items, item) }));
+      let kept;
+      await saveBroadcast((d) => { const out = bcUpsert(d.items, item); kept = out.find((x) => x.id === item.id); return { ...d, items: out }; });
+      // Another window confirmed this broadcast with other people a moment before: only its people go, so nobody
+      // gets a message the broadcast does not show (and cannot stop).
+      const theirs = new Set((kept?.to || []).map((t) => batchOf(kept, t)));
+      if (kept && items.some((x) => !theirs.has(x.batch))) {
+        await saveLater((list) => { const out = list.filter((x) => !(x.batch?.startsWith(`bc-${o.id}-`) && !theirs.has(x.batch) && !x.sent)); return out.length === list.length ? list : out; });
+      }
     }
     Object.assign(o, { sent: true, step: 4, psel: 0 });
     bcOpen = null;
@@ -3541,7 +3551,11 @@ function bcRecord() {
   }
   if (lost.length) {
     bcRecording = true;
-    saveLater((list) => addOnce(list, lost)).finally(() => { bcRecording = false; });
+    saveLater(async (list) => {
+      const now = await call('GET', `/user/${q(S.userId)}/account_data/${BROADCAST}`).catch(() => ({}));
+      const live = new Set((now.items || []).filter((x) => x.state === 'sent' && !x.stopped).flatMap((x) => x.to.filter((t) => !t.stopped).map((t) => batchOf(x, t))));
+      return addOnce(list, lost.filter((x) => live.has(x.batch)));
+    }).finally(() => { bcRecording = false; });
     return;
   }
   if (!Object.keys(marks).length) return;
@@ -3632,7 +3646,8 @@ function bcWriteView(o) {
       h('div', { class: 'atts' }, o.files.map((f, i) => h('div', { class: 'att' }, h('b', {}, f.name || f.body),
         h('small', {}, `${fileSize(f.size ?? f.info?.size ?? 0)} · ${T('nahrá sa raz, pôjde každému')}`),
         h('button', { class: 'attx', title: T('Odobrať'), onclick: () => { o.files.splice(i, 1); render(); } }, icon('close')))),
-        h('label', { class: 'ghost' }, T('+ Súbor'), h('input', { type: 'file', multiple: true, hidden: true, onchange: (e) => { o.files.push(...e.target.files); e.target.value = ''; render(); } }))),
+        h('button', { class: 'ghost', onclick: (e) => e.currentTarget.nextElementSibling.click() }, T('+ Súbor')),
+        h('input', { type: 'file', multiple: true, hidden: true, onchange: (e) => { o.files.push(...e.target.files); e.target.value = ''; render(); } })),
       h('div', { class: 'pace' }, h('span', { class: 'hint' }, T('Tempo:')), ' ', h('span', { class: 'tag' }, T('jedna správa každých 25–70 s')), ' ',
         h('span', { class: 'tag' }, T`najviac ${BC_DAY} ľudí na sieť a deň`))),
     h('div', { class: 'foot' }, h('span', { class: 'keys' }, bcKey2('Esc', T('späť'))), o.busy ? h('span', {}, o.busy) : null,
