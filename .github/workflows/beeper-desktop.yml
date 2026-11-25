@@ -1,0 +1,28 @@
+name: beeper-desktop
+
+# „Prejsť z Beeperu“ in the desktop app on each system Beeper Desktop runs on: where its folder is, how a running
+# Beeper is seen, what is copied and read (tests/beeper/desktop.cjs, a made-up Beeper folder, no Beeper needed).
+on:
+  pull_request:
+    paths: [desktop/main.js, tests/beeper/**, .github/workflows/beeper-desktop.yml]
+  push:
+    branches: [main]
+    paths: [desktop/main.js, tests/beeper/**, .github/workflows/beeper-desktop.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node tests/beeper/desktop.cjs

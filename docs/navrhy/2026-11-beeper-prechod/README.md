@@ -76,7 +76,8 @@ Kontrola na vymyslených dátach (pokrýva všetky pravidlá vyššie, opakovan�
 
 ## Prechod pre človeka (postavené)
 
-**Nastavenia → Účty → „Prejsť z Beeperu“** (len na serveri, kde beží archív):
+**Nastavenia → Účty → „Prejsť z Beeperu“** (na serveri, kde beží archív: na asuse, a v inštalácii `install.sh`,
+kde archív patrí prvému účtu, ktorý sa na serveri vytvoril):
 
 1. **Siete** si človek pripojí vo Wefte vyššie ako dnes; prihlásenia sa z Beeperu neprenášajú.
 2. **Nájdenie Beeperu.** Desktopová appka Weftu nájde priečinok Beeperu na tom istom počítači (`desktop/main.js`,
@@ -84,17 +85,26 @@ Kontrola na vymyslených dátach (pokrýva všetky pravidlá vyššie, opakovan�
    skopíruje `index.db` (aj s `-wal`) a pošle kópiu na server po 16 MB. V prehliadači si človek súbor vyberie sám,
    obrazovka povie, kde je.
 3. **Prehľad pred importom:** server spustí importér len na počítanie a appka ukáže tabuľku: pri každej sieti počet
-   chatov, koľko správ pribudne, od kedy a koľko miesta zaberú. Až potom tlačidlo „Preniesť“; „Zrušiť“ nahratú kópiu
-   zmaže.
+   chatov, koľko správ pribudne, od kedy a koľko miesta zaberú. Pod ňou „Aj fotky a súbory: počet, veľkosť“: počítanie
+   vráti zoznam súborov z cache Beeperu (`media/local.beeper.com`), ktoré nové správy ukazujú (`media_wanted`);
+   desktopová appka ich v cache nájde sama (`beeper-media`), v prehliadači človek vyberie priečinok `media`. Pošlú sa
+   len tieto, po kúskoch, až po „Preniesť“ a len keď je políčko zaškrtnuté. Až potom tlačidlo „Preniesť“; „Zrušiť“
+   nahratú kópiu zmaže.
 4. **Import:** archív sa zálohuje, správy pribudnú a nahratá kópia sa zmaže. Kópiu server zmaže aj pri novom nahratí
    a po dni. Druhý prenos toho istého Beeperu ukáže „Weft už má všetko“.
 5. **Beeper môže bežať ďalej**, kým si človek zvykne. Weft sa ho nič nepýta a nič v ňom nemení.
 
-Fotky a súbory sa zatiaľ neposielajú: pri správe ostane, čo tam bolo, a CLI `import_beeper.py --media` ich vie
-doplniť zo skopírovaného priečinka. Archív na to má cesty `POST /_archive/beeper/{upload,plan,import,forget}`
-(`server/archive/archive.py`). Importér beží vo vlastnom procese s vlastným limitom pamäte (`systemd-run --scope`, 2 GB, `ARCHIVE_BEEPER_MEMORY`), mimo limitu služby archívu (384 MB): keď mu pamäť nestačí, skončí len on.
-Kontroly sú `overenie/beeper-move/route.py` (cesty archívu cez skutočný socket) a `overenie/beeper-move/run.sh`
-(obrazovka v prehliadači aj ako desktopová appka).
+Fotky a súbory, ktoré Beeper v cache nemá, ostanú pri správe ako popis; neskorší prenos s fotkami ich doplní k už
+preneseným správam. Archív na to má cesty `POST /_archive/beeper/{upload,plan,import,forget}`
+(`server/archive/archive.py`); nahrávanie odmietne kúsok, keď by na disku ostali menej ako 2 GB
+(`ARCHIVE_BEEPER_SPARE`). Importér beží vo vlastnom procese s vlastným limitom pamäte (`systemd-run --scope`, 2 GB,
+`ARCHIVE_BEEPER_MEMORY`), mimo limitu služby archívu (384 MB): keď mu pamäť nestačí, skončí len on. V inštalácii
+`install.sh` nemá používateľ `weft` vlastný systemd, preto má služba `weft-archive` limit 2,5 GB a `OOMPolicy=continue`.
+Správy zapisuje po 2000 v jednej transakcii, takže archív medzi nimi zapisuje ďalej; prerušený import dokončí ďalší.
+Kontroly: `overenie/beeper-import/check.py` (importér), `overenie/beeper-move/route.py` (cesty archívu cez skutočný
+socket), `overenie/beeper-move/run.sh` (obrazovka v prehliadači aj ako desktopová appka),
+`overenie/beeper-install/run.sh` (`install.sh` v kontajneri Debian 13) a `tests/beeper/desktop.cjs` (desktopová časť
+na Windowse, macOS a Linuxe v GitHub Actions, `beeper-desktop.yml`).
 
 ## „Napojenie priamo na Beeper“
 
@@ -126,10 +136,10 @@ spárovania. Ceny sú z cenníka API k 3. 11. 2026.
 
 | Čo | Prečo ešte nie | Ďalší krok |
 |---|---|---|
-| Fotky a súbory z cache Beeperu cez appku | 1,2 GB pri jednom človeku, väčšinou len pozreté | poslať `media/local.beeper.com` po kúskoch ako `index.db`, len so súhlasom |
 | Zdroj cez Desktop API (história nad rámec cache, prílohy) | treba token z bežiaceho Beeperu | doplniť do importéra čítanie po stránkach (najviac 1 požiadavka za sekundu) |
 | Prenos stavu inboxu | zápis do account data Weftu | mapovať štítky na Weftove stavy po miestnostiach |
-| Archív v `install.sh` | inštalátor zatiaľ dáva len homeserver a appku | kým archív nebeží, obrazovka sa neukáže |
+| Skúška so skutočným Beeperom na Windowse a Macu | na Karchiho strojoch Beeper na nich nie je | CI skúša priečinky a zámok Beepera na falošných dátach; skutočný Beeper pri prvom človeku |
+| Archív pre viac účtov jedného servera | archív v `install.sh` patrí prvému účtu | archív po účtoch, keď na jednom serveri bude viac ľudí |
 | Beeper Cloud cez kód obnovy | najviac práce, neoficiálne prihlásenie do Beeperu | len ak API nestačí |
 
 ## Zdroje
