@@ -41,19 +41,23 @@ function safeParts(name) {
   return parts.length ? parts : ['subor'];
 }
 
-/** Claims a file name nobody has (adds „ (1)“ before the extension) by creating it empty. A folder on the way that
- *  is a link out of `dir` (made by someone else) is refused. */
+/** Claims a file name nobody has (adds „ (1)“ before the extension) by creating it empty. Folders are made one by
+ *  one, and one that is a link (made by someone else) is refused before anything is made behind it. */
 async function claim(dir, parts) {
-  const folder = path.join(dir, ...parts.slice(0, -1));
-  await fsp.mkdir(folder, { recursive: true });
-  const [realDir, realFolder] = await Promise.all([fsp.realpath(dir), fsp.realpath(folder)]);
-  if (realFolder !== realDir && !realFolder.startsWith(realDir + path.sep)) throw Object.assign(new Error('bad name'), { status: 400 });
+  await fsp.mkdir(dir, { recursive: true });
+  const root = await fsp.realpath(dir);
+  let folder = root;
+  for (const part of parts.slice(0, -1)) {
+    folder = path.join(folder, part);
+    try { await fsp.mkdir(folder); } catch (err) { if (err.code !== 'EEXIST') throw err; }
+    if ((await fsp.realpath(folder)) !== folder) throw Object.assign(new Error('bad name'), { status: 400 });
+  }
   const name = parts[parts.length - 1];
   const ext = path.extname(name);
   const stem = name.slice(0, name.length - ext.length) || name;
   for (let i = 0; i < 1000; i++) {
     const file = path.join(folder, i ? `${stem} (${i})${ext}` : name);
-    if (!file.startsWith(path.resolve(dir) + path.sep)) throw Object.assign(new Error('bad name'), { status: 400 });
+    if (!file.startsWith(root + path.sep)) throw Object.assign(new Error('bad name'), { status: 400 });
     try { await (await fsp.open(file, 'wx')).close(); return file; } catch (err) { if (err.code !== 'EEXIST') throw err; }
   }
   throw new Error('no free name');
@@ -134,9 +138,10 @@ function request(dev, method, pathq, { json, stream, length, timeout = 10_000, t
     });
     req.on('timeout', () => req.destroy(Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' })));
     req.on('error', (err) => { stream?.destroy(); reject(err); });
+    // A file that is gone or unreadable fails the request, also before the handshake lets it flow.
+    stream?.on('error', (err) => req.destroy(err));
     const go = () => {
       if (!stream) return req.end(body);
-      stream.on('error', (err) => req.destroy(err));
       if (onBytes) stream.on('data', (c) => onBytes(c.length));
       stream.pipe(req);
     };
@@ -215,7 +220,8 @@ function createPeer(opts) {
    *  are default targets from the start, ones of the local network only once Karchi says so. `proven` is the hash of
    *  the certificate the claim came with (the client certificate of its request, or the server's of our probe). */
   function remember(body, ip, how, proven = null) {
-    const fp = String(body?.fingerprint || `${ip}:${body?.port || PORT}`);
+    const said = String(body?.fingerprint || `${ip}:${body?.port || PORT}`);
+    const fp = CERT_FP.test(said) ? said.toUpperCase() : said; // one record per certificate, however it is written
     if (fp === st.fingerprint) return null;
     const was = st.devices[fp];
     const port = Number(body?.port) || was?.port || PORT;
@@ -233,7 +239,9 @@ function createPeer(opts) {
     const dev = {
       fingerprint: fp, alias: String(body?.alias || was?.alias || ip).slice(0, 80), ip, port, protocol,
       deviceType: body?.deviceType || was?.deviceType || null, deviceModel: body?.deviceModel || was?.deviceModel || null,
-      via, seen: Date.now(), default: was ? was.default : via === 'tailnet',
+      via, seen: Date.now(),
+      // Seen on the tailnet it becomes a default, unless Karchi took it off himself; never the other way by itself.
+      default: was ? was.default || (!was.chosen && via === 'tailnet') : via === 'tailnet', chosen: was?.chosen || false,
     };
     st.devices[fp] = dev;
     save();
@@ -306,7 +314,8 @@ function createPeer(opts) {
     const dev = remember(body.info, ip, 'upload', proven) || { fingerprint: '', alias: ip };
     // LocalSend's „Message“: one text file whose text is its preview; nothing is uploaded.
     const text = files.length === 1 && /^text\//.test(files[0].fileType || '') && typeof files[0].preview === 'string' ? files[0].preview.slice(0, 100_000) : null;
-    if (asking || (text == null && sessionLive())) return reply(409, { message: 'Blocked by another session' });
+    // A question to Karchi holds back only others from outside; his own devices go on.
+    if ((asking && !trusted(ip)) || (text == null && sessionLive())) return reply(409, { message: 'Blocked by another session' });
     const size = files.reduce((n, f) => n + (Number(f.size) || 0), 0);
     // Files and text from outside the tailnet wait for Prijať.
     if (!trusted(ip)) {
@@ -597,6 +606,7 @@ function createPeer(opts) {
   function setDefault(fp, on) {
     if (!st.devices[fp]) return;
     st.devices[fp].default = !!on;
+    st.devices[fp].chosen = true;
     save();
     emit('state');
   }

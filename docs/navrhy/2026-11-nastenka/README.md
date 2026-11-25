@@ -26,7 +26,7 @@ do tej istej nástenky.
   šifrovania ho presunie len tvrdenie, ktoré ten certifikát dokáže; keď sa niekto iný ohlási s jeho odtlačkom,
   nástenka sa opýta novej adresy cez HTTPS a dovtedy nemení nič.
 - **Zariadenie sa nevyberá:** nástenka si pamätá zariadenia, ktoré našla, a tie z Tailscale sú od začiatku
-  predvolené. Čo pošleš, ide do všetkých predvolených naraz. Klik na zariadenie ho pridá alebo uberie; nepredvolené
+  predvolené (aj keď ho predtým poznala z miestnej siete, ak ho Karchi sám nevypol). Čo pošleš, ide do všetkých predvolených naraz. Klik na zariadenie ho pridá alebo uberie; nepredvolené
   a nedostupné sa neukazujú.
 - **Hľadanie:** pri štarte, pri otvorení nástenky, tlačidlom Hľadať a každé 2 minúty sa opýta každého zariadenia
   Tailscale, ktoré je online, či na porte 53317 beží LocalSend (najprv HTTPS ako appka LocalSend, potom HTTP).
@@ -34,7 +34,8 @@ do tej istej nástenky.
 - **Počúva len na adrese Tailscale** tohto počítača a čo príde odtiaľ, prijme bez pýtania. Prepínač „Aj v miestnej
   sieti“ pridá všetky rozhrania a multicast ako appka LocalSend (doma, v škole bez Tailscale). Súbory aj text od
   zariadenia mimo Tailscale potom čakajú v rohovom okne na Prijať (Enter) alebo Odmietnuť (Esc), 60 sekúnd. Enter
-  platí až sekundu po tom, čo sa okno ukáže, aby ho neprijal Enter mienený pre inbox.
+  platí až sekundu po tom, čo sa okno ukáže, aby ho neprijal Enter mienený pre inbox. Kým otázka čaká, vlastné
+  zariadenia z Tailscale posielajú ďalej.
 - **Port:** 53317 je port LocalSendu. Keď ho má appka LocalSend na tom istom počítači, nástenka vezme ďalší voľný
   (do 53320) a povie to; v LocalSende v mobile treba vtedy tento počítač pridať ručne (adresa a port).
 - **Poslať:** text a Enter, súbory potiahnuť na nástenku, Ctrl+V (snímka obrazovky, skopírované súbory) alebo

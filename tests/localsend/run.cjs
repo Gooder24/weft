@@ -122,9 +122,9 @@ const settled = (p, id) => until(() => { const it = item(p, id); return it && ![
     const outside = path.join(tmp, 'outside');
     fs.mkdirSync(outside, { recursive: true });
     fs.symlinkSync(outside, path.join(tmp, 'a', 'in', 'odkaz'));
-    const r = await b.send({ files: [sendFile('odkaz/von.txt', Buffer.from('von'))] });
+    const r = await b.send({ files: [sendFile('odkaz/hlbšie/von.txt', Buffer.from('von'))] });
     assert.notEqual((await settled(b, r.id)).status, 'done');
-    assert.deepEqual(fs.readdirSync(outside), []);
+    assert.deepEqual(fs.readdirSync(outside), [], 'nothing made behind the link');
     fs.writeFileSync(path.join(tmp, 'a', 'in', 'drz.txt.part'), 'moje');
     const k = await b.send({ files: [sendFile('drz.txt', Buffer.from('nové'))] });
     assert.equal((await settled(b, k.id)).status, 'done');
@@ -312,6 +312,62 @@ const settled = (p, id) => until(() => { const it = item(p, id); return it && ![
     b.onMulticast(Buffer.from(JSON.stringify({ ...e2.info(), announce: false })), { address: '127.0.0.1' });
     await until(() => b.state().devices.find((x) => x.fingerprint === efp)?.port === e2.port).catch((err) => { throw new Error(`${err.message} ${JSON.stringify(b.state().devices.find((x) => x.fingerprint === efp))} e2=${e2.port}`); });
     await e2.stop();
+  });
+
+  await check('a fingerprint written in small letters is the same device, still pinned', async () => {
+    const afp = a.info().fingerprint;
+    const before = b.state().devices.length;
+    assert.equal((await raw(b.port, 'POST', `${API}/register`, { alias: 'iný', fingerprint: afp.toLowerCase(), port: 9, protocol: 'http' })).status, 200);
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(b.state().devices.length, before);
+    const known = b.state().devices.find((x) => x.fingerprint === afp);
+    assert.equal(known.protocol, 'https');
+    assert.equal(known.port, a.port);
+  });
+
+  await check('a device first heard on the local network becomes a default once the tailnet shows it', async () => {
+    const peers = []; // the tailnet shows a only later
+    const h = await peer('h', { trusted: (ip) => ip === '127.0.0.1', peers, probePort: a.port });
+    const afp = a.info().fingerprint;
+    h.onMulticast(Buffer.from(JSON.stringify({ ...a.info(), announce: false })), { address: '127.0.0.2' });
+    const lan = h.state().devices.find((x) => x.fingerprint === afp);
+    assert.equal(lan.via, 'lan');
+    assert.equal(lan.default, false);
+    peers.push({ ip: '127.0.0.1', online: true });
+    await h.scan();
+    const now = h.state().devices.find((x) => x.fingerprint === afp);
+    assert.deepEqual([now.via, now.ip, now.default], ['tailnet', '127.0.0.1', true]);
+    // Taken off by hand, it stays off.
+    h.setDefault(afp, false);
+    await h.scan();
+    assert.equal(h.state().devices.find((x) => x.fingerprint === afp).default, false);
+    await h.stop();
+  });
+
+  await check('a question to Karchi does not hold back his own devices', async () => {
+    const h = await peer('h2', { trusted: (ip) => ip === '127.0.0.1' });
+    const stranger = raw(h.port, 'POST', `${API}/prepare-upload`, { info: { alias: 'Cudzí', fingerprint: 'cudzi' }, files: { f: { id: 'f', fileName: 'x.txt', size: 1, fileType: 'text/x' } } }, { localAddress: '127.0.0.2' });
+    const ask = await until(() => h.state().ask);
+    assert.equal(ask.device.alias, 'Cudzí');
+    b.onMulticast(Buffer.from(JSON.stringify({ ...h.info(), announce: false })), { address: '127.0.0.1' });
+    const t = await b.send({ text: 'aj tak prejde', to: [h.info().fingerprint] });
+    assert.equal((await settled(b, t.id)).status, 'done');
+    const f = await b.send({ files: [sendFile('aj.txt', Buffer.from('aj'))], to: [h.info().fingerprint] });
+    assert.equal((await settled(b, f.id)).status, 'done');
+    h.respond(ask.id, false);
+    assert.equal((await stranger).status, 403);
+    await h.stop();
+  });
+
+  await check('a file gone before it is sent fails that item and nothing else', async () => {
+    const gone = sendFile('zmizne.txt', Buffer.from('x'));
+    fs.rmSync(gone.path);
+    const afp = a.info().fingerprint;
+    const r = await b.send({ files: [gone], to: [afp] });
+    const out = await settled(b, r.id);
+    assert.equal(out.status, 'failed');
+    const t = await b.send({ text: 'stále žije', to: [afp] });
+    assert.equal((await settled(b, t.id)).status, 'done');
   });
 
   await check('a text from outside the tailnet waits for Prijať too', async () => {
