@@ -44,8 +44,8 @@ the people answer with canned lines. Try Ctrl+K (search), Ctrl+N (a new chat; in
 | WhatsApp | mautrix-whatsapp, patched for profiles and statuses | daily use |
 | Discord | mautrix-discord (legacy), patched for polls and profiles | daily use |
 | EduPage | own bridge, `server/edupage/` | daily use |
-| Teams | own bridge through Microsoft Graph, `server/microsoft/` | daily use |
-| Outlook | own bridge through Microsoft Graph, `server/microsoft/` | daily use |
+| Teams | own bridge through Microsoft Graph, `server/microsoft/` | not verified yet: tested only against a fake Microsoft Graph |
+| Outlook | own bridge through Microsoft Graph, `server/microsoft/` | not verified yet: tested only against a fake Microsoft Graph |
 | Gmail | own bridge over IMAP and SMTP, `server/gmail/` | beta |
 | Matrix | own bridge, encrypted between the other homeserver and your Weft server, `server/matrix/` | beta |
 
