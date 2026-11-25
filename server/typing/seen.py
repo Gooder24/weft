@@ -25,7 +25,7 @@ HS = os.environ.get("TYPING_HS", "http://127.0.0.1:8008")
 OWNER = os.environ.get("TYPING_OWNER") or os.environ.get("OWNER", "")  # Karchi's Matrix ID, ~/.config/weft/weft.env
 UNITS = {"matrix-spike-messenger": "messenger", "matrix-spike-instagram": "instagram", "matrix-spike-whatsapp": "whatsapp"}
 WAIT = 8.0     # seconds a request waits for the bridge
-FRESH = 10.0   # a report this old still answers a request that came after it
+FRESH = 2.0    # Weft asks as it starts typing, so an answer older than this belongs to an earlier start
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 FIELD = re.compile(r'(\w+)=("(?:[^"\\]|\\.)*"|\S*)')
 

@@ -2429,12 +2429,13 @@ async function heldReply(r, room, id) {
 
 // Karchi's typing goes out like Beeper's: the bridges show „píše…“ on Messenger, Instagram, WhatsApp and Discord
 // (Teams' API and EduPage have none). It starts with the first letter, is repeated while he keeps typing and stops
-// when the box empties, the message goes, or the box loses the keys (another chat, another window). Settings →
+// after 15 s without a key, when the box empties, the message goes, or the box loses the keys (another chat, another window). Settings →
 // Správy turns it off: account data sk.karchi.typing { send: false }.
 const TYPING = 'sk.karchi.typing';
 const TYPING_APPS = new Set(['messenger', 'instagram', 'whatsapp', 'discord']);
 const typingOn = () => S.account[TYPING]?.send !== false;
-let typingOut = null; // { room, at }: the chat the homeserver last heard Karchi typing in, and when
+let typingOut = null; // { room, app, at, shown }: the chat the homeserver last heard Karchi typing in, and when
+let typingIdle = 0; // a pause ends „píše…“ as Messenger's own app does, before the homeserver's 20 s run out
 function typingSay(room, typing) {
   // keepalive: a stop sent as the window closes still arrives.
   fetch(`/_matrix/client/v3/rooms/${q(room)}/typing/${q(S.userId)}`, {
@@ -2447,7 +2448,10 @@ function typingNote(r, text) {
   const say = typingOn() && !S.offline && !document.hidden && !S.panel && !S.overlay && TYPING_APPS.has(r.app) && !r.archiveOnly
     && !!text.trim() && !text.trimStart().startsWith('/') && S.editing?.room !== r.id;
   if (!say || typingOut?.room !== r.id) typingStop();
-  if (!say || (typingOut && Date.now() - typingOut.at < 10000)) return;
+  if (!say) return;
+  clearTimeout(typingIdle);
+  typingIdle = setTimeout(typingStop, 15000);
+  if (typingOut && Date.now() - typingOut.at < 10000) return;
   if (typingOut) typingOut.at = Date.now();
   else typingAsk(typingOut = { room: r.id, app: r.app, at: Date.now(), shown: null });
   typingSay(r.id, true);
@@ -2468,12 +2472,13 @@ async function typingAsk(out) {
 /** Under the last message, on Karchi's side: the network shows the other side „píše…“ (or refused it). */
 function typingMine(parts) {
   const out = typingOut;
-  if (!out?.shown || !parts.some((x) => x.id === out.room)) return null;
+  if (!out?.shown || S.offline || !parts.some((x) => x.id === out.room)) return null;
   const name = appOf(out.app)?.name || out.app;
   return h('div', { class: 'typing mine', 'data-key': '__typingMine', role: 'status', title: out.error || null },
     out.shown === 'shown' ? T`${name} ukazuje „píše…“` : T`${name} „píše…“ neprijal`);
 }
 function typingStop() {
+  clearTimeout(typingIdle);
   if (!typingOut) return;
   const { room } = typingOut;
   const shown = typingOut.shown;
@@ -14352,7 +14357,7 @@ function render() {
   else if (inCalendar && !S.panel && !S.overlay && (!document.activeElement || document.activeElement === document.body)) root.querySelector('.home-calendar')?.focus({ preventScroll: true });
   // The box Karchi typed in is gone, no longer has the keys (another chat, the network switch) or is under a panel or
   // overlay (Ctrl+, keeps its focus behind the veil): he stopped typing there.
-  if (typingOut && (document.activeElement?.dataset?.root !== typingOut.room || S.panel || S.overlay)) typingStop();
+  if (typingOut && (document.activeElement?.dataset?.root !== typingOut.room || S.panel || S.overlay || S.offline)) typingStop();
   if (S.view === 'main') { markRead(); if (!S.homeReady) { S.homeReady = true; cal.view = calDefault(); queueMicrotask(() => { loadCalendar(); if (S.surface === 'feed') feed.enter(); else feed.load(); }); } }
 }
 
