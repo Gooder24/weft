@@ -1,0 +1,14 @@
+[Unit]
+Description=matrix-spike: whether a network took Karchi's typing (reads the bridges' journal, /_typing/)
+After=matrix-spike-homeserver.service
+
+[Service]
+WorkingDirectory=%h/matrix-spike/typing
+EnvironmentFile=%h/.config/weft/weft.env
+ExecStart=/usr/bin/python3 -I -u %h/matrix-spike/typing/seen.py
+Restart=always
+RestartSec=5
+MemoryMax=64M
+
+[Install]
+WantedBy=default.target

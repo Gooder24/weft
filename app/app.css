@@ -562,6 +562,7 @@ kbd { margin-left: auto; font-family: inherit; font-size: var(--fs); color: var(
 .react.me { border-color: var(--accent); background: var(--accent); color: var(--accent-text); }
 .seen { align-self: flex-end; margin-top: 3px; font-size: var(--fs); color: var(--muted); }
 .typing { align-self: flex-start; margin-top: 3px; font-size: var(--fs); color: var(--muted); }
+.typing.mine { align-self: flex-end; }
 .ccompose { flex: none; padding: 8px 16px 12px; border-top: 0; }
 .ccompose textarea { width: 100%; box-sizing: border-box; min-height: 36px; max-height: 200px; background: var(--card); font: inherit; font-size: var(--fs); line-height: var(--lh); padding: 8px 12px; border: var(--bw) solid var(--line); border-radius: var(--radius-l); resize: none; overflow-y: hidden; color: var(--text); outline: none; }
 .ccompose textarea:focus { border-color: var(--line-strong); }

@@ -2443,14 +2443,38 @@ function typingNote(r, text) {
     && !!text.trim() && !text.trimStart().startsWith('/') && S.editing?.room !== r.id;
   if (!say || typingOut?.room !== r.id) typingStop();
   if (!say || (typingOut && Date.now() - typingOut.at < 10000)) return;
-  typingOut = { room: r.id, at: Date.now() };
+  if (typingOut) typingOut.at = Date.now();
+  else typingAsk(typingOut = { room: r.id, app: r.app, at: Date.now(), shown: null });
   typingSay(r.id, true);
+}
+// Whether the network took it: the bridge logs it and asus's /_typing/ reads that log (server/typing/seen.py).
+// Messenger, Instagram and WhatsApp answer; legacy Discord logs no success, so its chats show nothing.
+async function typingAsk(out) {
+  if (out.app === 'discord') return;
+  try {
+    const res = await fetch(`/_typing/wait?room=${q(out.room)}`, { headers: { Authorization: `Bearer ${S.token}` } });
+    const got = res.ok ? await res.json() : null;
+    if (typingOut !== out || !['shown', 'failed'].includes(got?.state)) return;
+    out.shown = got.state;
+    out.error = got.error || '';
+    renderSoon();
+  } catch { /* no answer: the line stays away */ }
+}
+/** Under the last message, on Karchi's side: the network shows the other side „píše…“ (or refused it). */
+function typingMine(parts) {
+  const out = typingOut;
+  if (!out?.shown || !parts.some((x) => x.id === out.room)) return null;
+  const name = appOf(out.app)?.name || out.app;
+  return h('div', { class: 'typing mine', 'data-key': '__typingMine', role: 'status', title: out.error || null },
+    out.shown === 'shown' ? T`${name} ukazuje „píše…“` : T`${name} „píše…“ neprijal`);
 }
 function typingStop() {
   if (!typingOut) return;
   const { room } = typingOut;
+  const shown = typingOut.shown;
   typingOut = null;
   typingSay(room, false);
+  if (shown) renderSoon();
 }
 document.addEventListener('visibilitychange', () => { if (document.hidden) typingStop(); });
 addEventListener('pagehide', typingStop);
@@ -7932,6 +7956,7 @@ function chatView(r, e = null) {
   const seen = mineLast ? seenOf(mineRoom, mineLast) : [];
   if (seen.length) items.push(h('div', { class: 'seen' }, seenView(mineRoom, seen, dmPartner(mineRoom))));
   items.push(typingLine(t.parts, partner));
+  items.push(typingMine(t.parts));
   for (const x of t.parts) items.push(...laterBubbles(x, roomModel(x)));
   items.push(...relayBar(t.parts));
   pruneGifs(r);

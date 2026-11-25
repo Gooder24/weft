@@ -153,6 +153,13 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   rest hidden and unclickable, locked to the profile, out through asus and with the call window's login like a call
   window. Discord friends stay in Discord. Checks: `overenie/sledovat/` (`run.sh` the app, `selftest.sh` the window
   against stand-ins).
+- Karchi's typing goes out like Beeper's (`typingNote` in app.js, Settings → Správy → Písanie, account data
+  `sk.karchi.typing`): Messenger, Instagram, WhatsApp and Discord show „píše…“ (the Discord appservice needs
+  `receive_ephemeral: true` for it). Once the network took it, his side of the chat says „Messenger ukazuje „píše…““
+  (or that it refused): `server/typing/seen.py` (asus `~/matrix-spike/typing/`, unit `matrix-spike-typing`,
+  127.0.0.1:29334 behind Caddy's `/_typing/`) follows the bridgev2 bridges' journal for „Sent typing event“; legacy
+  Discord logs no success, so it shows nothing. Checks: `overenie/typing-out/run.sh`, `overenie/typing-seen/`
+  (`service_test.py`, `run.sh`).
 - Mentions (like Beeper): „@“ in a Messenger, Instagram, WhatsApp or Discord chat lists its people; a picked or fully
   typed „@Name“ goes out as a Matrix mention (`formatted_body` matrix.to link + `m.mentions`), which the mautrix
   bridges turn into the network's own. A picked name stays that person (two of the same name, text typed after it,

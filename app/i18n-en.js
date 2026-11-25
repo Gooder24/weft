@@ -261,6 +261,8 @@ export default {
   "Videné": "Seen",
   "píše…": "typing…",
   "{} píše…": "{} is typing…",
+  "{} ukazuje „píše…“": "{} shows “typing…”",
+  "{} „píše…“ neprijal": "{} did not take “typing…”",
   "{} a {} píšu…": "{} and {} are typing…",
   "Iná reakcia": "Other reaction",
   "Odpovedať (Ctrl+R)": "Reply (Ctrl+R)",

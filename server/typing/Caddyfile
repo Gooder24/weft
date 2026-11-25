@@ -1,0 +1,4 @@
+# Import inside the shared (bridges) route in matrix-spike/web/Caddyfile.
+handle /_typing/* {
+    reverse_proxy 127.0.0.1:29334
+}
