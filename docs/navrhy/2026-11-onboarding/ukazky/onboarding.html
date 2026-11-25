@@ -87,6 +87,11 @@ td:first-child { color: var(--muted); width: 36%; }
 #cursor { position: absolute; pointer-events: none; display: none; width: 0; height: 0;
   border-left: 7px solid transparent; border-right: 7px solid transparent; border-bottom: 16px solid var(--text);
   transform: rotate(-28deg); transform-origin: top left; }
+.welcome { align-items: center; justify-content: center; text-align: center; }
+.welcome .logo { width: 48px; height: 48px; }
+.welcome .foot { margin-top: 18px; }
+.netrow { display: flex; gap: 10px; }
+.netrow img { width: 24px; height: 24px; border-radius: var(--radius-s); }
 body.live { display: flex; gap: 24px; padding: 24px; min-height: 100vh; }
 body.live #stage { flex: none; border: var(--bw) solid var(--line); border-radius: var(--radius-l); }
 body.live [data-id] { cursor: pointer; }
@@ -149,7 +154,61 @@ const metaHistory = sel => ({ html: `${bar_top('Messenger', 2, 6)}<div class="bo
 
 const tut = (n, title, body, next = 'Ďalej') => ({ html: `${bar_top('Export z Mety', n, 6)}<div class="body"><h1>${n}/6 · ${title}</h1>${body}${foot(next)}</div>` });
 
+// Weft's own account: e-mail and password (or Google), then the e-mail is confirmed by a link.
+const account = (title, n, of, h1, note) => [
+  ...[[0, 0], [5, 0], [15, 0], [15, 6], [15, 14]].map(([e, pw], k) => ({ html: `${bar_top(title, n, of)}<div class="body"><h1>${h1}</h1>
+    <div class="field"><span class="muted">E-mail</span>${typed('ema@example.com', e, k < 3)}</div>
+    <div class="field"><span class="muted">Heslo</span>${typed('••••••••••••••', pw, k >= 3)}</div>
+    <p class="muted">${note}</p>
+    <div class="row"><span class="muted">alebo</span><button class="ghost" data-id="google">Pokračovať cez Google</button></div>
+    ${foot('Vytvoriť účet')}</div>`, hold: 350, click: k === 4 ? 'next' : null })),
+  ...[0, 1].map(k => ({ html: `${bar_top(title, n, of)}<div class="body"><h1>Over e-mail</h1>
+    <p>Poslali sme odkaz na <span class="link">ema@example.com</span>. Otvor mail a klikni na „Overiť“.</p>
+    ${k ? '<p class="ok">E-mail je overený. E-mail a heslo odteraz stačia na prihlásenie v každom zariadení.</p>' : '<p class="warn">Čakám na overenie… Táto stránka pokračuje sama.</p>'}
+    <div class="row"><button class="ghost" data-id="resend">Poslať znova</button><button class="ghost" data-id="wrongmail">Iný e-mail</button></div>
+    ${foot('Pokračovať')}</div>`, hold: k ? 1800 : 2400, click: k ? 'next' : null })),
+];
+const newDevice = sel => ({ html: `${bar_top('Prihlásenie', 2, 4)}<div class="body"><h1>Nové zariadenie</h1>
+  <p class="muted">Tvoje správy sú šifrované. Toto zariadenie ešte nemá kľúče, preto ho over jedným z týchto spôsobov:</p>
+  <div class="opts">
+  ${opt('other', 'Potvrdiť v inom zariadení', 'V počítači alebo telefóne, kde už Weft máš, sa ukáže výzva.', sel === 'other', 'odporúčané')}
+  ${opt('key', 'Zadať kľúč na obnovenie', 'Ten, čo máš uložený od vytvorenia účtu.', sel === 'key')}
+  </div>
+  <p class="muted">Bez overenia tu uvidíš nové správy, staré šifrované nie.</p>${foot('Pokračovať')}</div>` });
+
 const PATHS = {
+  uvod: { title: 'Privítanie', frames: [
+    { html: `<div class="body welcome"><img class="logo" src="${IMG}icon.svg" alt=""><h1>Weft</h1>
+      <p>Všetky tvoje správy v jednej schránke.</p>
+      <div class="netrow">${Object.values(NET).map(([name, img]) => `<img src="${IMG}${img}" alt="${name}">`).join('')}</div>
+      <p class="muted">Messenger, Instagram, WhatsApp, Discord, EduPage, Gmail, Outlook a Teams. Weft je otvorený softvér: beží na tvojom
+      serveri alebo na serveri, kam ťa pozvali.</p>
+      <div class="foot"><button class="ghost" data-id="login">Mám už účet</button><button class="primary" data-id="next">Začať</button></div></div>`,
+      hold: 3000, click: 'next', then: ['vlastny', 0] },
+  ] },
+
+  prihlasenie: { title: 'Mám už účet', frames: [
+    ...[[0, 0], [5, 0], [15, 0], [15, 7], [15, 14]].map(([e, pw], k) => ({ html: `${bar_top('Prihlásenie', 1, 4)}<div class="body"><h1>Prihlásenie</h1>
+      <div class="field"><span class="muted">Server</span>${typed('weft.example', 12, false)}</div>
+      <div class="field"><span class="muted">E-mail</span>${typed('ema@example.com', e, k < 3)}</div>
+      <div class="field"><span class="muted">Heslo</span>${typed('••••••••••••••', pw, k >= 3)}</div>
+      <div class="row"><button class="ghost" data-id="forgot">Zabudnuté heslo</button><button class="ghost" data-id="google">Pokračovať cez Google</button></div>
+      ${foot('Prihlásiť sa')}</div>`, hold: 350, click: k === 4 ? 'next' : null })),
+    { ...newDevice(''), hold: 2000 },
+    { ...newDevice(''), click: 'other' },
+    { ...newDevice('other'), click: 'next', hold: 700 },
+    ...[0, 1].map(k => ({ html: `${bar_top('Prihlásenie', 3, 4)}<div class="body"><h1>Porovnaj v oboch zariadeniach</h1>
+      <p class="muted">V druhom zariadení Weft ukazuje toto. Ak je to rovnaké, klikni tam „Áno, sedí“.</p>
+      <span class="code">pes · kľúč · strom · raketa · srdce · klobúk · tučniak</span>
+      ${k ? '<p class="ok">Overené. Toto zariadenie dostalo kľúče k tvojim správam.</p>' : '<p class="warn">Čakám na druhé zariadenie…</p>'}
+      ${foot('Pokračovať')}</div>`, hold: k ? 1800 : 2600, click: k ? 'next' : null })),
+    { html: `${bar_top('Prihlásenie', 4, 4)}<div class="body"><h1>Hotovo</h1>
+      <p class="ok">Účet je prihlásený aj v tomto zariadení.</p>
+      <table><tr><td>Tu uvidíš</td><td>nové správy a posledných 30 dní</td></tr>
+      <tr><td>Celá história</td><td>ostáva v počítači „Notebook doma“. Do tohto zariadenia ju neskôr prenesie Nastavenia → Úložisko.</td></tr></table>
+      ${foot('Do schránky')}</div>`, hold: 2600, click: 'next' },
+  ] },
+
   vlastny: { title: 'Vlastný server', frames: [
     { ...where(''), hold: 1500 },
     { ...where(''), click: 'self' },
@@ -167,10 +226,7 @@ cd weft &amp;&amp; ./install.sh</span>
       <p class="muted">Inštalátor sa spýta na Tailscale a vypíše adresu servera. Táto stránka ho nájde sama.</p>
       ${k === 0 ? '<p class="warn">Čakám na server…</p>' : k === 1 ? '<p class="warn">Server odpovedá, kontrolujem mosty…</p>' : '<p class="ok">Server beží: weft.tvoj-tailnet.ts.net · 7 mostov · aktualizácie zapnuté</p>'}
       ${foot('Pokračovať')}</div>`, hold: k === 2 ? 1800 : 1300, click: k === 2 ? 'next' : null })),
-    ...[0, 5, 9, 14].map((n, i) => ({ html: `${bar_top('Vlastný server', 4, 5)}<div class="body"><h1>2 · Tvoj účet</h1>
-      <div class="field"><span class="muted">Meno</span>${typed('ema', i === 0 ? 0 : 3, i < 2)}</div>
-      <div class="field"><span class="muted">Heslo</span>${typed('••••••••••••••', i < 2 ? 0 : n, i >= 2)}</div>
-      ${foot('Vytvoriť účet')}</div>`, hold: 350, click: i === 3 ? 'next' : null })),
+    ...account('Vlastný server', 4, 5, '2 · Tvoj účet', 'Na tento e-mail ti tvoj server pošle odkaz na overenie a neskôr aj na obnovenie hesla. Odosielanie nastaví inštalátor, napríklad cez heslo aplikácie Gmailu.'),
     { html: `${bar_top('Vlastný server', 5, 5)}<div class="body"><h1>3 · Pripoj siete</h1>
       <p class="muted">Ktorékoľvek, v akomkoľvek poradí. Žiadna nie je povinná, ďalšie pridáš v Nastaveniach → Účty.</p>
       ${tiles([])}<p class="muted">Pri každej sa Weft spýta, koľko starej histórie chceš, a povie, koľko miesta zaberie.</p>
@@ -191,6 +247,7 @@ cd weft &amp;&amp; ./install.sh</span>
       <div class="field"><span class="muted">Kód z pozvánky</span>${typed('WEFT-7Q4K-M2XD', n)}</div>
       ${i === 3 ? '<p class="ok">Server weft.example · pozvánka platí pre 1 účet · zostáva 3 z 5 miest</p>' : '<p class="muted">Dostal si ho od toho, kto server prevádzkuje.</p>'}
       ${foot('Pokračovať')}</div>`, hold: i === 3 ? 1400 : 350, click: i === 3 ? 'next' : null })),
+    ...account('Pozvánka', 2, 5, 'Tvoj účet', 'Na tento e-mail ti server pošle odkaz na overenie a neskôr aj na obnovenie hesla.'),
     { html: `${bar_top('Pozvánka', 3, 5)}<div class="body"><h1>Čo bude na serveri a čo nie</h1>
       <table>
       <tr><td>Prihlásenia do sietí</td><td>na serveri, inak by nechodili nové správy</td></tr>
@@ -359,7 +416,7 @@ function live() {
   document.body.classList.add('live');
   // A choice or a network opens its own path: [path, frame].
   const BRANCH = {
-    self: ['vlastny', 2], hosted: ['hostovany', 2], export: ['export', 2], pull: ['dotahovanie', 2],
+    login: ['prihlasenie', 0], self: ['vlastny', 2], hosted: ['hostovany', 2], export: ['export', 2], pull: ['dotahovanie', 2],
     messenger: ['export', 0], instagram: ['export', 0], whatsapp: ['whatsapp', 0], gmail: ['gmail', 0], outlook: ['gmail', 0],
   };
   const nav = document.getElementById('nav');
@@ -369,8 +426,13 @@ function live() {
     teams: 'Teams ako Outlook: stránka Microsoftu, potom rozsah histórie ako pri Gmaile.',
     edupage: 'EduPage: meno a heslo, celý školský rok príde sám (pár MB), bez otázky.',
     new: 'Len nové: nič staré sa nesťahuje, ďalej rovno do schránky.',
+    google: 'Cez Google: server Weftu to vie sám (prihlásenie cez OIDC), potrebuje však vlastného Google klienta. Heslo do Weftu potom netreba.',
+    forgot: 'Zabudnuté heslo: odkaz príde na e-mail. Staré šifrované správy potom otvorí len druhé zariadenie alebo kľúč na obnovenie.',
+    resend: 'Poslať znova: ten istý odkaz, najviac raz za minútu.',
+    wrongmail: 'Iný e-mail: vráti sa na formulár a starý odkaz prestane platiť.',
+    key: 'Kľúč na obnovenie: vložíš ho alebo načítaš súbor a zariadenie dostane kľúče aj bez druhého zariadenia.',
   };
-  let path = 'vlastny', i = 0, timer = 0, note = '';
+  let path = 'uvod', i = 0, timer = 0, note = '';
   const hist = [];
   const menu = () => {
     nav.innerHTML = `<h1>Ukážky</h1><p class="help">Klikaj na to, čo má žltý rámik, alebo vyber inú možnosť. Polia sa vyplnia samy. ← → listujú.</p>
@@ -379,7 +441,7 @@ function live() {
   };
   // Every step the person takes is remembered, so Späť returns to where they clicked, also across paths.
   const step = (p, k) => { if (PATHS[path].frames[i].click || i === PATHS[path].frames.length - 1) hist.push([path, i]); note = ''; go(p, k); };
-  const back = () => { note = ''; hist.length ? go(...hist.pop()) : go('vlastny', 0); };
+  const back = () => { note = ''; hist.length ? go(...hist.pop()) : go('uvod', 0); };
   const go = (p, k) => {
     clearTimeout(timer);
     path = p; i = Math.max(0, Math.min(k, PATHS[p].frames.length - 1));
@@ -393,11 +455,11 @@ function live() {
     const f = PATHS[path].frames[i];
     if (i < PATHS[path].frames.length - 1) step(path, i + 1);
     else if (f.then) step(...f.then);
-    else { hist.length = 0; note = ''; go('vlastny', 0); }
+    else { hist.length = 0; note = ''; go('uvod', 0); }
   };
   nav.addEventListener('click', e => {
     const b = e.target.closest('[data-go]');
-    if (b) { if (b.dataset.go === 'start') { hist.length = 0; note = ''; go('vlastny', 0); } else step(b.dataset.go, 0); }
+    if (b) { if (b.dataset.go === 'start') { hist.length = 0; note = ''; go('uvod', 0); } else step(b.dataset.go, 0); }
   });
   document.getElementById('stage').addEventListener('click', e => {
     const el = e.target.closest('[data-id]');
@@ -423,7 +485,7 @@ function live() {
     if (e.key === 'ArrowLeft') back();
   });
   addEventListener('resize', () => draw(path, i));
-  go('vlastny', 0);
+  go('uvod', 0);
 }
 </script>
 </body>

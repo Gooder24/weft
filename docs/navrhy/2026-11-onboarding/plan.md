@@ -39,16 +39,27 @@ v [ukazky/](ukazky/). Ostatné je plán.
 Ukážky sú nakreslené Weftovými farbami a písmom, s vymyslenými ľuďmi a číslami. Klikacia verzia všetkých ciest je
 [ukazky/onboarding.html](ukazky/onboarding.html) (šípky listujú). GIFy z nej robí `ukazky/record.cjs`.
 
+### Privítanie a účet Weftu
+
+Prvá obrazovka povie, čo Weft je, a ponúkne „Začať“ alebo „Mám už účet“. Účet Weftu je e-mail a heslo, alebo
+„Pokračovať cez Google“. Po vytvorení príde na e-mail odkaz na overenie a stránka po kliknutí pokračuje sama.
+Prihlásenie na ďalšom zariadení je e-mail a heslo. Pri šifrovanom účte potom zariadenie dostane kľúče: potvrdením
+v inom zariadení (obe ukážu rovnakých sedem slov) alebo kľúčom na obnovenie. Zabudnuté heslo pošle odkaz na e-mail.
+
+![Privítanie](ukazky/uvod.gif)
+
+![Mám už účet](ukazky/prihlasenie.gif)
+
 ### 1. Vlastný server
 
-Kde budú bežať správy → čo treba → príkazy (stránka čaká, kým server odpovie) → účet → siete, žiadna povinná →
+Kde budú bežať správy → čo treba → príkazy (stránka čaká, kým server odpovie) → účet s e-mailom → overenie e-mailu → siete, žiadna povinná →
 „Kde má byť história?“ (na serveri, alebo aj v počítači).
 
 ![Vlastný server](ukazky/vlastny.gif)
 
 ### 2. Pozvánka na cudzí server (asus)
 
-Kód pozvánky → čo bude na serveri a čo nie → kľúč na obnovenie → kde bude celá história (počítač, telefón, nikde) →
+Kód pozvánky → účet s e-mailom → overenie e-mailu → čo bude na serveri a čo nie → kľúč na obnovenie → kde bude celá história (počítač, telefón, nikde) →
 siete.
 
 ![Pozvánka](ukazky/hostovany.gif)
@@ -88,6 +99,7 @@ agenta s overením, bez čakania na rozhodnutia.
 
 | # | Časť | Čo sa zmení | Závisí od | Čas |
 |---|---|---|---|---|
+| 0 | Účet Weftu s e-mailom | Tuwunel 1.9.4 to vie sám: `[global.smtp]` posiela overovací mail, `require_email_for_token_registration` chce overený e-mail aj pri registrácii s pozvánkou (`registration_token`), `registration_terms` ukáže pred registráciou podmienky (obrazovka „Čo bude na serveri“), `identity_provider` prihlási cez Google (OIDC, treba vlastného Google klienta). Weft dnes prihlasuje menom a heslom (`m.login.password`, predvyplnené `karchi`). Pribudne registrácia v appke (kroky pozvánka, e-mail, podmienky), prihlásenie e-mailom, zabudnuté heslo a pri šifrovanom účte overenie nového zariadenia | nič, odosielanie mailov tvoje áno | 3 dni |
 | 1 | Sprievodca a nepovinná EduPage | `app.js`: obrazovky z ukážok, siete ako dlaždice, EduPage s tlačidlom Pripojiť ako ostatné, odstrániť predvyplnené `karchi` a text „na x270“ | nič | 2 dni |
 | 2 | Rozsah histórie a odhad v appke | `GET /_archive/estimate?net=…` volá `estimate.py`, Gmail a Outlook dostanú `since`, stav a pauzu v `accounts.json` (importér už ide po dávkach od najnovšieho), Teams ďalšie strany po hranicu, riadok „história: 34 %“ v Nastaveniach → Účty | 1 | 3 dni |
 | 3 | WhatsApp pred QR | rozsah do `history_sync` pri prihlásení; dnes je `days_limit` jedno číslo pre celý most, preto treba overiť, či ho mautrix-whatsapp vezme pri každom prihlásení zvlášť, inak malý patch | 1, tvoje áno (mení konfiguráciu mostu) | 1 deň |
@@ -116,6 +128,9 @@ každej idú dvaja nezávislí overovatelia (`tools/verify-on-asus`).
 - **Žiadny ban (časti 3, 5):** testovací server zlyhá na každú požiadavku na domény Mety alebo WhatsAppu mimo
   falošných. Tempo sa skúša s falošnými hodinami, bez čakania: simulovaných 24 hodín dá najviac jednu stranu za
   minútu, v noci nič a po prvom overení od Mety už ani jednu.
+- **E-maily:** Tuwunel posiela na falošný SMTP server v teste, nie skutočným ľuďom. Test prejde registráciu s
+  pozvánkou a overením, prihlásenie e-mailom a zabudnuté heslo na skúšobnom Tuwuneli. Neoverené je zatiaľ, či Tuwunel
+  prihlási e-mailom (`m.id.thirdparty`), či posiela odkaz alebo kód a koľko pozvánok naraz vie.
 - **Celá cesta v prehliadači:** každá ukážka sa zmení na test, ktorý ju prejde na novom prázdnom účte proti
   skúšobnému homeserveru. K tomu `tools/ui-check`, `tools/i18n-check` a `citacka` na sprievodcovi (čítačka obrazovky).
 - **Odhad:** `estimate.py` už má 7 testov a na skutočných exportoch sedel do 20 %. Pred časťou 2 ešte jeden beh na
@@ -142,3 +157,7 @@ každej idú dvaja nezávislí overovatelia (`tools/verify-on-asus`).
    hostovaných účtoch serverové vyhľadávanie, Feed a `weft`. Odporúčam najprv časti 1 až 6 (30 dní a história len v
    počítači) a šifrovanie hneď za nimi, pred prvou pozvánkou mimo domácnosti.
 4. **ChatGPT export vynechať?** Odporúčam áno, z dôvodov v bode 3 hore.
+5. **Z akej adresy posiela asus overovacie maily?** Odporúčam novú adresu len pre Weft (napríklad nový Gmail s heslom
+   aplikácie), nie tvoju. Je to prvá vec, ktorú Weft pošle cudzím ľuďom, preto bez tvojho áno nie.
+6. **Prihlásenie cez Google aj pre Weft účet?** Odporúčam až neskôr: Google klient pre cudzích ľudí znamená overenie
+   appky u Googlu. E-mail a heslo stačia.
