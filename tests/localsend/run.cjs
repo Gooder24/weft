@@ -325,6 +325,18 @@ const settled = (p, id) => until(() => { const it = item(p, id); return it && ![
     assert.equal(known.port, a.port);
   });
 
+  await check('an earlier state with one certificate under two spellings loads as one record, off if one was off', async () => {
+    const fpUp = 'AB'.repeat(32);
+    const dev = (fingerprint, on, seen) => ({ fingerprint, alias: 'starý', ip: '127.0.0.9', port: 9, protocol: 'https', via: 'tailnet', seen, default: on });
+    fs.writeFileSync(path.join(tmp, 'old.json'), JSON.stringify({ lan: false, items: [], devices: { [fpUp.toLowerCase()]: dev(fpUp.toLowerCase(), false, 1), [fpUp]: dev(fpUp, true, 2) } }));
+    const o = await peer('old');
+    const all = o.state().devices.filter((x) => x.fingerprint.toUpperCase() === fpUp);
+    assert.deepEqual(all.map((x) => [x.fingerprint, x.default, x.chosen]), [[fpUp, false, true]]);
+    o.setDefault(fpUp.toLowerCase(), true);
+    assert.equal(o.state().devices.find((x) => x.fingerprint === fpUp).default, true);
+    await o.stop();
+  });
+
   await check('a device first heard on the local network becomes a default once the tailnet shows it', async () => {
     const peers = []; // the tailnet shows a only later
     const h = await peer('h', { trusted: (ip) => ip === '127.0.0.1', peers, probePort: a.port });

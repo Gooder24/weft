@@ -25,6 +25,8 @@ const VERSION = '2.1';
 const MAX_ITEMS = 200; // the board keeps the newest; files stay on the disk
 const ASK_MS = 60_000; // files and text from outside the tailnet wait this long for Prijať
 const CERT_FP = /^[0-9a-f]{64}$/i; // a fingerprint that is a certificate's SHA-256, as LocalSend's
+/** The key a device is kept under: a certificate's fingerprint in capitals, however it was written. */
+const fpKey = (fp) => (CERT_FP.test(String(fp || '')) ? String(fp).toUpperCase() : String(fp || ''));
 const IDLE_MS = 5 * 60_000; // a receive session nobody writes to ends
 const ONLINE_MS = 3 * 60_000; // a device seen this recently counts as there
 const PREPARE_MS = 120_000; // the other side may wait for its own Accept
@@ -171,6 +173,14 @@ function createPeer(opts) {
   try { st = { ...st, ...JSON.parse(fs.readFileSync(statePath, 'utf8')) }; } catch { /* a first start */ }
   if (!st.tls?.cert || !st.tls?.key) { st.tls = makeIdentity(); st.fingerprint = st.tls.fingerprint; }
   for (const it of st.items) if (['sending', 'receiving'].includes(it.status)) it.status = 'stopped'; // the app quit midway
+  // State of an earlier version may hold one certificate under two spellings: one record, a default only if both were.
+  st.devices = Object.values(st.devices || {}).reduce((all, d) => {
+    const k = fpKey(d.fingerprint);
+    const had = all[k];
+    all[k] = had ? { ...(had.seen > d.seen ? had : d), fingerprint: k, default: had.default && d.default, chosen: had.chosen || d.chosen || had.default !== d.default }
+      : { ...d, fingerprint: k };
+    return all;
+  }, {});
 
   let selfIp = null;
   let servers = [];
@@ -220,8 +230,7 @@ function createPeer(opts) {
    *  are default targets from the start, ones of the local network only once Karchi says so. `proven` is the hash of
    *  the certificate the claim came with (the client certificate of its request, or the server's of our probe). */
   function remember(body, ip, how, proven = null) {
-    const said = String(body?.fingerprint || `${ip}:${body?.port || PORT}`);
-    const fp = CERT_FP.test(said) ? said.toUpperCase() : said; // one record per certificate, however it is written
+    const fp = fpKey(body?.fingerprint || `${ip}:${body?.port || PORT}`);
     if (fp === st.fingerprint) return null;
     const was = st.devices[fp];
     const port = Number(body?.port) || was?.port || PORT;
@@ -453,7 +462,7 @@ function createPeer(opts) {
   const STATUS_ORDER = ['done', 'busy', 'declined', 'pin', 'offline', 'failed'];
   /** One board item to every default device (or `to`, fingerprints); files are { path, name, size, type }. */
   async function send({ files, text, to }) {
-    const targets = (to?.length ? to.map((fp) => st.devices[fp]) : Object.values(st.devices).filter((d) => d.default)).filter(Boolean);
+    const targets = (to?.length ? to.map((fp) => st.devices[fpKey(fp)]) : Object.values(st.devices).filter((d) => d.default)).filter(Boolean);
     if (!targets.length) return { error: 'no-device' };
     const one = text != null ? null : files.reduce((n, f) => n + f.size, 0);
     const item = addItem({ dir: 'out', device: who(targets[0]), text: text ?? undefined, status: 'sending', got: 0,
@@ -483,7 +492,7 @@ function createPeer(opts) {
   function retry(id) {
     const item = st.items.find((x) => x.id === id && x.dir === 'out');
     if (!item || item.status === 'sending') return false;
-    const targets = item.targets.filter((t) => t.status !== 'done').map((t) => st.devices[t.fingerprint]).filter(Boolean);
+    const targets = item.targets.filter((t) => t.status !== 'done').map((t) => st.devices[fpKey(t.fingerprint)]).filter(Boolean);
     if (!targets.length) return false;
     if (item.files?.some((f) => !fs.existsSync(f.path))) return false;
     item.targets = item.targets.filter((t) => t.status === 'done').concat(targets.map((d) => ({ ...who(d), status: 'sending' })));
@@ -604,6 +613,7 @@ function createPeer(opts) {
   }
 
   function setDefault(fp, on) {
+    fp = fpKey(fp);
     if (!st.devices[fp]) return;
     st.devices[fp].default = !!on;
     st.devices[fp].chosen = true;
@@ -612,7 +622,7 @@ function createPeer(opts) {
   }
 
   function forget(fp) {
-    delete st.devices[fp];
+    delete st.devices[fpKey(fp)];
     save();
     emit('state');
   }
