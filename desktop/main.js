@@ -10,7 +10,8 @@ const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
 const net = require('node:net');
-const { spawn } = require('node:child_process');
+const { spawn, execFile } = require('node:child_process');
+const crypto = require('node:crypto');
 
 // The Weft server: SPRAVY_URL, else the first line of ~/.config/weft/url; without a valid one the app says so and quits.
 function appUrl() {
@@ -1120,6 +1121,107 @@ ipcMain.handle('focus', (event) => {
   main.focus();
 });
 
+// The board („Nástenka“, localsend.js): LocalSend in the shell, so files and text go to Karchi's own devices with the
+// LocalSend app and theirs land in Downloads/Weft. The window sees the board's state and asks through 'board'.
+const { createPeer } = require('./localsend.js');
+const BOARD_SCAN_MS = 2 * 60_000;
+let board = null;
+let boardTimer = null;
+const tailnet = () => new Promise((resolve) => {
+  execFile('tailscale', ['status', '--json'], { timeout: 5000, maxBuffer: 4 << 20 }, (err, out) => {
+    if (err) return resolve({ self: null, peers: [] });
+    try {
+      const s = JSON.parse(out);
+      const v4 = (ips) => (ips || []).find((ip) => /^\d+\.\d+\.\d+\.\d+$/.test(ip)) || null;
+      resolve({
+        self: s.BackendState === 'Running' ? v4(s.Self?.TailscaleIPs) : null,
+        peers: Object.values(s.Peer || {}).map((p) => ({ ip: v4(p.TailscaleIPs), online: !!p.Online, name: p.HostName })),
+      });
+    } catch { resolve({ self: null, peers: [] }); }
+  });
+});
+const BOARD_TYPES = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', heic: 'image/heic',
+  mp4: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm', mp3: 'audio/mpeg', m4a: 'audio/mp4', ogg: 'audio/ogg',
+  pdf: 'application/pdf', txt: 'text/plain', zip: 'application/zip', apk: 'application/vnd.android.package-archive' };
+const boardType = (name) => BOARD_TYPES[path.extname(name).slice(1).toLowerCase()] || 'application/octet-stream';
+const boardOut = () => path.join(app.getPath('userData'), 'board-out');
+function startBoard(test = {}) {
+  if (board) return;
+  board = createPeer({
+    dir: path.join(app.getPath('downloads'), 'Weft'),
+    statePath: path.join(app.getPath('userData'), 'board.json'),
+    alias: `Weft ${os.hostname()}`,
+    tailnet,
+    onEvent: (ev) => { if (main && !main.isDestroyed()) main.webContents.send('board', ev); },
+    log: (...a) => console.log(...a),
+    ...test, // selftest-board.js: its own tailnet, address and ports
+  });
+  board.start().catch((err) => console.log('board start', err.message));
+  boardTimer = setInterval(() => board.scan(), BOARD_SCAN_MS);
+}
+app.on('will-quit', () => { clearInterval(boardTimer); board?.stop(); });
+/** Files the window hands over: { path } for a picked or dropped file (preload takes the path from the File itself, so
+ *  the page cannot name one), { name, bytes } for a pasted picture, kept in userData/board-out until it is deleted. */
+async function boardFiles(list) {
+  const out = [];
+  for (const f of Array.isArray(list) ? list : []) {
+    if (typeof f?.path === 'string' && f.path) {
+      const st = await fs.promises.stat(f.path);
+      if (!st.isFile()) throw new Error('Not a file');
+      const name = path.basename(f.path);
+      out.push({ path: f.path, name, size: st.size, type: boardType(name) });
+    } else if (f?.bytes instanceof Uint8Array || f?.bytes instanceof ArrayBuffer) {
+      const bytes = Buffer.from(f.bytes);
+      const name = path.basename(String(f.name || 'obrazok.png')).replace(/[\u0000-\u001f]/g, '').slice(0, 180) || 'subor';
+      const dir = path.join(boardOut(), crypto.randomBytes(6).toString('hex'));
+      await fs.promises.mkdir(dir, { recursive: true });
+      const file = path.join(dir, name);
+      await fs.promises.writeFile(file, bytes);
+      out.push({ path: file, name, size: bytes.length, type: String(f.type || boardType(name)).slice(0, 100) });
+    }
+  }
+  return out;
+}
+// Only preload's board.send uses this channel: it fills the paths from the Files themselves.
+ipcMain.handle('board-send', async (event, spec) => {
+  if (!fromApp(event)) throw new Error('Not allowed');
+  if (!board) startBoard();
+  const files = await boardFiles(spec?.files);
+  const text = typeof spec?.text === 'string' && spec.text.trim() ? spec.text.slice(0, 100_000) : null;
+  if (!files.length && text == null) return { error: 'empty' };
+  return board.send({ files: text == null ? files : undefined, text: text ?? undefined, to: Array.isArray(spec?.to) ? spec.to.map(String) : undefined });
+});
+ipcMain.handle('board', async (event, op, ...args) => {
+  if (!fromApp(event)) throw new Error('Not allowed');
+  if (!board) startBoard();
+  const [a, b] = args;
+  switch (op) {
+    case 'state': return board.state();
+    case 'scan': await board.scan(); return board.state();
+    case 'retry': return board.retry(String(a));
+    case 'default': return board.setDefault(String(a), !!b);
+    case 'lan': return board.setLan(!!a);
+    case 'forget': return board.forget(String(a));
+    case 'respond': return board.respond(String(a), !!b);
+    case 'remove': {
+      const gone = board.remove(String(a));
+      // A pasted picture's copy goes with its item; received files stay in Downloads/Weft.
+      for (const f of gone?.dir === 'out' ? gone.files || [] : []) {
+        if (f.path && path.dirname(path.dirname(f.path)) === boardOut()) fs.rmSync(path.dirname(f.path), { recursive: true, force: true });
+      }
+      return !!gone;
+    }
+    case 'open': { const file = board.fileOf(String(a), Number(b) || 0); return file ? (await shell.openPath(file)) === '' : false; }
+    case 'show': {
+      const file = board.fileOf(String(a), Number(b) || 0);
+      if (file) shell.showItemInFolder(file);
+      else await shell.openPath(board.state().me.dir);
+      return true;
+    }
+    default: throw new Error(`Unknown board op ${op}`);
+  }
+});
+
 // One Weft: starting it again brings the running window to the front instead of a second one.
 const primary = !!process.env.SPRAVY_SELFTEST || app.requestSingleInstanceLock();
 if (!primary) app.quit();
@@ -1139,12 +1241,16 @@ app.whenReady().then(() => {
   if (process.env.SPRAVY_SELFTEST?.startsWith('follow')) {
     return require('./selftest-follow.js')({ APP_URL, APP_ORIGIN, FOLLOW_NETS, follows, openFollow, callSession, callWindows, forgetCalls, fromApp, tunnels, setMain: (w) => { main = w; } });
   }
+  if (process.env.SPRAVY_SELFTEST === 'board') {
+    return require('./selftest-board.js')({ APP_URL, openMain, startBoard, getMain: () => main, getBoard: () => board });
+  }
   if (process.env.SPRAVY_SELFTEST) return selftest();
   if (!APP_URL) {
     dialog.showErrorBox('Weft', 'Weft nevie, kde je server: nastav SPRAVY_URL alebo zapíš jeho celú adresu (https://…) do ~/.config/weft/url.');
     return app.quit();
   }
   openMain();
+  startBoard();
 });
 app.on('window-all-closed', () => { if (!process.env.SPRAVY_SELFTEST) app.quit(); }); // the self-test quits on its own
 

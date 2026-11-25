@@ -1599,3 +1599,42 @@ button.prof-status:hover { background: var(--hover); }
 .bclists { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
 .bclist { display: flex; align-items: center; gap: 10px; }
 .bclist small { color: var(--muted); }
+
+/* The board („Nástenka“, app/board.js): send box, default devices as chips, then what went and came. */
+.board { display: flex; flex-direction: column; gap: 10px; padding: 16px; }
+.board h2 { margin: 0; padding-right: 32px; font-size: var(--fs-2); font-weight: 400; }
+.board-status, .board-keys, .board-empty { margin: 0; color: var(--muted); font-size: var(--fs); line-height: var(--lh); overflow-wrap: anywhere; }
+.board-send { display: flex; flex-direction: column; gap: 8px; padding: 10px; border: var(--bw) solid var(--line); border-radius: var(--radius); background: var(--soft); }
+.board-send textarea { resize: vertical; min-height: 40px; padding: 7px 10px; border: 1px solid var(--line-strong); border-radius: var(--radius-s); background: var(--page); color: var(--text); font-size: var(--fs); line-height: var(--lh); }
+.board-send textarea:focus { outline: 2px solid var(--link); outline-offset: -1px; }
+#app.dropping .board-send { border-color: var(--link); }
+.board-to, .board-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.board-row { justify-content: flex-end; }
+.board-label { color: var(--muted); font-size: var(--fs); }
+.board-to small { color: var(--muted); font-size: var(--fs); line-height: var(--lh); }
+.board-dev { display: inline-flex; align-items: center; gap: 4px; font-weight: 400; }
+.board-dev svg { width: 16px; height: 16px; }
+.board-dev small { color: var(--muted); }
+.board-to .ghost, .board-row .ghost { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs); }
+.board-to .ghost svg, .board-row .ghost svg { width: 16px; height: 16px; }
+.board-lan { display: inline-flex; align-items: center; gap: 6px; margin-right: auto; color: var(--muted); font-size: var(--fs); cursor: pointer; }
+.board-items { display: flex; flex-direction: column; gap: 2px; }
+.board-item { display: flex; align-items: flex-start; gap: 10px; padding: 8px; border-radius: var(--radius-s); cursor: default; }
+.board-item:hover { background: var(--hover); }
+.board-item.sel { background: var(--soft); box-shadow: inset 0 0 0 1px var(--link); }
+.board-item > svg { flex: none; width: 16px; height: 16px; margin-top: 1px; color: var(--muted); }
+.board-what { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.board-what > small { color: var(--muted); font-size: var(--fs); }
+.board-what > small.err { color: var(--error); }
+.board-what progress { width: 100%; height: 4px; accent-color: var(--accent); }
+.board-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: var(--lh); max-height: calc(var(--lh) * 8); overflow: hidden; }
+.board-text a { color: var(--link); }
+.board-files { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 2px; }
+.board-files li { overflow-wrap: anywhere; line-height: var(--lh); }
+.board-files small { color: var(--muted); }
+.board-acts { flex: none; display: flex; align-items: center; gap: 4px; }
+.board-acts .ghost { font-size: var(--fs); padding: 2px 6px; border-radius: var(--radius-s); }
+.board-acts .ghost:hover { background: var(--soft); color: var(--text); }
+.board-acts svg { width: 16px; height: 16px; }
+.boardpop .board-row { justify-content: flex-end; }
+.boardpop-text { max-height: calc(var(--lh) * 5); }

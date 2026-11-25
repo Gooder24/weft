@@ -36,6 +36,19 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
 - `desktop/` is the Electron shell, installed on x270 in `~/.local/share/spravy`. Its login windows go out through
   an `ssh -D` tunnel to asus and wait until Meta's checks are done.
   Checks: `overenie/ig-checkpoint/` (`window.cjs`, `tunnel.cjs`).
+- The board („Nástenka“, Ctrl+B, desktop app only): files and text to Karchi's own devices that run the LocalSend app,
+  without picking one (devices of the tailnet are defaults; a click on a device adds or removes it), kept on the board
+  (newest 200) until Delete. The shell is a LocalSend v2 peer over HTTPS (`desktop/localsend.js`, wired in `main.js`,
+  the page's side `app/board.js`) with its own self-signed certificate in `board.json`, whose SHA-256 is its
+  fingerprint (LocalSend 1.19 lets in only clients that show one); a device known by its certificate must show the
+  same one again. It finds LocalSend by asking each online tailnet device on 53317 (multicast cannot cross
+  Tailscale), listens only on this machine's Tailscale address and takes what comes from there; „Aj v miestnej sieti“
+  adds every interface and multicast, and files from outside the tailnet then wait for Prijať in the corner. Arrivals
+  go to Downloads/Weft and show in the corner window like codes (Enter opens or copies). A file goes by the path
+  preload takes from the File itself (`webUtils`), so the page cannot name one. Our own protocol through asus comes
+  later into the same board: `docs/navrhy/2026-11-nastenka/`. Checks: `tests/localsend/run.cjs`, `tests/localsend/cli.sh`
+  (the official LocalSend CLI both ways, in its own network namespace),
+  `SPRAVY_SELFTEST=board` (`desktop/selftest-board.js`, Electron under Xvfb), `overenie/nastenka/run.sh` (UI, on asus).
 - Server side lives only on asus in `~/matrix-spike/`: Tuwunel homeserver, bridges (mautrix-meta for
   Messenger and Instagram, legacy mautrix-discord, mautrix-whatsapp, own EduPage bridge), Caddy, systemd user
   units `matrix-spike-*` (`XDG_RUNTIME_DIR=/run/user/1000 systemctl --user ...`).

@@ -13,6 +13,7 @@ import { STASH, GONE_MS, applyStash, stashHas, stashOf } from './stash.js';
 import { BROADCAST, NAMES, BC_APPS, BC_DAY, guessGreeting, personalText, batchOf, laterItemsOf, addOnce, dayCounts, guessRsvp } from './broadcast.js';
 
 import { createFeed } from './feed.js';
+import { createBoard } from './board.js';
 import { createUpdates } from './updates.js';
 import { linksIn, trimLink, LINK_RE, fromBridge, card as linkCard, createLinkReader, readsItself, HELD, classify } from './links.js';
 
@@ -2382,6 +2383,7 @@ function dropAttachment(r, file) {
 // Copied text that also carries a picture of itself (a spreadsheet, a document) pastes as text.
 document.addEventListener('paste', (e) => {
   const data = e.clipboardData;
+  if (S.view === 'main' && S.panel === 'board' && !S.overlay) return board.paste(e);
   if (S.view !== 'main' || S.overlay || S.panel || !data?.files.length || data.types.includes('text/plain')) return;
   e.preventDefault();
   takeFiles([...data.files]);
@@ -2391,7 +2393,7 @@ let dropTimer = 0;
 document.addEventListener('dragover', (e) => {
   if (!e.dataTransfer?.types.includes('Files')) return;
   e.preventDefault(); // otherwise the browser opens the file in place of the app
-  const over = !!e.target.closest?.('.detail');
+  const over = !!e.target.closest?.('.detail, .board');
   e.dataTransfer.dropEffect = over ? 'copy' : 'none';
   document.getElementById('app').classList.toggle('dropping', over);
   clearTimeout(dropTimer); // dragover repeats while the file is held over the window, even without moving
@@ -5881,7 +5883,7 @@ function openNewChat() {
 // Ctrl+K search, Ctrl+Shift+K or Ctrl+N new chat, Ctrl+E archive, Ctrl+Shift+U read/unread,
 // Ctrl+L remind, Ctrl+U next unread, Ctrl+R reply, Ctrl+Shift+A voice message, Ctrl+Shift+S unread/all, Ctrl+, settings,
 // Ctrl+Shift+F daily feed, Ctrl+G grades (Tab switches its view), Ctrl+M people map, Ctrl+D calendar, Ctrl+J any tool by name, Ctrl+/ all shortcuts, Esc steps back,
-// Ctrl+P the chat's photos and videos, Ctrl+Shift+Space plays or pauses a voice message.
+// Ctrl+P the chat's photos and videos, Ctrl+Shift+Space plays or pauses a voice message, Ctrl+B the board (desktop app).
 document.addEventListener('keydown', (e) => {
   if (S.view !== 'main') return;
   const mod = (e.ctrlKey || e.metaKey) && !e.altKey;
@@ -5903,6 +5905,8 @@ document.addEventListener('keydown', (e) => {
   if (rec && !S.overlay && !S.panel && (key === 'enter' || key === 'escape')) return run(() => stopRecording(key === 'enter'));
   // A Gmail code in the corner: Enter copies it while nothing else has the keyboard.
   if (key === 'enter' && codeKey(e, key)) return;
+  // Something came to the board (or waits for Prijať) in the corner: Enter takes it, the same way.
+  if (key === 'enter' && board.popKey(e)) return;
   if (mod && ((e.shiftKey && key === 'k') || (!e.shiftKey && key === 'n'))) run(openNewChat);
   else if (mod && !e.shiftKey && key === 'k') run(() => (S.overlay?.kind === 'search' ? closeOverlay() : openSearch()));
   else if (mod && e.shiftKey && key === 's') run(() => setShowAll(!S.showAll));
@@ -5911,6 +5915,7 @@ document.addEventListener('keydown', (e) => {
   else if (mod && !e.shiftKey && key === 'm') run(() => togglePanel('people'));
   else if (mod && e.shiftKey && key === 'f') run(showFeed);
   else if (mod && !e.shiftKey && key === 'd') run(toggleCalendar);
+  else if (mod && !e.shiftKey && key === 'b' && board.available) run(toggleBoard);
   else if (mod && !e.shiftKey && key === 'j') run(() => (S.overlay?.kind === 'tools' ? closeOverlay() : openTools()));
   else if (mod && (key === '/' || key === '?')) run(() => (S.overlay?.kind === 'help' ? (S.overlay = null, render()) : openOverlay('help')));
   else if (key === 'tab' && S.panel === 'grades' && !mod) run(() => setGradeMode(S.gradeMode === 'table' ? 'recent' : 'table'));
@@ -5929,6 +5934,7 @@ document.addEventListener('keydown', (e) => {
   else if (key === 'escape' && S.panel === 'settings' && calNewCal.asking) run(() => calKeepCalendar(calNewCal.asking));
   else if (key === 'escape' && (S.panel || S.menu)) run(() => { S.panel = null; S.menu = false; render(); });
   else if ((S.panel === 'calendar' || (!S.panel && document.activeElement?.closest('.home-calendar'))) && !typing && !mod && !e.altKey && calendarKey(e)) e.preventDefault();
+  else if (S.panel === 'board' && !S.overlay && board.key(e)) e.preventDefault();
   else if (S.overlay || S.panel) return;
   else if (chatKey(e, key, typing)) e.preventDefault();
   else if (mod && !e.shiftKey && key === 'e') run(() => toggleArchive(selectedEntry()));
@@ -5949,6 +5955,7 @@ document.addEventListener('keydown', (e) => {
   else if (key === 'escape' && typing) run(() => document.activeElement.blur());
   else if (key === 'escape' && ringing.list.length) run(() => { const it = ringing.list.at(-1); stopRing((x) => x === it); render(); });
   else if (key === 'escape' && activeCode()) run(() => dismissCode(activeCode()));
+  else if (key === 'escape' && board.popShown()) board.popKey(e);
   else if (key === 'escape' && S.selected) run(() => select(null));
   else if (key === 'escape' && S.box !== 'inbox') run(() => setBox('inbox'));
   else if (!typing && !mod && !e.altKey && e.key.length === 1 && S.rooms.has(S.selected) && !(e.key === ' ' && document.activeElement?.matches('button, [role=slider]'))) {
@@ -6114,8 +6121,11 @@ function mainView() {
     S.panel === 'calendar' ? panel(calendarView(), 'wide') : null,
     opaque(S.panel === 'link' ? panel(linkView()) : null),
     opaque(S.panel === 'profile' ? panel(profileView()) : null),
+    // Patched, so a send or an arrival never takes the cursor out of its text box.
+    S.panel === 'board' ? panel(board.view()) : null,
     S.overlay?.kind === 'later' ? overlayView() : opaque(overlayView()), // „Odoslať neskôr“ is patched: its clicks stay
     codeView(),
+    board.popView(),
     ringView(),
   ];
 }
@@ -10864,6 +10874,7 @@ const SHORTCUTS = [
   ['↑ ↓', T('Označiť správu v chate (↑ v prázdnom poli; ↓ za najnovšou a Esc späť do poľa)')], ['Ctrl+↑ ↓', T('Označená správa: o deň alebo dlhú pauzu (čiarky na pravom okraji chatu)')],
   ['→ ←', T('Označená správa: tvoja predošlá / predošlá od niekoho iného')], ['R  F  E', T('Označená správa: odpovedať, preposlať, upraviť svoju')], ['Tab', T('Označená správa: reakcie a akcie nad ňou (Enter vyberie)')],
   ['Shift+Enter', T('Nový riadok')], ['Ctrl+Shift+S', T('Len neprečítané / všetky')], ['Ctrl+S', T('Odložiť koncept (spýta sa, kedy pripomenúť; Ctrl+S znova = bez pripomienky); v prázdnom poli vziať odložený')], ['Ctrl+G', T('Známky (Tab prepína)')], ['Ctrl+M', T('Ľudia: mapa, koho odkiaľ poznáš')], ['Ctrl+D', T('Kalendár (D T M Z zobrazenie, ← → posun, N nová)')],
+  ...(window.desktop?.board ? [['Ctrl+B', T('Nástenka: súbory a text do tvojich zariadení cez LocalSend (↓ z poľa do zoznamu)')]] : []),
   ['Ctrl+,', T('Nastavenia')], ['Esc', T('Zavrieť, zrušiť odpoveď, zavrieť chat')],
   ['Ctrl+V', T('Vložiť obrázok do správy')], ['Ctrl+← →, koliesko', T('Obrázky a videá: predošlý a ďalší (na obrázku aj ← →)')], ['← → / Space', T('Video: o 5 s späť a dopredu / prehrať; podržať Space = 2× rýchlo')], ['Ctrl+koliesko', T('Obrázky: priblížiť (aj dvojklik, + − 0)')],
   ['Ctrl+S', T('Obrázky: stiahnuť')], ['Ctrl+P', T('Galéria chatu: fotky a videá (šípky, Enter, PageUp/PageDown po mesiacoch, J ukáže v chate)')], ['Ctrl+Shift+Enter', T('Odoslať neskôr (aj /sendlater, pravý klik na odoslať)')], ['/gif', T('Poslať GIF')],
@@ -10890,6 +10901,7 @@ function toolList() {
     [T('Známky'), 'edupage znamky hodnotenie skola grades', 'Ctrl+G', show('grades')],
     [T('Ľudia: mapa, koho odkiaľ poznáš'), 'people mapa priatelia kamarati kamosi friends vetvy druzina', 'Ctrl+M', show('people')],
     [T('Kalendár'), 'kalendar calendar kalendarix udalosti rozvrh tyzden mesiac', 'Ctrl+D', toggleCalendar],
+    ...(board.available ? [[T('Nástenka: súbory a text do mojich zariadení'), 'nastenka board localsend poslat subor fotku mobil telefon zariadenie preniest', 'Ctrl+B', () => { if (S.panel !== 'board') toggleBoard(); }]] : []),
     [T('Automatizácie'), 'procesy skripty cron ulohy systemd hermes automatizacie', '', () => { location.href = '/automatizacie/'; }],
     [T('Nastavenia'), 'settings ucty ucet pripojit siete tema tmavy gmail outlook teams microsoft mail email login', 'Ctrl+,', show('settings')],
     [T('EduPage: oznamy a predmety'), 'edupage oznamy typy predmety skryt suplovanie farby ikony skupina nastavenia', '', () => togglePanel('settings', 'edupage')],
@@ -11026,6 +11038,16 @@ const feed = createFeed({
   schedule: (item) => { closeFeed(); if (!calNew()) return; cal.edit.title = item.title; cal.edit.notes = item.url; render(); document.querySelector('.home-calendar')?.scrollIntoView({ block: 'start' }); },
 });
 
+const board = createBoard({ h, render, isOpen: () => S.view === 'main' && S.panel === 'board', open: () => { if (S.panel !== 'board') toggleBoard(); } });
+
+/** Ctrl+B: the board opens with the cursor in its text box (on a touch screen without, not to pop the keyboard). */
+function toggleBoard() {
+  togglePanel('board');
+  if (S.panel !== 'board') return;
+  board.entered();
+  if (matchMedia('(pointer: fine)').matches) document.querySelector('[data-root="__boardText"]')?.focus();
+}
+
 function showFeed() {
   if (S.panel === 'link') return;
   if (S.surface === 'feed') return closeFeed();
@@ -11043,7 +11065,8 @@ function closeFeed() {
 function homeView() {
   return h('main', { class: 'detail home', 'data-scroll': 'home' },
     h('section', { class: 'home-calendar', tabindex: '0', 'aria-label': T('Kalendár') }, calendarView()),
-    h('div', { class: 'feed-launch' }, h('button', { class: 'ghost', onclick: showFeed, 'aria-expanded': String(S.surface === 'feed') }, S.surface === 'feed' ? T('Zavrieť feed') : T('Otvoriť denný feed')), h('kbd', {}, 'Ctrl+Shift+F'), h('span', { class: 'mobile-workspace-options' }, workspaceStatus(), h('button', { class: 'ghost', 'aria-label': T('Nastavenia'), onclick: () => togglePanel('settings') }, T('Nastavenia')))),
+    h('div', { class: 'feed-launch' }, h('button', { class: 'ghost', onclick: showFeed, 'aria-expanded': String(S.surface === 'feed') }, S.surface === 'feed' ? T('Zavrieť feed') : T('Otvoriť denný feed')), h('kbd', {}, 'Ctrl+Shift+F'),
+      board.available ? [h('button', { class: 'ghost', onclick: toggleBoard }, T('Nástenka')), h('kbd', {}, 'Ctrl+B')] : null, h('span', { class: 'mobile-workspace-options' }, workspaceStatus(), h('button', { class: 'ghost', 'aria-label': T('Nastavenia'), onclick: () => togglePanel('settings') }, T('Nastavenia')))),
     S.surface === 'feed' ? h('section', { class: 'feed-drawer', 'aria-label': T('Denný feed') }, feed.view()) : null);
 }
 
