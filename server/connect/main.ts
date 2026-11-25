@@ -79,7 +79,8 @@ Bun.serve({
     if (!/^\/_connect\/(connectors|phones)(\/|$)/.test(url.pathname)) return json({ errcode: 'M_NOT_FOUND' }, 404);
     if (!(await isOwner(req))) return json({ errcode: 'M_FORBIDDEN' }, 403);
     if (req.method === 'GET' && url.pathname === '/_connect/phones') return json({ phones: phones.list() });
-    if (req.method === 'POST' && url.pathname === '/_connect/phones/code') return json(phones.code());
+    // The address the phone types: Weft on the Tailscale address (PHONE_URL), whatever origin this Weft window has.
+    if (req.method === 'POST' && url.pathname === '/_connect/phones/code') return json({ ...phones.code(), address: process.env.PHONE_URL || null });
     const phoneId = url.pathname.match(/^\/_connect\/phones\/([0-9a-f]+)$/)?.[1];
     if (req.method === 'DELETE' && phoneId) {
       if (!phones.remove(phoneId)) return json({ errcode: 'M_NOT_FOUND' }, 404);
@@ -127,7 +128,8 @@ async function phone(req: Request, url: URL) {
     const list = items(body);
     if (!list) return json({ errcode: 'M_BAD_JSON' }, 400);
     try {
-      const taken = await host.phone(device, list);
+      const { taken, posted } = await host.phone(device, list);
+      phones.count(device, posted);
       return json({ taken });
     } catch (err) {
       console.log(`phone ${device}: ${err instanceof Error ? err.message : err}`); // the phone keeps them and sends again

@@ -17,8 +17,11 @@ export class Phones {
   private misses = 0;
 
   constructor(private db: Database, private now: () => number) {
-    db.exec(`CREATE TABLE IF NOT EXISTS phones (id TEXT PRIMARY KEY, name TEXT NOT NULL, token TEXT NOT NULL UNIQUE, created INTEGER NOT NULL, seen INTEGER);
+    db.exec(`CREATE TABLE IF NOT EXISTS phones (id TEXT PRIMARY KEY, name TEXT NOT NULL, token TEXT NOT NULL UNIQUE, created INTEGER NOT NULL, seen INTEGER, items INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS pairing (code TEXT PRIMARY KEY, expires INTEGER NOT NULL);`);
+    if (!db.query<{ name: string }, []>('PRAGMA table_info(phones)').all().some((c) => c.name === 'items')) {
+      db.exec('ALTER TABLE phones ADD COLUMN items INTEGER NOT NULL DEFAULT 0'); // tables from before the count
+    }
   }
 
   /** A new code for one phone, „ABCD-EFGH“. */
@@ -41,7 +44,7 @@ export class Phones {
     this.db.query('DELETE FROM pairing WHERE code = ?').run(clean);
     const id = Buffer.from(random(6)).toString('hex');
     const token = `wp_${Buffer.from(random(32)).toString('base64url')}`;
-    this.db.query('INSERT INTO phones VALUES (?, ?, ?, ?, NULL)').run(id, name.trim().slice(0, 60) || 'Telefón', sha(token), this.now());
+    this.db.query('INSERT INTO phones VALUES (?, ?, ?, ?, NULL, 0)').run(id, name.trim().slice(0, 60) || 'Telefón', sha(token), this.now());
     return { id, token };
   }
 
@@ -55,8 +58,12 @@ export class Phones {
   }
 
   list() {
-    return this.db.query<Phone, []>(`SELECT id, name, created, seen, (SELECT COUNT(*) FROM posted WHERE key LIKE 'phone:' || phones.id || ':%') AS items
-      FROM phones ORDER BY created`).all();
+    return this.db.query<Phone, []>('SELECT id, name, created, seen, items FROM phones ORDER BY created').all();
+  }
+
+  /** New messages a phone brought (Settings shows them). */
+  count(id: string, n: number) {
+    if (n) this.db.query('UPDATE phones SET items = items + ? WHERE id = ?').run(n, id);
   }
 
   remove(id: string) {
@@ -72,7 +79,7 @@ export function items(body: unknown): PhoneItem[] | null {
   const out: PhoneItem[] = [];
   for (const x of list as Record<string, unknown>[]) {
     const id = str(x?.id, 200);
-    const text = str(x?.text, 20_000);
+    const text = str(x?.text, 10_000);
     if (!id || text === undefined || (x.kind !== 'sms' && x.kind !== 'notification') || typeof x.ts !== 'number' || !Number.isFinite(x.ts)) return null;
     out.push({
       id, kind: x.kind, ts: x.ts, text,

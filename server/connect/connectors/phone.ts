@@ -15,6 +15,15 @@ export function number(address: string) {
   return s;
 }
 
+/** What makes an item the same wherever it comes from: an SMS by number, time, direction and text, so pairing the
+ *  phone again (a new device id, its 30 days sent once more) or a second phone with the same SIM posts nothing twice;
+ *  a notification by the phone's own id, which carries the app, the notification and its time. */
+export function key(p: PhoneItem) {
+  if (p.kind === 'notification') return `n:${p.id}`;
+  const text = new Bun.CryptoHasher('sha256').update(p.text.trim()).digest('hex').slice(0, 16);
+  return `sms:${number(p.address ?? '')}:${p.ts}:${p.out ? 1 : 0}:${text}`;
+}
+
 export function parse(p: PhoneItem): [Connector, Item] | null {
   const text = p.text.trim();
   if (!text) return null;

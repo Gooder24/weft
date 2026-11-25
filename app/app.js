@@ -14254,6 +14254,8 @@ function phoneSettings() {
   const phones = S.phones;
   const code = S.phoneCode && S.phoneCode.expires > Date.now() ? S.phoneCode : null;
   const when = (ts) => ts ? seenLabel(ts) : T('ešte nič');
+  // The phone reaches Weft on the address its certificate names (PHONE_URL on asus), not a tunnel or name this window uses.
+  const base = (code && code.address) || location.origin;
   return [
     h('h3', {}, T('Telefón')),
     h('p', { class: 'hint' }, T('Appka Weft Telefón (Android 8 a novší, s Tailscale) posiela SMS a notifikácie appiek, ktoré si v nej vyberieš. Číta len to, čo už máš v telefóne, takže ti žiadny účet nezablokujú.')),
@@ -14264,10 +14266,10 @@ function phoneSettings() {
         h('button', { class: 'ghost danger', type: 'button', onclick: () => { if (confirm(T`Odpojiť ${p.name}? Prestane posielať; chaty ostanú.`)) loadPhones({ remove: p.id }); } }, T('Odpojiť')))),
     code ? h('div', { class: 'phonecode', 'data-key': 'phone:code' },
       h('p', {}, T('V appke Weft Telefón zadaj:')),
-      h('p', {}, T('Adresa'), ' ', h('code', {}, location.origin)),
+      h('p', {}, T('Adresa'), ' ', h('code', {}, base)),
       h('p', {}, T('Kód'), ' ', h('code', { class: 'big' }, code.code)),
       h('small', {}, T`Platí do ${timeLabel(code.expires)}, len pre jeden telefón. Keď sa telefón spojí, objaví sa tu.`),
-      h('p', {}, T('Appku si stiahneš v telefóne z tejto adresy:'), ' ', h('code', {}, `${location.origin}/_connect/phone/weft-telefon.apk`))) : null,
+      h('p', {}, T('Appku si stiahneš v telefóne z tejto adresy:'), ' ', h('code', {}, `${base}/_connect/phone/weft-telefon.apk`))) : null,
     phones === null ? null : h('button', { class: 'primary', type: 'button', 'data-key': 'phone:add', onclick: () => loadPhones({ code: true }) }, code ? T('Nový kód') : T('Pridať telefón')),
     CONNECTORS.filter((c) => c.phone).map(connectorRow),
   ];

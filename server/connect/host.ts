@@ -4,7 +4,7 @@
 import { Database } from 'bun:sqlite';
 import { flatten } from './mail.ts';
 import { Matrix, MatrixError } from './matrix.ts';
-import { parse as phoneItem } from './connectors/phone.ts';
+import { key as phoneKey, parse as phoneItem } from './connectors/phone.ts';
 import type { Connector, Item, Mail, PhoneItem } from './types.ts';
 
 const DAY = 86_400_000;
@@ -71,20 +71,22 @@ export class Host {
     return run;
   }
 
-  /** What a phone sent: each item once (by the phone's id), into its SMS or app chat; returns the ids taken, which the
-   *  phone may forget. An item a switched-off connector does not take is taken too, so the phone stops sending it. */
+  /** What a phone sent: each item once (`phoneKey`), into its SMS or app chat; returns the ids taken, which the phone
+   *  may forget, and how many were new. An item a switched-off connector does not take is taken too, so the phone
+   *  stops sending it. */
   phone(device: string, items: PhoneItem[]) {
     return this.serial(async () => {
       const taken: string[] = [];
+      let posted = 0;
       for (const p of items.toSorted((a, b) => a.ts - b.ts)) {
         const made = phoneItem(p);
         if (made && this.isOn(made[0].id) && this.now() - p.ts < BACK) {
-          await this.post(made[0], `phone:${device}:${p.id}`, p.ts, made[1], { phone: device });
+          if (await this.post(made[0], `phone:${phoneKey(p)}`, p.ts, made[1], { phone: device })) posted++;
         }
         taken.push(p.id);
       }
       await this.markSeen();
-      return taken;
+      return { taken, posted };
     });
   }
 

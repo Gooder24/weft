@@ -243,6 +243,8 @@ describe('phone', () => {
     expect(phones.claim(code, 'druhý')).toBeNull();
     expect(phones.auth(`Bearer ${got?.token}`)).toBe(got?.id ?? 'x');
     expect(phones.list()).toEqual([{ id: got?.id ?? 'x', name: 'Starý telefón', created: NOW, seen: NOW, items: 0 }]);
+    phones.count(got?.id ?? 'x', 3);
+    expect(phones.list()[0]?.items).toBe(3);
     expect(phones.auth('Bearer wp_guess')).toBeNull();
     const late = phones.code();
     now += 11 * 60_000;
@@ -266,11 +268,15 @@ describe('phone', () => {
       sms('2', '0900123456', 'Kde si?', NOW - 60_000, 'Mama'),
       { id: 'n1', kind: 'notification', ts: NOW - 30_000, app: 'com.example.shop', appName: 'Obchod', title: 'Obchod', text: 'Zľava 20 %' },
     ]);
-    expect(taken).toEqual(['1', '2', 'n1']);
+    expect(taken).toEqual({ taken: ['1', '2', 'n1'], posted: 3 });
     expect(hs.calls.filter((c) => c.path === '/createRoom').map((c) => c.body.name)).toEqual(['Mama', 'Obchod']);
     expect(sends(hs.calls).map((c) => c.body.body)).toEqual(['Ahoj', 'Kde si?', 'Zľava 20 %']);
-    expect(await host.phone('p1', [sms('1', '+421900123456', 'Ahoj', NOW - 120_000, 'Mama')])).toEqual(['1']);
+    expect(await host.phone('p1', [sms('1', '+421900123456', 'Ahoj', NOW - 120_000, 'Mama')])).toEqual({ taken: ['1'], posted: 0 });
+    // Paired again (a new device id) or a second phone with the same SIM: its 30 days come once more, none is posted.
+    expect(await host.phone('p2', [sms('77', '00421 900 123 456', 'Ahoj', NOW - 120_000, 'Mama'), sms('78', '0900123456', 'Kde si?', NOW - 60_000)])).toEqual({ taken: ['77', '78'], posted: 0 });
     expect(sends(hs.calls)).toHaveLength(3);
+    // The same words again later are a new message.
+    expect((await host.phone('p2', [sms('79', '0900123456', 'Ahoj', NOW - 1_000, 'Mama')])).posted).toBe(1);
     expect(number('00421 900 123 456')).toBe('+421900123456');
     expect(number('Packeta')).toBe('packeta');
   });
@@ -278,7 +284,7 @@ describe('phone', () => {
   test('a switched-off SMS connector takes the item without posting it; empty texts are dropped', async () => {
     const { hs, host } = setup();
     host.setOn('sms', false);
-    expect(await host.phone('p1', [sms('1', '0900123456', 'Ahoj'), { id: 'n', kind: 'notification', ts: NOW, app: 'a', text: '  ' }])).toEqual(['1', 'n']);
+    expect((await host.phone('p1', [sms('1', '0900123456', 'Ahoj'), { id: 'n', kind: 'notification', ts: NOW, app: 'a', text: '  ' }])).taken).toEqual(['1', 'n']);
     expect(sends(hs.calls)).toHaveLength(0);
   });
 
