@@ -16,6 +16,8 @@ konci. Čo vieme len z cudzích článkov, je pri tom napísané.
   ale nevie nič poslať. Všetko, čo agent navrhne, čaká vo Wefte na Karchiho v jednom zozname „Na schválenie“.
 - Ako prvý sa postaví zoznam na schválenie a jeho prvý používateľ bude Hermes. Netreba naň žiadnu verejnú adresu
   ani predplatné.
+- Všetky AI budú v jednom pohľade „AI“ s miestnosťou „Pre AI“ na súbory pre agentov. Weft ich spozná sám: miestny
+  účet agenta (Hermes, OpenClaw) a značka bota, ktorú zapisujú naše mosty. Beeperove AI mosty použiť nejde.
 
 ## Čo má Weft a Beeper nie
 
@@ -74,9 +76,10 @@ Z toho vyplýva:
 1. **Zo Slovenska je dnes reálny len Grok Bot**, a aj to sa ukáže až pri registrácii. Ostatné tri počkajú na
    spustenie v EÚ. Obchádzať to cez VPN alebo americký účet nechceme: je to to isté riziko, aké Weft nepúšťa pri
    banoch.
-2. **Ako bežný chat vo Wefte nejde žiadny.** Matrix most pre nich neexistuje a ich appky rozoberať nebudeme. Jediná
-   výnimka môže prísť sama: Muse vo WhatsAppe by prešiel existujúcim mostom, keď ho Meta spustí tu. Či most
-   chaty s AI vôbec prenesie, sme neskúšali.
+2. **Ako bežný chat vo Wefte nejde žiadny.** Beeper od 3. 11. pripája Dots, Grok Bot a Muse, ale len vo vlastnom
+   cloude a jeho mosty nie sú zverejnené (pozri [Všetky AI na jednom mieste](#všetky-ai-na-jednom-mieste)). Ich
+   appky rozoberať nebudeme. Jediná výnimka môže prísť sama: Muse je vo WhatsAppe obyčajný kontakt, takže príde
+   existujúcim mostom, keď ho Meta spustí tu. Most WhatsAppu chaty s botmi prenáša a označí ich.
 3. **Opačne to ide:** Grok Bot a Claude (a raz možno aj Duet, Muse a Dots) vedia volať cudzí MCP server. Weft
    nemusí vedieť pracovať s nimi, stačí, aby oni vedeli pracovať s Weftom.
 
@@ -103,7 +106,8 @@ Malá služba `server/mcp/` v TypeScripte na Buni (jeden unit, napr. `matrix-spi
 
 ### Agent ako chat v inboxe
 
-- **Hermes** už ním je (`AGENTS` v `app/app.js`, obyčajná Matrix miestnosť s `@hermes`).
+- **Hermes** už ním je (`AGENTS` v `app/app.js`, obyčajná Matrix miestnosť s `@hermes`). Pevný zoznam nahradí
+  rozpoznanie opísané nižšie v [Všetky AI na jednom mieste](#všetky-ai-na-jednom-mieste).
 - Pre ostatných **miestnosť agenta:** lokálna Matrix miestnosť pre každého agenta, kam agent píše cez
   `post_to_owner` a odkiaľ si číta Karchiho odpovede. Správa sa v nej správa ako každý chat (neprečítané, okná na
   čítanie, Ctrl+K), ale príde len tak často, ako sa agent pozrie (Duet „každých pár hodín“). Rozhovor naživo
@@ -112,6 +116,72 @@ Malá služba `server/mcp/` v TypeScripte na Buni (jeden unit, napr. `matrix-spi
   adresy), sa do Weftu dostane cez archív Gmailu do piatich minút.
 - Naživo cez Slack by to išlo pri Grok Bote: vlastný Slack workspace a most mautrix-slack. To je ďalší most na
   údržbu, takže len ak Karchi chce s Grok Botom písať priamo vo Wefte.
+
+## Všetky AI na jednom mieste
+
+Karchi chce mať všetkých agentov a chaty s AI v jednej kategórii. Weft má sám spoznať, že na druhej strane je bot
+alebo AI, aj pri agentovi, ktorý pribudne neskôr (Hermes, OpenClaw a ďalší). Doplnené 25. 11. 2026.
+
+### Beeperove mosty pre AI použiť nejde
+
+- Beeper od 3. 11. 2026 pripája ChatGPT Dots, Grok Bot a Muse ako siete v Beeper Cloud. Tieto mosty nie sú
+  zverejnené a bežia len u Beeperu. Dots a Grok Bot sú tam experimentálne a Duet Beeper nepripája vôbec.
+- Otvorený `beeper/ai-bridge` (mautrix bridgev2) je od 2. 11. 2026 archivovaný a nemá licenciu. Spustí sa len proti
+  Beeperovmu homeserveru (bez `MatrixConnectorWithBeeperStreams` odmietne štart) a zoznam modelov berie z
+  Beeperových služieb. Dots, Grok Bot ani Muse nikdy nevedel, len modely cez API kľúč.
+- Muse, Dots a Duet v EÚ stále nie sú, takže ani Beeperov most by tu nemal kam pripojiť účet.
+
+### Čo z Beeperu použiť ide: značka bota v mostoch
+
+Mosty mautrix, ktoré Weft už má, samy vedia, ktorý kontakt je bot. Zapisujú to do profilu ducha ako
+`com.beeper.bridge.is_network_bot` a podľa toho istého poľa boty spoznáva Beeper:
+
+| Most | Čo označí |
+|---|---|
+| Messenger | Meta AI |
+| Instagram | Meta AI a AI agentov Instagramu (`AIAgentType`) |
+| WhatsApp | chaty s botmi na serveri `bot`, napr. Meta AI; miestnosť má tému „WhatsApp chat with a bot“. Tadiaľto raz príde aj Muse vo WhatsAppe |
+| Discord (legacy) | boty Discordu; zapisuje to Beeperovým volaním `BeeperUpdateProfile`, takže či to Tuwunel prijme, treba overiť |
+
+Na asuse majú mosty Messengera, Instagramu a WhatsAppu `ghost_extra_profile_info: false`, takže do profilu dnes
+nezapisujú nič. Tuwunel profilové polia vie (`uk.tcpip.msc4133.stable`). Zapnúť to je jedna voľba v configu
+každého mosta a reštart. Či most pri tom niečo pýta od siete a kedy označí už existujúce kontakty, treba overiť
+pri stavbe. Pravidlo „žiadne hromadné sťahovanie“ platí aj tu.
+
+### Ako Weft spozná AI
+
+Chat je AI, keď platí niečo z tohto:
+
+1. Druhá strana je miestny účet na Karchiho homeserveri, nie duch mosta, a miestnosť nemá `m.bridge`. Na osobnom
+   serveri sú také účty agenti: Hermes, OpenClaw (jeho kanál `@openclaw/matrix` sa prihlási vlastným účtom na
+   hocijaký homeserver) aj ďalší. Toto nahradí pevný zoznam `AGENTS` v `app/app.js`.
+2. Duch mosta má v profile `com.beeper.bridge.is_network_bot`, alebo je miestnosť WhatsAppu chat s botom.
+3. Správa nesie `com.beeper.ai`, Beeperovu schému AI správ. Dnes ju nič neposiela, ale stojí to jeden riadok.
+4. Karchi to opraví sám v menu chatu: „Je to AI“ alebo „Nie je to AI“ (account data `sk.karchi.ai`). Treba to pre
+   server, kde má účet aj ďalší človek, a pre bota, ktorého žiadny most neoznačí.
+
+### Kategória AI
+
+- Nový pohľad „AI“ vedľa Inboxu, Archívu, Pripomienok a Nízkej priority (`BOXES` v `app/app.js`). Chaty s AI z
+  Inboxu odídu doň, tlačidlo pohľadu ukazuje počet neprečítaných a Ctrl+K ich nájde ako vždy.
+- Chat s AI z mosta (Meta AI v Messengeri) ostane chatom svojej siete, len dostane značku AI. Miestni agenti
+  dostanú spoločnú appku „AI“ s obrázkom agenta namiesto appky „Hermes“.
+- Na vrchu pohľadu je miestnosť „Pre AI“: súkromná miestnosť bez ďalších členov, kam Karchi hodí súbor alebo text
+  (Ctrl+V, potiahnutie, `weft put`). Agent na hocijakom stroji si ho vezme cez `weft take`, ktorý vypíše miestne
+  cesty, takže sa nevyberá žiadne zariadenie. Súbory ostanú v miestnosti, kým ich Karchi nezmaže. `put` a `take`
+  siahajú len na túto miestnosť a odmietnu, keď je v nej ktokoľvek ďalší.
+- Agent, ktorý píše Karchimu (`post_to_owner` vyššie), píše do vlastnej miestnosti, a tá je tiež v tomto pohľade.
+
+### Poradie
+
+| # | Krok | Kontrola |
+|---|---|---|
+| 1 | Rozpoznanie podľa pravidiel 1, 3 a 4, pohľad „AI“, miestnosť „Pre AI“, `weft put` a `weft take` | UI na falošnom homeserveri: miestny agent, duch so značkou aj ručná oprava padnú do „AI“; `put` do miestnosti s ďalším členom odmietne |
+| 2 | Značka z mostov: `ghost_extra_profile_info` v Messengeri, Instagrame a WhatsAppe, Discord podľa toho, čo prijme Tuwunel | po reštarte má Meta AI v profile značku a jeho chat je v „AI“; most nespustil žiadne sťahovanie |
+| 3 | OpenClaw, keď ho Karchi bude chcieť: vlastný účet na Tuwuneli, `@openclaw/matrix` s povoleným súkromným homeserverom | jeho chat sa sám objaví v „AI“ |
+| 4 | Zdieľanie z mobilu do „Pre AI“: na Androide `share_target` v manifeste, na iPhone prijímač LocalSend na asuse | na emulátore Androidu skončí zdieľaný súbor v „Pre AI“ |
+
+Muse, Dots a Duet sa sem dostanú, až keď budú v EÚ. Muse vo WhatsAppe potom príde krokom 2 bez ďalšej práce.
 
 ## Schvaľovanie
 
@@ -221,7 +291,8 @@ ktorého pravidlo je „len Tailscale alebo localhost“, preto potrebuje Karchi
 - či Duet a dots prevezmú vlastné konektory;
 - či dots fungujú v Európe s Business Premium (tvrdí to len cudzí článok);
 - vlastné konektory Muse a jeho krajiny mimo stránok Mety;
-- či most WhatsAppu prenesie chat s AI botom;
+- kedy mosty po zapnutí `ghost_extra_profile_info` označia už existujúce kontakty a či Discord zapíše značku na
+  Tuwuneli;
 - adresa, na ktorú Grok Bot vracia OAuth.
 
 ## Zdroje
@@ -232,7 +303,11 @@ ktorého pravidlo je „len Tailscale alebo localhost“, preto potrebuje Karchi
   [vzdialený prístup](https://developers.beeper.com/desktop-api/advanced/remote-access),
   [Desktop 4.3.326](https://www.beeper.com/changelog/desktop/4.3.326), [FAQ](https://www.beeper.com/faq),
   [ceny](https://www.beeper.com/pricing),
-  [spájanie chatov, 9to5Google](https://9to5google.com/2026/08/11/beeper-merge-chats-update/)
+  [spájanie chatov, 9to5Google](https://9to5google.com/2026/08/11/beeper-merge-chats-update/),
+  [október 2026: Dots, Grok Bot a Muse v Beeper Cloud](https://blog.beeper.com/2026/11/03/october-wrap-up/),
+  [AI asistenti v Beeperi](https://help.beeper.com/en_US/quick-references/ai-assistants-in-beeper),
+  [beeper/ai-bridge](https://github.com/beeper/ai-bridge) (archivovaný)
+- **OpenClaw:** [kanál Matrix](https://docs.openclaw.ai/channels/matrix)
 - **Grok Bot:** [x.ai/bot](https://x.ai/bot), [Introducing Grok Bot](https://x.ai/news/introducing-grok-bot),
   [Grok Bot 1.0](https://x.ai/news/grok-bot-1-0), [FAQ](https://docs.x.ai/grok-bot/faq),
   [konektory](https://docs.x.ai/grok-bot/computer-and-apps),
