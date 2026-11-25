@@ -1016,6 +1016,59 @@ ipcMain.handle('follow', (event, spec) => {
   return openFollow(spec?.network, spec?.who);
 });
 
+// „Prejsť z Beeperu“ (app.js beeperMove): Beeper Desktop's data folder on this computer. Its index.db (with the -wal
+// beside it) is copied while Beeper is closed, and the app sends the copy to the archive piece by piece. Nothing in
+// Beeper's folder is changed; the copy is deleted when the app is done with it or quits.
+const beeperDir = () => (process.platform === 'win32' ? path.join(process.env.APPDATA || '', 'BeeperTexts')
+  : path.join(os.homedir(), process.platform === 'darwin' ? 'Library/Application Support/BeeperTexts' : '.config/BeeperTexts'));
+/** Whether Beeper holds its single-instance lock: on Linux and macOS a link "<host>-<pid>", on Windows a lockfile it keeps open. */
+const beeperRunning = (dir) => {
+  try {
+    const m = /^(.*)-(\d+)$/.exec(fs.readlinkSync(path.join(dir, 'SingletonLock')));
+    if (!m || m[1] !== os.hostname()) return true;
+    try { process.kill(Number(m[2]), 0); return true; } catch (e) { return e.code === 'EPERM'; }
+  } catch {}
+  if (process.platform !== 'win32') return false;
+  try { fs.closeSync(fs.openSync(path.join(dir, 'lockfile'), 'r+')); return false; } catch (e) { return e.code === 'EBUSY' || e.code === 'EPERM'; }
+};
+let beeperCopy = null; // { dir, files: { 'index.db': bytes, 'index.db-wal'?: bytes } }
+const forgetBeeper = () => { if (beeperCopy) fs.rmSync(beeperCopy.dir, { recursive: true, force: true }); beeperCopy = null; };
+app.on('will-quit', forgetBeeper);
+ipcMain.handle('beeper-find', async (event) => {
+  if (!fromApp(event)) throw new Error('Not allowed');
+  forgetBeeper();
+  const dir = beeperDir();
+  if (!fs.existsSync(path.join(dir, 'index.db'))) return { found: false };
+  if (beeperRunning(dir)) return { found: true, running: true };
+  const copy = fs.mkdtempSync(path.join(os.tmpdir(), 'weft-beeper-'));
+  const files = {};
+  try {
+    for (const name of ['index.db', 'index.db-wal']) {
+      const from = path.join(dir, name);
+      if (!fs.existsSync(from)) continue;
+      await fs.promises.copyFile(from, path.join(copy, name)); // a big index.db must not stall the window
+      files[name] = fs.statSync(path.join(copy, name)).size;
+    }
+  } catch (e) { fs.rmSync(copy, { recursive: true, force: true }); throw e; }
+  if (!files['index.db-wal']) delete files['index.db-wal']; // an empty -wal holds nothing
+  beeperCopy = { dir: copy, files };
+  return { found: true, running: false, files };
+});
+ipcMain.handle('beeper-piece', (event, name, offset, length) => {
+  if (!fromApp(event)) throw new Error('Not allowed');
+  if (!beeperCopy || !(name in beeperCopy.files) || !Number.isSafeInteger(offset) || !(length > 0 && length <= 64 << 20)) throw new Error('No such piece');
+  const fd = fs.openSync(path.join(beeperCopy.dir, name), 'r');
+  try {
+    const buf = Buffer.alloc(Math.max(0, Math.min(length, beeperCopy.files[name] - offset)));
+    fs.readSync(fd, buf, 0, buf.length, offset);
+    return new Uint8Array(buf.buffer, buf.byteOffset, buf.length);
+  } finally { fs.closeSync(fd); }
+});
+ipcMain.handle('beeper-done', (event) => {
+  if (!fromApp(event)) throw new Error('Not allowed');
+  forgetBeeper();
+});
+
 ipcMain.handle('collect', (event, spec) => {
   if (event.senderFrame?.origin !== APP_ORIGIN) throw new Error('Not allowed');
   return collect(spec);

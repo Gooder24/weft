@@ -220,6 +220,15 @@ kbd { margin-left: auto; font-family: inherit; font-size: var(--fs); color: var(
 .acctopts .ghost.danger { align-self: flex-start; padding: 6px 0 0; }
 .acctopts h4 { margin: 4px 0 0; font-size: var(--fs); color: var(--muted); font-weight: normal; }
 .acctopts .primary { align-self: flex-start; margin-top: 6px; }
+/* Settings → Účty → Prejsť z Beeperu: what the import would add, per network. */
+.bpmove { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.bptable { align-self: stretch; border-collapse: collapse; font-size: var(--fs); }
+.bptable th, .bptable td { padding: 4px 8px; border-bottom: 1px solid var(--line); text-align: right; font-variant-numeric: tabular-nums; }
+.bptable th:first-child, .bptable td:first-child { text-align: left; }
+.bptable th { color: var(--muted); font-weight: 400; }
+.bptable tfoot td { border-bottom: 0; font-weight: 600; }
+.bppick { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+.hint.warn { color: var(--warning); }
 .subacct { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 4px 0; }
 .subacct > span { flex: 1 1 16em; min-width: 0; overflow-wrap: anywhere; }
 .subacct > span small { display: block; color: var(--muted); }

@@ -13645,6 +13645,7 @@ function accountSettings() {
         logins === null ? null : h('button', { class: 'primary', onclick: () => startLink(app) }, T('Pripojiť')));
     }),
     callSettings(),
+    beeperSettings(),
   ];
 }
 
@@ -13685,6 +13686,136 @@ function callSettings() {
       if (!confirm(T('Zavrieť okno hovorov a odhlásiť ho?'))) return;
       try { await window.desktop.forgetCalls(); alert(T('Okno hovorov je odhlásené.')); } catch { alert(T('Odhlásenie okna hovorov sa nepodarilo.')); }
     } }, T('Odhlásiť okno hovorov')),
+  ];
+}
+
+// ------------------------------------------------------------------ moving over from Beeper Desktop
+
+/* Settings → Účty → „Prejsť z Beeperu“: Beeper Desktop's index.db goes to the archive in pieces
+ * (server/archive/archive.py `beeper`), which first only counts what would come (import_beeper.py --dry-run) and
+ * imports on „Preniesť“. The desktop app finds Beeper's folder itself (desktop/main.js beeper-find); a browser picks
+ * the file. Nothing in Beeper changes, and sign-ins are not taken over: networks are connected in Weft as usual. */
+const BEEPER_PIECE = 16 << 20;
+const bp = { phase: 'idle', progress: 0, report: null, upload: null, error: '', cancel: false };
+const bpSet = (patch) => { Object.assign(bp, patch); render(); };
+const bpCount = (n) => (n || 0).toLocaleString(LOCALE);
+
+/** Each file as { name, size, read(offset, length) } from the desktop app's copy or from picked files. */
+async function beeperFind() {
+  bpSet({ phase: 'finding', error: '' });
+  try {
+    const got = await window.desktop.beeperFind();
+    if (!got.found) return bpSet({ phase: 'notfound' });
+    if (got.running) return bpSet({ phase: 'running' });
+    beeperSend(Object.entries(got.files).map(([name, size]) => ({ name, size, read: (o, n) => window.desktop.beeperPiece(name, o, n) })));
+  } catch (e) { bpSet({ phase: 'error', error: e.message }); }
+}
+function beeperPick(list) {
+  const files = [...list];
+  const index = files.find((f) => !f.name.endsWith('-wal'));
+  const wal = files.find((f) => f.name.endsWith('-wal'));
+  if (!index) return bpSet({ phase: 'error', error: T('Vyber súbor index.db.') });
+  beeperSend([index, wal].filter(Boolean).map((f, i) => ({ name: i ? 'index.db-wal' : 'index.db', size: f.size, read: (o, n) => f.slice(o, o + n) })));
+}
+
+async function beeperCall(path, body, query) {
+  const res = await fetch(`/_archive/beeper/${path}${query ? `?${query}` : ''}`, {
+    method: 'POST', body, headers: { Authorization: `Bearer ${S.token}`, 'Content-Type': query ? 'application/octet-stream' : 'application/json' },
+  });
+  const out = await res.json().catch(() => ({}));
+  if (!res.ok) throw Object.assign(new Error(out.error === "not Beeper's index.db" ? T('Toto nie je index.db z Beeperu.') : out.error || T`archív odpovedal ${res.status}`), { status: res.status, out });
+  return out;
+}
+
+async function beeperSend(files) {
+  const total = files.reduce((n, f) => n + f.size, 0) || 1;
+  bpSet({ phase: 'sending', progress: 0, cancel: false, report: null, upload: null });
+  let sent = 0;
+  try {
+    for (const f of files) {
+      for (let offset = 0; offset < f.size;) {
+        if (bp.cancel) return;
+        const query = new URLSearchParams({ file: f.name, offset: String(offset), ...(bp.upload ? { upload: bp.upload } : {}) });
+        const piece = await f.read(offset, Math.min(BEEPER_PIECE, f.size - offset));
+        const got = await beeperCall('upload', piece, query);
+        bp.upload = got.upload;
+        sent += got.size - offset;
+        offset = got.size;
+        bpSet({ progress: sent / total });
+      }
+    }
+    window.desktop?.beeperDone?.();
+    bpSet({ phase: 'counting' });
+    bpSet({ phase: 'ready', report: await beeperCall('plan', JSON.stringify({ upload: bp.upload })) });
+  } catch (e) {
+    window.desktop?.beeperDone?.();
+    if (!bp.cancel) bpSet({ phase: 'error', error: e.message });
+  }
+}
+
+async function beeperImport() {
+  bpSet({ phase: 'importing' });
+  try {
+    const report = await beeperCall('import', JSON.stringify({ upload: bp.upload }));
+    bpSet({ phase: 'done', report, upload: null });
+    refreshArchiveChats(true); // the list of old conversations has Beeper's own chats now
+  } catch (e) { bpSet({ phase: 'error', error: e.message }); }
+}
+
+function beeperCancel() {
+  const upload = bp.upload;
+  window.desktop?.beeperDone?.();
+  bpSet({ phase: 'idle', cancel: true, upload: null, report: null, progress: 0, error: '' });
+  if (upload) beeperCall('forget', JSON.stringify({ upload })).catch(() => {});
+}
+
+const BEEPER_NETS = { messenger: 'Messenger', instagram: 'Instagram', whatsapp: 'WhatsApp', discord: 'Discord', beeper: 'Beeper', sms: 'SMS', imessage: 'iMessage', linkedin: 'LinkedIn' };
+/** What the import would add (plan) or added (import), per network. */
+function beeperTable(report) {
+  const nets = Object.entries(report.networks || {}).filter(([, n]) => n.chats);
+  const sum = (k) => nets.reduce((a, [, n]) => a + (n[k] || 0), 0);
+  const since = (ts) => (ts ? new Date(ts).toLocaleDateString(LOCALE, { month: 'long', year: 'numeric' }) : '');
+  return h('table', { class: 'bptable' },
+    h('thead', {}, h('tr', {}, h('th', {}, T('Sieť')), h('th', {}, T('Chatov')), h('th', {}, T('Pribudne správ')), h('th', {}, T('Najstaršia')), h('th', {}, T('Miesto')))),
+    h('tbody', {}, nets.map(([id, n]) => h('tr', {},
+      h('td', {}, BEEPER_NETS[id] || id[0].toUpperCase() + id.slice(1)), h('td', {}, bpCount(n.chats)), h('td', {}, bpCount(n.new || 0)), h('td', {}, since(n.oldest)),
+      h('td', {}, n.archive_bytes ? fileSize(n.archive_bytes) : '')))),
+    h('tfoot', {}, h('tr', {}, h('td', {}, T('Spolu')), h('td', {}, bpCount(sum('chats'))), h('td', {}, bpCount(sum('new'))), h('td', {}),
+      h('td', {}, sum('archive_bytes') ? fileSize(sum('archive_bytes')) : ''))));
+}
+
+function beeperSettings() {
+  if (!S.archiveAt && bp.phase === 'idle') return null; // a server without the archive (install.sh has none yet)
+  const desktop = !!window.desktop?.beeperFind;
+  const pick = h('label', { class: 'ghost bppick' }, icon('file'), T('Vybrať index.db'),
+    h('input', { type: 'file', multiple: true, hidden: true, onchange: (e) => { const files = e.target.files; beeperPick(files); e.target.value = ''; } }));
+  const where = h('p', { class: 'hint' }, T('Beeper Desktop ho má v priečinku BeeperTexts: na Linuxe ~/.config/BeeperTexts, na Windowse BeeperTexts v %APPDATA%, na Macu ~/Library/Application Support/BeeperTexts. Najprv Beeper zavri. Ak je vedľa neho index.db-wal, vyber oba.'));
+  const cancel = h('button', { class: 'ghost', type: 'button', onclick: beeperCancel }, T('Zrušiť'));
+  const body = {
+    idle: () => [desktop ? h('button', { class: 'primary', type: 'button', onclick: beeperFind }, T('Nájsť Beeper')) : [pick, where]],
+    finding: () => h('p', { class: 'hint' }, T('Hľadám Beeper…')),
+    running: () => [h('p', { class: 'hint' }, T('Beeper je otvorený. Zavri ho celý (aj ikonu v lište), aby boli uložené aj posledné správy.')),
+      h('button', { class: 'primary', type: 'button', onclick: beeperFind }, T('Skúsiť znova'))],
+    notfound: () => [h('p', { class: 'hint' }, T('Na tomto počítači Beeper Desktop nie je. Ak ho máš na inom, skopíruj odtiaľ index.db.')), pick, where],
+    sending: () => [h('p', { class: 'hint' }, T`Posielam históriu do Weftu… ${Math.floor(bp.progress * 100)} %`), cancel],
+    counting: () => [h('p', { class: 'hint' }, T('Počítam, čo pribudne…')), cancel],
+    ready: () => {
+      const added = Object.values(bp.report.networks || {}).reduce((a, n) => a + (n.new || 0), 0);
+      return [beeperTable(bp.report),
+        h('p', { class: 'hint' }, added
+          ? T('Správy, ktoré Weft už má, sa nepridajú. Chat padne do tej istej miestnosti, kde už vo Wefte píšeš; chaty sietí, ktoré Weft nemá, budú medzi starými konverzáciami. Fotky a súbory ostanú v Beeperi, vo Wefte bude pri správe napísané, čo tam bolo. Pred zápisom sa archív zálohuje.')
+          : T('Weft už má všetko, čo je v tomto Beeperi.')),
+        h('div', { class: 'row' }, added ? h('button', { class: 'primary', type: 'button', onclick: beeperImport }, T('Preniesť')) : null, cancel)];
+    },
+    importing: () => h('p', { class: 'hint' }, T('Prenášam…')),
+    done: () => [h('p', { class: 'hint' }, T`Hotovo: pribudlo ${bpCount(bp.report.added_messages || 0)} správ. Beeper môžeš nechať tak, Weft ho už nepotrebuje.`),
+      h('button', { class: 'ghost', type: 'button', onclick: () => bpSet({ phase: 'idle', report: null }) }, T('Zavrieť'))],
+    error: () => [h('p', { class: 'hint warn' }, bp.error), h('button', { class: 'primary', type: 'button', onclick: beeperCancel }, T('Skúsiť znova'))],
+  }[bp.phase]();
+  return [
+    h('h3', {}, T('Prejsť z Beeperu')),
+    h('p', { class: 'hint' }, T('Prenesie históriu chatov z Beeper Desktopu do Weftu. Najprv ukáže, čo pribudne; v Beeperi nič nezmení. Siete pripoj vo Wefte vyššie, prihlásenia sa z Beeperu neprenášajú.')),
+    h('div', { class: 'bpmove' }, body),
   ];
 }
 

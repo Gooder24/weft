@@ -1237,6 +1237,73 @@ def room_receipts(c, room, since):
     return [{"user": u, "event": e, "ts": ts, "event_ts": ets, "base": bool(b)} for u, e, ts, ets, b in rows]
 
 
+# ---------------------------------------------------------------- moving over from Beeper Desktop
+
+# Weft's Settings → Účty → „Prejsť z Beeperu“ sends Beeper Desktop's index.db (and its -wal beside it) in pieces;
+# import_beeper.py first only counts (plan), then imports. An upload is a copy of someone's chats: it is deleted
+# after the import, on „Zrušiť“, when a new one starts and after a day.
+BEEPER_UPLOADS = os.path.join(os.path.dirname(os.path.abspath(DB)), "beeper-uploads")
+BEEPER_FILES = {"index.db": b"SQLite format 3\0", "index.db-wal": (b"\x37\x7f\x06\x82", b"\x37\x7f\x06\x83")}
+BEEPER_MAX = 8 << 30  # per file; Beeper's index.db holds the decrypted messages and their search index
+BEEPER_PIECE = 64 << 20
+beeper_lock = threading.Lock()  # one count or import at a time: both read the whole archive
+
+
+def beeper_folder(upload):
+    if not isinstance(upload, str) or not re.fullmatch(r"[0-9a-f]{32}", upload): return None
+    path = os.path.join(BEEPER_UPLOADS, upload)
+    return path if os.path.isdir(path) else None
+
+
+def beeper_prune(keep=None, everything=False):
+    try: names = os.listdir(BEEPER_UPLOADS)
+    except FileNotFoundError: return
+    for name in names:
+        path = os.path.join(BEEPER_UPLOADS, name)
+        try: old = time.time() - os.path.getmtime(path) > 86400
+        except FileNotFoundError: continue
+        if name != keep and (everything or old): shutil.rmtree(path, ignore_errors=True)
+
+
+def beeper_piece(upload, name, offset, stream, length):
+    """Write one piece of an uploaded file at its end. Returns (upload, size) or raises ValueError (bad piece) or
+    LookupError (no such upload) or IndexError (the offset is not the file's end: the size there lets it resume)."""
+    if name not in BEEPER_FILES or not 0 < length <= BEEPER_PIECE or offset < 0 or offset + length > BEEPER_MAX:
+        raise ValueError("not a piece of Beeper's index.db")
+    if upload is None and (name != "index.db" or offset): raise ValueError("an upload starts with index.db")
+    data = stream.read(length)
+    if len(data) != length: raise ValueError("the piece ended early")
+    if offset == 0 and not data.startswith(BEEPER_FILES[name]):
+        raise ValueError("not Beeper's index.db" if name == "index.db" else "not a SQLite -wal file")
+    if upload is None:
+        upload = os.urandom(16).hex()
+        os.makedirs(os.path.join(BEEPER_UPLOADS, upload), mode=0o700)
+        os.chmod(BEEPER_UPLOADS, 0o700)
+        beeper_prune(keep=upload, everything=True)  # one person's archive, one move at a time
+    folder = beeper_folder(upload)
+    if not folder: raise LookupError(upload)
+    path = os.path.join(folder, name)
+    have = os.path.getsize(path) if os.path.exists(path) else 0
+    if offset != have: raise IndexError(have)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try: os.write(fd, data)
+    finally: os.close(fd)
+    os.utime(folder)
+    return upload, have + length
+
+
+def beeper_run(folder, dry_run):
+    """import_beeper.py in its own process: a big index.db is read whole, and running out of memory there must not
+    end the archive service."""
+    cmd = [sys.executable, os.path.join(HERE, "import_beeper.py"), folder, "--db", DB, "--spike", SPIKE]
+    out = subprocess.run(cmd + (["--dry-run"] if dry_run else []), capture_output=True, text=True, timeout=3600)
+    if out.returncode:
+        last = (out.stderr.strip().splitlines() or ["the import stopped"])[-1]
+        print("archive: beeper import failed:", last[:300], flush=True)
+        raise RuntimeError("not Beeper's index.db" if "no such table" in last or "not a database" in last else "the import stopped")
+    return json.loads(out.stdout)
+
+
 class Api(BaseHTTPRequestHandler):
     tokens = {}  # access token -> time it was last confirmed as Karchi's; a minute, so a logout counts soon
     owner = None
@@ -1326,9 +1393,12 @@ class Api(BaseHTTPRequestHandler):
         """POST /_archive/chats/link {chat, room}: Weft found the person of an old chat on a bridge; the
         conversation's history then belongs to that room. Karchi must be in the room. An old Discord chat goes only
         to the bridge's room of its own channel. POST /_archive/discord/open {channel}: see discord_weft.py."""
-        path = urllib.parse.urlparse(self.path).path
-        if path not in ("/_archive/chats/link", "/_archive/discord/open"): return self.send(404, {"error": "not found"})
+        url = urllib.parse.urlparse(self.path)
+        path = url.path
+        if path not in ("/_archive/chats/link", "/_archive/discord/open") and not path.startswith("/_archive/beeper/"):
+            return self.send(404, {"error": "not found"})
         if not self.karchi(): return self.send(401, {"error": "not Karchi"})
+        if path.startswith("/_archive/beeper/"): return self.beeper(path.removeprefix("/_archive/beeper/"), dict(urllib.parse.parse_qsl(url.query)))
         token = (self.headers.get("Authorization") or "").removeprefix("Bearer ").strip()
         if path == "/_archive/discord/open":
             try: channel = str(json.loads(self.rfile.read(min(int(self.headers.get("Content-Length") or 0), 65536)) or b"{}")["channel"])
@@ -1370,6 +1440,40 @@ class Api(BaseHTTPRequestHandler):
         if now and now[0] and not now[0].startswith("archive:"):
             return self.send(409, {"error": "already linked", "room": now[0]})
         return self.send(409, {"error": "already linked or not in the archive"})
+
+    def beeper(self, what, args):
+        """POST /_archive/beeper/upload?file=index.db|index.db-wal&offset=N[&upload=ID] with a piece as the body
+        (without upload: a new one, from index.db's start) → {upload, size}; a wrong offset answers 409 with the size
+        there. POST /_archive/beeper/{plan,import,forget} {upload}: count only, import (backs up the archive first,
+        then deletes the upload) or delete it."""
+        beeper_prune()
+        if what == "upload":
+            try: offset, length = int(args.get("offset", "0")), int(self.headers.get("Content-Length") or 0)
+            except ValueError: return self.send(400, {"error": "offset and length are numbers"})
+            try: upload, size = beeper_piece(args.get("upload"), args.get("file", ""), offset, self.rfile, length)
+            except ValueError as e: return self.send(400, {"error": str(e)})
+            except IndexError as e: return self.send(409, {"error": "another offset", "size": e.args[0]})  # before LookupError, its base
+            except LookupError: return self.send(404, {"error": "no such upload"})
+            return self.send(200, {"upload": upload, "size": size})
+        if what not in ("plan", "import", "forget"): return self.send(404, {"error": "not found"})
+        try: upload = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length") or 0), 4096)) or b"{}").get("upload")
+        except (ValueError, AttributeError): return self.send(400, {"error": "upload is needed"})
+        folder = beeper_folder(upload)
+        if not folder: return self.send(404, {"error": "no such upload"})
+        if what == "forget":
+            shutil.rmtree(folder, ignore_errors=True)
+            return self.send(200, {"forgotten": True})
+        if not os.path.exists(os.path.join(folder, "index.db")): return self.send(400, {"error": "index.db is missing"})
+        if not beeper_lock.acquire(blocking=False): return self.send(409, {"error": "another count or import is running"})
+        try:
+            report = beeper_run(folder, dry_run=what == "plan")
+            if what == "import":
+                shutil.rmtree(folder, ignore_errors=True)
+                chats_changed()
+        except RuntimeError as e: return self.send(422 if "not Beeper" in str(e) else 500, {"error": str(e)})
+        except subprocess.TimeoutExpired: return self.send(504, {"error": "the import took too long"})
+        finally: beeper_lock.release()
+        return self.send(200, report)
 
     def discord(self, what, args):
         """GET /_archive/discord/{dms,channels,people}: read from the bridge's database and the archive only."""

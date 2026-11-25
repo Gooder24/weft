@@ -74,18 +74,27 @@ Pravidlá, podľa ktorých sa rozhoduje:
 Kontrola na vymyslených dátach (pokrýva všetky pravidlá vyššie, opakovaný import aj zálohu) je
 `overenie/beeper-import/check.py`.
 
-## Ako má vyzerať prechod pre človeka
+## Prechod pre človeka (postavené)
 
-1. **Nastavenia → Účty → „Prejsť z Beeperu“.** Weft najprv ukáže, ktoré siete má človek v Beeperi (účty z
-   `index.db`), a pripojí ich svojimi prihlasovacími oknami ako dnes.
-2. **Nájdenie Beeperu.** Desktopová appka Weftu (Electron) pozná priečinok Beeperu na tom istom počítači. Keď je
-   Beeper zavretý, skopíruje `index.db` (a so súhlasom cache médií) a pošle ich na server; keď beží, použije
-   Desktop API s tokenom, ktorý človek vloží raz.
-3. **Prehľad pred importom:** tabuľka ako vyššie („pribudne 2 642 správ z WhatsAppu, z toho 2 446 starších, než
-   má Weft“) a čo pribudne na disku. Až potom tlačidlo „Preniesť“.
-4. **Stav inboxu:** nízka priorita, archív a pripomienky sa prenesú na zodpovedajúce Weft miestnosti (kľúč už
-   vieme; zápis do Weftových account data je ďalší krok, dnes ich importér len spočíta).
+**Nastavenia → Účty → „Prejsť z Beeperu“** (len na serveri, kde beží archív):
+
+1. **Siete** si človek pripojí vo Wefte vyššie ako dnes; prihlásenia sa z Beeperu neprenášajú.
+2. **Nájdenie Beeperu.** Desktopová appka Weftu nájde priečinok Beeperu na tom istom počítači (`desktop/main.js`,
+   `beeper-find`). Keď Beeper beží, povie, nech ho človek celý zavrie, aby boli uložené aj posledné správy; potom
+   skopíruje `index.db` (aj s `-wal`) a pošle kópiu na server po 16 MB. V prehliadači si človek súbor vyberie sám,
+   obrazovka povie, kde je.
+3. **Prehľad pred importom:** server spustí importér len na počítanie a appka ukáže tabuľku: pri každej sieti počet
+   chatov, koľko správ pribudne, od kedy a koľko miesta zaberú. Až potom tlačidlo „Preniesť“; „Zrušiť“ nahratú kópiu
+   zmaže.
+4. **Import:** archív sa zálohuje, správy pribudnú a nahratá kópia sa zmaže. Kópiu server zmaže aj pri novom nahratí
+   a po dni. Druhý prenos toho istého Beeperu ukáže „Weft už má všetko“.
 5. **Beeper môže bežať ďalej**, kým si človek zvykne. Weft sa ho nič nepýta a nič v ňom nemení.
+
+Fotky a súbory sa zatiaľ neposielajú: pri správe ostane, čo tam bolo, a CLI `import_beeper.py --media` ich vie
+doplniť zo skopírovaného priečinka. Archív na to má cesty `POST /_archive/beeper/{upload,plan,import,forget}`
+(`server/archive/archive.py`). Importér beží vo vlastnom procese, aby veľký `index.db` neohrozil službu archívu.
+Kontroly sú `overenie/beeper-move/route.py` (cesty archívu cez skutočný socket) a `overenie/beeper-move/run.sh`
+(obrazovka v prehliadači aj ako desktopová appka).
 
 ## „Napojenie priamo na Beeper“
 
@@ -117,10 +126,10 @@ spárovania. Ceny sú z cenníka API k 3. 11. 2026.
 
 | Čo | Prečo ešte nie | Ďalší krok |
 |---|---|---|
-| Ostrý import Karchiho Beeperu do živého archívu | mení `~/matrix-spike`, chce Karchiho áno | `--dry-run`, záloha, import; služba archívu sa na ten čas zastaví ako pri Messenger importe |
-| Zdroj cez Desktop API (história nad rámec cache, prílohy) | treba token z bežiaceho Beeperu | doplniť do importéra čítanie po stránkach (najviac 1 požiadavka za sekundu) a overiť na Karchiho Beeperi |
+| Fotky a súbory z cache Beeperu cez appku | 1,2 GB pri jednom človeku, väčšinou len pozreté | poslať `media/local.beeper.com` po kúskoch ako `index.db`, len so súhlasom |
+| Zdroj cez Desktop API (história nad rámec cache, prílohy) | treba token z bežiaceho Beeperu | doplniť do importéra čítanie po stránkach (najviac 1 požiadavka za sekundu) |
 | Prenos stavu inboxu | zápis do account data Weftu | mapovať štítky na Weftove stavy po miestnostiach |
-| Tlačidlo „Prejsť z Beeperu“ v appke a v desktopovom obale | návrh, nie postavené | po rozhodnutí, či Weft pôjde iným ľuďom (`docs/navrhy/2026-11-prevadzka`) |
+| Archív v `install.sh` | inštalátor zatiaľ dáva len homeserver a appku | kým archív nebeží, obrazovka sa neukáže |
 | Beeper Cloud cez kód obnovy | najviac práce, neoficiálne prihlásenie do Beeperu | len ak API nestačí |
 
 ## Zdroje

@@ -28,6 +28,7 @@ import tempfile
 import time
 
 import archive
+import estimate
 
 # Beeper's bridge protocol id -> Weft's network name and its bridge folder in ~/matrix-spike.
 NETWORKS = {"facebookgo": ("messenger", "messenger"), "facebook": ("messenger", "messenger"),
@@ -207,7 +208,7 @@ def plan(source, database, spike):
     stats = collections.defaultdict(collections.Counter)
     chats, messages, fill, state = [], [], [], collections.Counter()
     cache = Path(source) / "media" / "local.beeper.com"
-    planned = set()
+    planned, oldest = set(), {}
     with closing(read_beeper(source)) as b:
         account_of = {r["threadID"]: r["accountID"] for r in b.execute("SELECT threadID, accountID FROM threads")}
         names = {(r["room_id"], r["id"]): r["full_name"] or r["nickname"] for r in b.execute(
@@ -270,10 +271,14 @@ def plan(source, database, spike):
                 s["older_than_weft"] += len(new)
             s["new"] += len(new)
             s["media"] += sum(1 for r in new for a in r["media"] if a)
+            # What the new rows take in archive.db, counted as estimate.py does (its OVERHEAD is indexes and search).
+            s["archive_bytes"] += sum(estimate.OVERHEAD + len(r["body"].encode()) + len(r["raw"].encode()) for r in new)
+            if new: oldest[net] = min(oldest.get(net, new[0]["ts"]), new[0]["ts"])
             if new: chats.append((chat, net, string(thread, "title"), room, t["accountID"], packed(channel), joins))
             messages.extend(new)
     return {"chats": chats, "messages": messages, "fill": fill,
-            "report": {"networks": {k: dict(v) for k, v in sorted(stats.items())}, "inbox_state": dict(state),
+            "report": {"networks": {k: dict(v) | ({"oldest": oldest[k]} if k in oldest else {}) for k, v in sorted(stats.items())},
+                       "inbox_state": dict(state),
                        "account_count": len(set(account_of.values()))}}
 
 
