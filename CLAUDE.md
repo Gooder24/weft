@@ -41,9 +41,10 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   (newest 200) until Delete. The shell is a LocalSend v2 peer over HTTPS (`desktop/localsend.js`, wired in `main.js`,
   the page's side `app/board.js`) with its own self-signed certificate in `board.json`, whose SHA-256 is its
   fingerprint (LocalSend 1.19 lets in only clients that show one); a device known by its certificate must show the
-  same one again. It finds LocalSend by asking each online tailnet device on 53317 (multicast cannot cross
+  same one again, and only a claim that certificate proves moves it to another address or off HTTPS. It finds LocalSend by asking each online tailnet device on 53317 (multicast cannot cross
   Tailscale), listens only on this machine's Tailscale address and takes what comes from there; „Aj v miestnej sieti“
-  adds every interface and multicast, and files from outside the tailnet then wait for Prijať in the corner. Arrivals
+  adds every interface and multicast, and files and text from outside the tailnet then wait for Prijať in the corner
+  (Enter only after it was a second in sight). Arrivals
   go to Downloads/Weft and show in the corner window like codes (Enter opens or copies). A file goes by the path
   preload takes from the File itself (`webUtils`), so the page cannot name one. Our own protocol through asus comes
   later into the same board: `docs/navrhy/2026-11-nastenka/`. Checks: `tests/localsend/run.cjs`, `tests/localsend/cli.sh`

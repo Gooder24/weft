@@ -6,6 +6,7 @@ import { T, LOCALE } from './i18n.js';
 import { icon } from './icons.js';
 
 const BUSY = new Set(['sending', 'receiving']);
+const ASK_SEEN_MS = 1000; // a stranger's files or text are accepted by Enter only once the question was this long in sight
 const size = (n) => (n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB` : n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1e3))} kB`);
 const LINK = /^https?:\/\/\S+$/;
 
@@ -51,7 +52,11 @@ export function createBoard({ h, render, isOpen, open }) {
         const what = ev.item.text != null ? ev.item.text.slice(0, 80) : ev.item.files.map((f) => f.name).join(', ');
         notify(T`Prišlo z ${ev.item.device.alias}`, what, 'weft-board');
       }
-      if (ev.type === 'ask') notify(T`${ev.state.ask.device.alias} posiela súbory`, T('Prijmi ich vo Wefte.'), 'weft-board-ask');
+      if (ev.type === 'ask') {
+        const { device, text } = ev.state.ask;
+        if (text != null) notify(T`${device.alias} posiela text`, T('Prijmi ho vo Wefte.'), 'weft-board-ask');
+        else notify(T`${device.alias} posiela súbory`, T('Prijmi ich vo Wefte.'), 'weft-board-ask');
+      }
       if (!ev.state.ask) unnotify('weft-board-ask');
       render();
     });
@@ -222,14 +227,17 @@ export function createBoard({ h, render, isOpen, open }) {
 
   // ------------------------------------------------------------------ the corner window
 
-  /** An arrival while the board is closed, or files from outside the tailnet that wait for Prijať. */
+  /** An arrival while the board is closed, or files or text from outside the tailnet that wait for Prijať. */
   function popView() {
     const ask = b.st?.ask;
     if (ask) {
-      return h('div', { class: 'codepop boardpop', role: 'alertdialog', 'aria-label': T('Prijať súbory'), 'data-key': `ask:${ask.id}` },
+      if (b.askShown?.id !== ask.id) b.askShown = { id: ask.id, at: Date.now() };
+      const text = ask.text != null;
+      return h('div', { class: 'codepop boardpop', role: 'alertdialog', 'aria-label': text ? T('Prijať text') : T('Prijať súbory'), 'data-key': `ask:${ask.id}` },
         h('div', { class: 'codepop-head' },
-          h('span', {}, h('b', {}, T`${ask.device.alias} posiela súbory: ${ask.count} (${size(ask.size)})`),
-            h('small', {}, ask.names.join(', ')), h('small', {}, T('Mimo Tailscale, z miestnej siete.')))),
+          h('span', {}, h('b', {}, text ? T`${ask.device.alias} posiela text` : T`${ask.device.alias} posiela súbory: ${ask.count} (${size(ask.size)})`),
+            text ? null : h('small', {}, ask.names.join(', ')), h('small', {}, T('Mimo Tailscale, z miestnej siete.')))),
+        text ? h('p', { class: 'board-text boardpop-text' }, ask.text) : null,
         h('div', { class: 'board-row' },
           h('button', { class: 'ghost', type: 'button', onclick: () => api.call('respond', ask.id, false) }, T('Odmietnuť (Esc)')),
           h('button', { class: 'primary', type: 'button', onclick: () => api.call('respond', ask.id, true) }, T('Prijať (Enter)'))));
@@ -251,14 +259,20 @@ export function createBoard({ h, render, isOpen, open }) {
     primary(it);
     if (it.text != null) setTimeout(() => { if (b.pop === it.id) closePop(); }, 900); else closePop();
   }
-  /** Enter and Esc for the corner window while nothing else has the keyboard (as the Gmail code's). */
+  /** Enter and Esc for the corner window while nothing else has the keyboard (as the Gmail code's). Enter takes what a
+   *  stranger sends only once the question has been in sight for a second, so an Enter meant for the inbox never does. */
   function popKey(e) {
     if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return false;
     const free = !document.activeElement || document.activeElement === document.body;
     const ask = b.st?.ask;
     const it = !ask && b.pop && !isOpen() ? find(b.pop) : null;
     if (!ask && !it) return false;
-    if (e.key === 'Enter' && free) { e.preventDefault(); if (ask) api.call('respond', ask.id, true); else popPrimary(it); return true; }
+    if (e.key === 'Enter' && free) {
+      if (ask && !(b.askShown?.id === ask.id && Date.now() - b.askShown.at >= ASK_SEEN_MS)) return false;
+      e.preventDefault();
+      if (ask) api.call('respond', ask.id, true); else popPrimary(it);
+      return true;
+    }
     if (e.key === 'Escape') { e.preventDefault(); if (ask) api.call('respond', ask.id, false); else closePop(); return true; }
     return false;
   }

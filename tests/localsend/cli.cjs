@@ -72,6 +72,17 @@ console.log('runtime', process.versions.electron ? `Electron ${process.versions.
   const tin = p2.state().items.find((x) => x.text != null);
   check('the CLI sends a text, the board has it', tin?.text === 'správa z CLI', `exit ${r2.code} ${r2.out.split('\n').slice(-6).join(' | ')}`);
   check('the board learnt the CLI as a device', p2.state().devices.some((d) => d.alias === 'ls-cli'), JSON.stringify(p2.state().devices.map((d) => [d.alias, d.port, d.protocol])));
+
+  // 3. „Aj v miestnej sieti“ off, on and off again at once ends off: only its own address (here 10.77.0.1) answers.
+  const knock = (host) => new Promise((resolve) => {
+    const s = require('node:net').connect(53317, host);
+    s.once('connect', () => { s.destroy(); resolve(true); });
+    s.once('error', () => resolve(false));
+  });
+  const everywhere = await knock('127.0.0.1');
+  await Promise.all([p2.setLan(false), p2.setLan(true), p2.setLan(false)]);
+  const after = [await knock('127.0.0.1'), await knock('10.77.0.1'), p2.state().me.lan];
+  check('a quick off/on/off of the local network ends listening only on its own address', everywhere && after.join() === 'false,true,false', JSON.stringify({ everywhere, after }));
   await p2.stop();
   console.log(failed ? `${failed} failed` : 'all passed');
   process.exit(failed ? 1 : 0);

@@ -3,7 +3,7 @@
 // input (its path, as a drop would give it) and a pasted picture (its bytes). Nothing leaves 127.0.0.1, and Downloads is
 // a temporary folder. Prints PASS/FAIL lines, exits 1 on any FAIL. Run under Xvfb with a throwaway profile:
 //   XDG_CONFIG_HOME=/tmp/x SPRAVY_URL=http://127.0.0.1:18433/ SPRAVY_SELFTEST=board xvfb-run -a electron --no-sandbox desktop
-const { app, BrowserWindow } = require('electron');
+const { app } = require('electron');
 const http = require('node:http');
 const https = require('node:https');
 const fs = require('node:fs');
@@ -54,11 +54,12 @@ module.exports = async function selftestBoard(t) {
     res.writeHead(404); res.end();
   });
 
+  let main = null;
   try {
     const boardPort = await listen(() => {}).then((p) => { servers.pop().close(); return p; }); // a free port for the board
     t.startBoard({ tailnet: async () => ({ self: null, peers: [{ ip: '127.0.0.1', online: true }] }), hosts: ['127.0.0.1'], port: boardPort, probePort: phonePort, trusted: () => true });
     t.openMain();
-    const main = t.getMain();
+    main = t.getMain();
     await new Promise((r) => main.webContents.once('did-finish-load', r));
     const run = (js) => main.webContents.executeJavaScript(js);
     check('okno má nástenku (preload)', await run(`typeof window.desktop?.board?.send === 'function' && typeof window.desktop.board.call === 'function'`));
@@ -121,10 +122,18 @@ module.exports = async function selftestBoard(t) {
     check('beh testu', false, err.stack);
   } finally {
     for (const s of servers) s.close();
-    await t.getBoard()?.stop();
-    for (const w of BrowserWindow.getAllWindows()) w.destroy();
-    fs.rmSync(tmp, { recursive: true, force: true });
-    console.log(fails ? `FAILED ${fails}` : 'ALL PASS');
-    app.exit(fails ? 1 : 0);
+    // Quitting right after a change keeps it: will-quit waits for the board's last write (main.js).
+    const statePath = path.join(app.getPath('userData'), 'board.json');
+    let last = null;
+    try { last = (await main?.webContents.executeJavaScript(`window.desktop.board.send({ text: 'posledné pred zatvorením' })`))?.id; } catch { /* checked below */ }
+    process.on('exit', () => {
+      let kept = false;
+      try { kept = !!last && JSON.parse(fs.readFileSync(statePath, 'utf8')).items.some((x) => x.id === last); } catch { /* not written */ }
+      check('zatvorenie hneď po zmene ju uloží', kept);
+      fs.rmSync(tmp, { recursive: true, force: true });
+      console.log(fails ? `FAILED ${fails}` : 'ALL PASS');
+      process.exitCode = fails ? 1 : 0;
+    });
+    app.quit();
   }
 };

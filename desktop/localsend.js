@@ -3,7 +3,7 @@
 //
 // It listens only on this machine's Tailscale address, so only devices of the tailnet reach it, and takes what they
 // send without asking. „Aj v miestnej sieti“ (st.lan) adds every interface and LocalSend's multicast discovery, like
-// the LocalSend app itself; files from a device outside the tailnet then wait for Prijať on the board.
+// the LocalSend app itself; files and text from a device outside the tailnet then wait for Prijať on the board.
 //
 // Plain Node, no Electron: main.js wires it to the window, tests/localsend/run.cjs runs it against itself and a fake
 // HTTPS receiver.
@@ -23,7 +23,8 @@ const PORT = 53317;
 const GROUP = '224.0.0.167';
 const VERSION = '2.1';
 const MAX_ITEMS = 200; // the board keeps the newest; files stay on the disk
-const ASK_MS = 60_000; // files from outside the tailnet wait this long for Prijať
+const ASK_MS = 60_000; // files and text from outside the tailnet wait this long for Prijať
+const CERT_FP = /^[0-9a-f]{64}$/i; // a fingerprint that is a certificate's SHA-256, as LocalSend's
 const IDLE_MS = 5 * 60_000; // a receive session nobody writes to ends
 const ONLINE_MS = 3 * 60_000; // a device seen this recently counts as there
 const PREPARE_MS = 120_000; // the other side may wait for its own Accept
@@ -40,10 +41,13 @@ function safeParts(name) {
   return parts.length ? parts : ['subor'];
 }
 
-/** Claims a file name nobody has (adds „ (1)“ before the extension) by creating it empty. */
+/** Claims a file name nobody has (adds „ (1)“ before the extension) by creating it empty. A folder on the way that
+ *  is a link out of `dir` (made by someone else) is refused. */
 async function claim(dir, parts) {
   const folder = path.join(dir, ...parts.slice(0, -1));
   await fsp.mkdir(folder, { recursive: true });
+  const [realDir, realFolder] = await Promise.all([fsp.realpath(dir), fsp.realpath(folder)]);
+  if (realFolder !== realDir && !realFolder.startsWith(realDir + path.sep)) throw Object.assign(new Error('bad name'), { status: 400 });
   const name = parts[parts.length - 1];
   const ext = path.extname(name);
   const stem = name.slice(0, name.length - ext.length) || name;
@@ -196,27 +200,38 @@ function createPeer(opts) {
   };
   const info = () => ({ alias, version: VERSION, deviceModel, deviceType: 'desktop', fingerprint: st.fingerprint, port, protocol: 'https', download: false });
   // A device known by a certificate's fingerprint (64 hex digits, as LocalSend's) must show that certificate again.
-  const call = (dev, method, pathq, o = {}) => request(dev, method, pathq, { ...o, tls: st.tls, expect: /^[0-9a-f]{64}$/i.test(dev.fingerprint || '') ? dev.fingerprint : null });
+  const call = (dev, method, pathq, o = {}) => request(dev, method, pathq, { ...o, tls: st.tls, expect: CERT_FP.test(dev.fingerprint || '') ? dev.fingerprint : null });
   const snapshot = () => ({
     me: { alias, port, lan: st.lan, tailnet: !!selfIp, listening: listeningOn.length > 0, error: listenError, dir },
     devices: Object.values(st.devices).map((d) => ({ ...d, online: Date.now() - d.seen < ONLINE_MS })).sort((a, b) => b.seen - a.seen),
     items: st.items,
-    ask: asking && { id: asking.id, device: asking.device, count: asking.count, size: asking.size, names: asking.names },
+    ask: asking && { id: asking.id, device: asking.device, count: asking.count, size: asking.size, names: asking.names, text: asking.text },
   });
   const emit = (type, extra = {}) => { if (!stopped) onEvent({ type, state: snapshot(), ...extra }); };
   // Progress comes in many small pieces: the window hears of it at most four times a second.
   const emitSoon = () => { if (!stateTimer) stateTimer = setTimeout(() => { stateTimer = null; emit('state'); }, 250); };
 
   /** A device that announced itself, registered or answered a probe; keyed by its fingerprint. Devices of the tailnet
-   *  are default targets from the start, ones of the local network only once Karchi says so. */
-  function remember(body, ip, how) {
+   *  are default targets from the start, ones of the local network only once Karchi says so. `proven` is the hash of
+   *  the certificate the claim came with (the client certificate of its request, or the server's of our probe). */
+  function remember(body, ip, how, proven = null) {
     const fp = String(body?.fingerprint || `${ip}:${body?.port || PORT}`);
     if (fp === st.fingerprint) return null;
     const was = st.devices[fp];
+    const port = Number(body?.port) || was?.port || PORT;
+    const protocol = body?.protocol === 'https' ? 'https' : body?.protocol === 'http' ? 'http' : was?.protocol || 'https';
+    // A device known by its certificate moves (address, port) or drops encryption only on a claim that certificate
+    // proves. Anyone can name its fingerprint (LocalSend announces it), so another claim only makes us ask the claimed
+    // address over HTTPS, pinned to that certificate, and changes nothing meanwhile.
+    if (was && CERT_FP.test(fp) && was.protocol === 'https' && !sameFp(proven, fp)) {
+      if (was.ip !== ip || was.port !== port || protocol !== 'https') { confirm(fp, ip, port); return null; }
+      was.seen = Date.now();
+      save();
+      return was;
+    }
     const via = trusted(ip) ? 'tailnet' : 'lan';
     const dev = {
-      fingerprint: fp, alias: String(body?.alias || was?.alias || ip).slice(0, 80), ip,
-      port: Number(body?.port) || was?.port || PORT, protocol: body?.protocol === 'https' ? 'https' : body?.protocol === 'http' ? 'http' : was?.protocol || 'https',
+      fingerprint: fp, alias: String(body?.alias || was?.alias || ip).slice(0, 80), ip, port, protocol,
       deviceType: body?.deviceType || was?.deviceType || null, deviceModel: body?.deviceModel || was?.deviceModel || null,
       via, seen: Date.now(), default: was ? was.default : via === 'tailnet',
     };
@@ -226,6 +241,19 @@ function createPeer(opts) {
     return dev;
   }
   const who = (dev) => ({ fingerprint: dev?.fingerprint || '', alias: dev?.alias || '?' });
+  /** Whether the device of a certificate now answers at another address: a register there that must show it. */
+  const confirming = new Set();
+  function confirm(fp, ip, port) {
+    const key = `${fp} ${ip} ${port}`;
+    if (stopped || confirming.has(key)) return;
+    confirming.add(key);
+    call({ fingerprint: fp, ip, port, protocol: 'https' }, 'POST', `${API}/register`, { json: info(), timeout: 3000 })
+      .then((r) => {
+        if (r.status === 200 && r.data && typeof r.data === 'object' && remember({ ...r.data, fingerprint: fp, port, protocol: 'https' }, ip, 'confirm', r.proven)) emitSoon();
+      })
+      .catch(() => { /* not that device */ })
+      .finally(() => confirming.delete(key));
+  }
 
   function addItem(item) {
     const it = { id: newId(), at: Date.now(), ...item };
@@ -251,7 +279,7 @@ function createPeer(opts) {
       if (route === `GET ${API}/info`) return reply(200, info());
       if (route === `POST ${API}/register`) {
         const body = JSON.parse((await readBody(req)).toString() || '{}');
-        if ((!proven || sameFp(proven, body?.fingerprint)) && remember(body, ip, 'register')) emitSoon();
+        if ((!proven || sameFp(proven, body?.fingerprint)) && remember(body, ip, 'register', proven)) emitSoon();
         return reply(200, info());
       }
       if (route === `POST ${API}/prepare-upload`) return await prepare(req, ip, reply, proven);
@@ -275,28 +303,30 @@ function createPeer(opts) {
       .filter((f) => f && typeof f.id === 'string' && typeof f.fileName === 'string');
     if (!body?.info || !files.length) return reply(400, { message: 'Invalid body' });
     if (proven && !sameFp(proven, body.info.fingerprint)) return reply(403, { message: 'Fingerprint does not match the client certificate' });
-    const dev = remember(body.info, ip, 'upload') || { fingerprint: '', alias: ip };
+    const dev = remember(body.info, ip, 'upload', proven) || { fingerprint: '', alias: ip };
     // LocalSend's „Message“: one text file whose text is its preview; nothing is uploaded.
-    if (files.length === 1 && /^text\//.test(files[0].fileType || '') && typeof files[0].preview === 'string') {
-      const item = addItem({ dir: 'in', device: who(dev), text: files[0].preview.slice(0, 100_000), status: 'done' });
-      emit('arrived', { item });
-      return reply(204);
-    }
-    if (sessionLive() || asking) return reply(409, { message: 'Blocked by another session' });
-    if (session) endSession('stopped');
+    const text = files.length === 1 && /^text\//.test(files[0].fileType || '') && typeof files[0].preview === 'string' ? files[0].preview.slice(0, 100_000) : null;
+    if (asking || (text == null && sessionLive())) return reply(409, { message: 'Blocked by another session' });
     const size = files.reduce((n, f) => n + (Number(f.size) || 0), 0);
+    // Files and text from outside the tailnet wait for Prijať.
     if (!trusted(ip)) {
       const ok = await new Promise((resolve) => {
         const timer = setTimeout(() => resolve(false), ASK_MS);
-        asking = { id: newId(), device: who(dev), count: files.length, size, names: files.slice(0, 5).map((f) => f.fileName),
-          resolve: (yes) => { clearTimeout(timer); resolve(yes); } };
+        asking = { id: newId(), device: who(dev), count: files.length, size, names: text == null ? files.slice(0, 5).map((f) => f.fileName) : [],
+          text: text == null ? undefined : text.slice(0, 300), resolve: (yes) => { clearTimeout(timer); resolve(yes); } };
         emit('ask');
       });
       asking = null;
       emit('state');
       if (!ok) return reply(403, { message: 'Rejected' });
-      if (sessionLive()) return reply(409, { message: 'Blocked by another session' });
+      if (text == null && sessionLive()) return reply(409, { message: 'Blocked by another session' });
     }
+    if (text != null) {
+      const item = addItem({ dir: 'in', device: who(dev), text, status: 'done' });
+      emit('arrived', { item });
+      return reply(204);
+    }
+    if (session) endSession('stopped');
     const id = newId();
     const item = addItem({ dir: 'in', device: who(dev), status: 'receiving', got: 0, total: size,
       files: files.map((f) => ({ name: safeParts(f.fileName).join('/'), size: Number(f.size) || 0, type: String(f.fileType || '') })) });
@@ -316,11 +346,12 @@ function createPeer(opts) {
     const s = session;
     s.touched = Date.now();
     const target = await claim(dir, safeParts(f.name));
-    const part = `${target}.part`;
+    // Written beside it under a name of its own, never over an existing file, and renamed once whole.
+    const part = path.join(path.dirname(target), `.${path.basename(target)}.${newId()}.part`);
     const hash = crypto.createHash('sha256');
     let got = 0;
     const ok = await new Promise((resolve) => {
-      const out = fs.createWriteStream(part, { mode: 0o644 });
+      const out = fs.createWriteStream(part, { flags: 'wx', mode: 0o644 });
       let settled = false;
       const done = (yes) => { if (settled) return; settled = true; if (!yes) out.destroy(); resolve(yes); };
       s.streams.add(req);
@@ -391,6 +422,8 @@ function createPeer(opts) {
     if (r.status === 401) return { status: 'pin' };
     if (r.status !== 200 || !r.data?.sessionId || typeof r.data.files !== 'object') return { status: 'failed', note: `HTTP ${r.status}` };
     const { sessionId, files: tokens } = r.data;
+    // A file that failed ends the session there too, so the device is not left „busy“ until it gives up.
+    const cancel = () => call(dev, 'POST', `${API}/cancel?sessionId=${encodeURIComponent(sessionId)}`, { timeout: 3000 }).catch(() => {});
     for (const f of files) {
       const token = tokens[f.id];
       if (!token) continue; // the receiver took only some
@@ -400,10 +433,10 @@ function createPeer(opts) {
       try {
         up = await call(dev, 'POST', `${API}/upload?${q}`, { stream, length: f.size, timeout: 60_000, onBytes });
       } catch (err) {
-        call(dev, 'POST', `${API}/cancel?sessionId=${encodeURIComponent(sessionId)}`).catch(() => {});
+        await cancel();
         return { status: 'failed', note: err.code || err.message };
       }
-      if (up.status !== 200 && up.status !== 204) return { status: 'failed', note: `HTTP ${up.status}` };
+      if (up.status !== 200 && up.status !== 204) { await cancel(); return { status: 'failed', note: `HTTP ${up.status}` }; }
     }
     return { status: 'done' };
   }
@@ -460,7 +493,7 @@ function createPeer(opts) {
       try {
         const r = await call({ ip, port: probePort, protocol }, 'POST', `${API}/register`, { json: info(), timeout: 2500 });
         // Over HTTPS the device is who its certificate says, whatever its answer claims.
-        if (r.status === 200 && r.data && typeof r.data === 'object') return remember({ ...r.data, fingerprint: r.proven || r.data.fingerprint, port: probePort, protocol }, ip, 'probe');
+        if (r.status === 200 && r.data && typeof r.data === 'object') return remember({ ...r.data, fingerprint: r.proven || r.data.fingerprint, port: probePort, protocol }, ip, 'probe', r.proven);
       } catch { /* nothing there, or not this protocol */ }
     }
     return null;
@@ -514,7 +547,14 @@ function createPeer(opts) {
 
   // ---------------------------------------------------------------- listening
 
-  async function listen() {
+  /** Listens where it should now; calls queue, so a quick on/off of „Aj v miestnej sieti“ ends as the last one says. */
+  let listening = Promise.resolve();
+  function listen() {
+    listening = listening.then(rebind, rebind);
+    return listening;
+  }
+  async function rebind() {
+    if (stopped) return;
     const want = st.lan ? ['0.0.0.0'] : [selfIp, ...extraHosts].filter(Boolean);
     if (want.join() === listeningOn.join() && servers.length) return;
     await Promise.all(servers.map((s) => new Promise((r) => s.close(r))));
@@ -598,11 +638,12 @@ function createPeer(opts) {
     multicast(false);
     if (session) endSession('stopped');
     if (asking) asking.resolve(false);
-    await Promise.all(servers.map((s) => new Promise((r) => { s.close(r); s.closeAllConnections?.(); })));
-    servers = [];
     clearTimeout(saveTimer);
     await saving; // a write in flight must not land after the last one
     try { fs.writeFileSync(statePath, JSON.stringify(st), { mode: 0o600 }); } catch { /* no disk */ }
+    await listening;
+    await Promise.all(servers.map((s) => new Promise((r) => { s.close(r); s.closeAllConnections?.(); })));
+    servers = [];
   }
 
   return { start, stop, scan, send, retry, setLan, setDefault, forget, remove, respond, fileOf, state: snapshot, info, onMulticast, get port() { return port; } };

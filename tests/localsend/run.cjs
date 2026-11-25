@@ -118,6 +118,21 @@ const settled = (p, id) => until(() => { const it = item(p, id); return it && ![
     assert.ok(fs.readdirSync(dir).every((n) => !n.endsWith('.part')));
   });
 
+  await check('a folder that is a link out of the downloads gets nothing; a file named like a staging one stays', async () => {
+    const outside = path.join(tmp, 'outside');
+    fs.mkdirSync(outside, { recursive: true });
+    fs.symlinkSync(outside, path.join(tmp, 'a', 'in', 'odkaz'));
+    const r = await b.send({ files: [sendFile('odkaz/von.txt', Buffer.from('von'))] });
+    assert.notEqual((await settled(b, r.id)).status, 'done');
+    assert.deepEqual(fs.readdirSync(outside), []);
+    fs.writeFileSync(path.join(tmp, 'a', 'in', 'drz.txt.part'), 'moje');
+    const k = await b.send({ files: [sendFile('drz.txt', Buffer.from('nové'))] });
+    assert.equal((await settled(b, k.id)).status, 'done');
+    assert.equal(fs.readFileSync(path.join(tmp, 'a', 'in', 'drz.txt.part'), 'utf8'), 'moje');
+    assert.equal(fs.readFileSync(path.join(tmp, 'a', 'in', 'drz.txt'), 'utf8'), 'nové');
+    assert.deepEqual(fs.readdirSync(path.join(tmp, 'a', 'in')).filter((n) => n.endsWith('.part') && n !== 'drz.txt.part'), []);
+  });
+
   await check('the same name again gets „ (1)“', async () => {
     const r = await b.send({ files: [sendFile('notes.txt', Buffer.from('druhy'))] });
     assert.equal((await settled(b, r.id)).status, 'done');
@@ -266,6 +281,55 @@ const settled = (p, id) => until(() => { const it = item(p, id); return it && ![
     await raw(a.port, 'POST', `${API}/register`, { alias: 'liar2', fingerprint: 'AB'.repeat(32) }, tls);
     assert.equal(a.state().devices.some((x) => x.alias === 'liar2'), false);
     assert.ok(a.state().devices.length >= before);
+  });
+
+  await check('a device known by its certificate moves only when that certificate proves it', async () => {
+    const afp = a.info().fingerprint;
+    const known = () => b.state().devices.find((x) => x.fingerprint === afp);
+    assert.equal(known().protocol, 'https');
+    const hits = [];
+    const trap = http.createServer((req, res) => { hits.push(req.url); res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{}'); });
+    await new Promise((r) => trap.listen(0, '127.0.0.1', r));
+    const claim = { alias: 'Weft a', fingerprint: afp, port: trap.address().port, protocol: 'http' };
+    // Its fingerprint claimed without its certificate: by register and by a multicast announcement.
+    assert.equal((await raw(b.port, 'POST', `${API}/register`, claim)).status, 200);
+    b.onMulticast(Buffer.from(JSON.stringify({ ...claim, announce: true })), { address: '127.0.0.1' });
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(known().port, a.port);
+    assert.equal(known().protocol, 'https');
+    const t = await b.send({ text: 'len pre a', to: [afp] });
+    assert.equal((await settled(b, t.id)).status, 'done');
+    assert.ok(a.state().items.some((x) => x.text === 'len pre a'));
+    assert.deepEqual(hits, []);
+    trap.close();
+    // The same board again on another port (its certificate kept): an announcement from there is checked and moves it.
+    const e = await peer('g');
+    const efp = e.info().fingerprint;
+    b.onMulticast(Buffer.from(JSON.stringify({ ...e.info(), announce: false })), { address: '127.0.0.1' });
+    await e.stop();
+    const e2 = await peer('g');
+    assert.equal(e2.info().fingerprint, efp);
+    b.onMulticast(Buffer.from(JSON.stringify({ ...e2.info(), announce: false })), { address: '127.0.0.1' });
+    await until(() => b.state().devices.find((x) => x.fingerprint === efp)?.port === e2.port).catch((err) => { throw new Error(`${err.message} ${JSON.stringify(b.state().devices.find((x) => x.fingerprint === efp))} e2=${e2.port}`); });
+    await e2.stop();
+  });
+
+  await check('a text from outside the tailnet waits for Prijať too', async () => {
+    const c = await peer('c2', { trusted: () => false });
+    b.onMulticast(Buffer.from(JSON.stringify({ ...c.info(), announce: false })), { address: '127.0.0.1' });
+    const cfp = c.info().fingerprint;
+    const no = await b.send({ text: 'cudzí text', to: [cfp] });
+    const ask = await until(() => c.state().ask);
+    assert.equal(ask.text, 'cudzí text');
+    assert.equal(c.state().items.length, 0);
+    c.respond(ask.id, false);
+    assert.equal((await settled(b, no.id)).status, 'declined');
+    assert.equal(c.state().items.length, 0);
+    const yes = await b.send({ text: 'prijatý text', to: [cfp] });
+    c.respond((await until(() => c.state().ask)).id, true);
+    assert.equal((await settled(b, yes.id)).status, 'done');
+    assert.equal(c.state().items[0].text, 'prijatý text');
+    await c.stop();
   });
 
   await check('an announcement on the local network is answered by HTTP register', async () => {

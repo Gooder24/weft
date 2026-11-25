@@ -22,7 +22,9 @@ do tej istej nástenky.
 - **Certifikát:** LocalSend 1.19 pustí cez HTTPS len klienta, ktorý ukáže vlastný certifikát, a zariadenie pozná
   podľa SHA-256 jeho certifikátu. Nástenka si raz vyrobí svoj (RSA 2048 ako LocalSend) a drží ho vo svojom stave
   (`board.json` v profile appky, len pre vlastníka). Zariadenie, ktoré poznala podľa certifikátu, musí ukázať ten
-  istý; keď na jeho adrese odpovie iný, nepošle sa mu nič, ani mená súborov.
+  istý; keď na jeho adrese odpovie iný, nepošle sa mu nič, ani mená súborov. Na inú adresu alebo na HTTP bez
+  šifrovania ho presunie len tvrdenie, ktoré ten certifikát dokáže; keď sa niekto iný ohlási s jeho odtlačkom,
+  nástenka sa opýta novej adresy cez HTTPS a dovtedy nemení nič.
 - **Zariadenie sa nevyberá:** nástenka si pamätá zariadenia, ktoré našla, a tie z Tailscale sú od začiatku
   predvolené. Čo pošleš, ide do všetkých predvolených naraz. Klik na zariadenie ho pridá alebo uberie; nepredvolené
   a nedostupné sa neukazujú.
@@ -30,16 +32,18 @@ do tej istej nástenky.
   Tailscale, ktoré je online, či na porte 53317 beží LocalSend (najprv HTTPS ako appka LocalSend, potom HTTP).
   Multicast cez Tailscale nejde, preto takto.
 - **Počúva len na adrese Tailscale** tohto počítača a čo príde odtiaľ, prijme bez pýtania. Prepínač „Aj v miestnej
-  sieti“ pridá všetky rozhrania a multicast ako appka LocalSend (doma, v škole bez Tailscale). Súbory od zariadenia
-  mimo Tailscale potom čakajú v rohovom okne na Prijať (Enter) alebo Odmietnuť (Esc), 60 sekúnd.
+  sieti“ pridá všetky rozhrania a multicast ako appka LocalSend (doma, v škole bez Tailscale). Súbory aj text od
+  zariadenia mimo Tailscale potom čakajú v rohovom okne na Prijať (Enter) alebo Odmietnuť (Esc), 60 sekúnd. Enter
+  platí až sekundu po tom, čo sa okno ukáže, aby ho neprijal Enter mienený pre inbox.
 - **Port:** 53317 je port LocalSendu. Keď ho má appka LocalSend na tom istom počítači, nástenka vezme ďalší voľný
   (do 53320) a povie to; v LocalSende v mobile treba vtedy tento počítač pridať ručne (adresa a port).
 - **Poslať:** text a Enter, súbory potiahnuť na nástenku, Ctrl+V (snímka obrazovky, skopírované súbory) alebo
   „Pridať súbory“. Súbor ide z disku po svojej ceste; stránka nemôže podstrčiť inú cestu, lebo cestu berie preload zo
   samotného súboru (`webUtils.getPathForFile`). Vložený obrázok bez cesty sa uloží do `board-out` v profile appky a
   zmaže sa so svojou položkou.
-- **Prijať:** súbory idú do Stiahnutých/Weft (podpriečinky zostanú, meno nikdy nevyjde von z priečinka, rovnaké meno
-  dostane „ (1)“, kontrolný súčet sa overí, ak ho odosielateľ pošle). Text príde ako text.
+- **Prijať:** súbory idú do Stiahnutých/Weft (podpriečinky zostanú, meno nikdy nevyjde von z priečinka ani cez odkaz
+  na iný priečinok, rovnaké meno dostane „ (1)“, kontrolný súčet sa overí, ak ho odosielateľ pošle). Súbor sa píše pod
+  vlastným dočasným menom a premenuje sa, až keď je celý, takže neprepíše nič, čo tam už je. Text príde ako text.
 - **Príchod:** keď je nástenka zavretá, ukáže sa rohové okno ako pri overovacích kódoch: Enter otvorí súbor alebo
   skopíruje text, Esc ho zavrie. Keď Weft nie je v popredí, príde aj systémová notifikácia.
 - **Ostane:** nástenka drží posledných 200 položiek (odoslané aj prijaté), kým ich nezmažeš. Delete maže len z
@@ -80,8 +84,7 @@ na Tailscale. Vtedy pôjde položka cez asus:
 ## Riziká
 
 - „Aj v miestnej sieti“ počúva na všetkých rozhraniach a v cudzej sieti (škola) nástenku vidia všetky zariadenia s
-  LocalSendom. Súbory od nich čakajú na Prijať, text príde rovno (ako v appke LocalSend). Preto je to prepínač a nie
-  predvolené.
+  LocalSendom. Súbory aj text od nich čakajú na Prijať. Preto je to prepínač a nie predvolené.
 - Starší LocalSend so šifrovaním vypnutým (HTTP) nástenka nájde a pošle mu, ale tie súbory idú v miestnej sieti
   nešifrovane (cez Tailscale ich šifruje Tailscale).
 - Mobil bez zapnutého Tailscale nástenka cez Tailscale nenájde; vtedy pomôže len „Aj v miestnej sieti“ alebo krok 2.

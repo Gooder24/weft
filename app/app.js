@@ -5932,6 +5932,7 @@ document.addEventListener('keydown', (e) => {
   else if (key === 'escape' && (!S.panel || S.panel === 'calendar') && (cal.detail || cal.search)) run(calCloseBox);
   else if (key === 'escape' && S.panel === 'settings' && calNewCal.editing) run(() => calStopEditing(calNewCal.editing.id));
   else if (key === 'escape' && S.panel === 'settings' && calNewCal.asking) run(() => calKeepCalendar(calNewCal.asking));
+  else if (key === 'escape' && S.panel === 'board' && board.popShown()) board.popKey(e);
   else if (key === 'escape' && (S.panel || S.menu)) run(() => { S.panel = null; S.menu = false; render(); });
   else if ((S.panel === 'calendar' || (!S.panel && document.activeElement?.closest('.home-calendar'))) && !typing && !mod && !e.altKey && calendarKey(e)) e.preventDefault();
   else if (S.panel === 'board' && !S.overlay && board.key(e)) e.preventDefault();
