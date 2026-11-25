@@ -7785,7 +7785,7 @@ function chatRail(t) {
   const step = list.length > 1 ? 100 / (list.length - 1) : 0;
   const el = h('div', { class: 'crail', 'aria-hidden': 'true', onwheel: railWheel },
     more ? h('button', { class: `rmore${busy ? ' busy' : ''}`, type: 'button', tabindex: -1, onclick: railOlder, onpointerenter: railMoreCard, onpointerleave: railLeave }, icon('arrow-up')) : null,
-    list.length ? h('div', { class: 'rstrip', style: { height: `${(list.length - 1) * 8 + 12}px` }, onpointerdown: railDown, onpointermove: railMove, onpointerup: railUp, onpointercancel: railLeave, onpointerleave: railLeave },
+    list.length ? h('div', { class: 'rstrip', style: { height: `${(list.length - 1) * 8 + 12}px` }, onpointerdown: railDown, onpointermove: railMove, onpointerup: railUp, onpointercancel: railLeave, onpointerleave: railLeave, onlostpointercapture: railLost },
       list.map(([i, day], k) => h('span', { class: `rtick${day ? ' day' : ''}`, 'data-key': t.msgs[i].event_id, style: { top: `calc(6px + (100% - 12px) * ${(k * step / 100).toFixed(5)})` } }))) : null,
     h('div', { class: 'rcard' }));
   railMemo = { sig, el, holder: t.holder };
@@ -7841,6 +7841,10 @@ function railLeave(e) {
   railAt = -1;
   railPtr = null;
   if (e.type === 'pointercancel') railFree();
+}
+/** The browser took the drag away without a pointerup or pointercancel: it is over all the same. */
+function railLost(e) {
+  if (railDrag === e.currentTarget) railFree();
 }
 /** A drag ended: the rail catches up with the ticks and the arrow that came meanwhile. */
 function railFree() {
