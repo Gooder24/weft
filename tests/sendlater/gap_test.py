@@ -88,4 +88,17 @@ sendlater.call = hs.call
 sendlater.send_due('tok', USER, T0 + 1000)
 check('tri siete naraz: každá po jednej', len(hs.sent) == 3, [t for t, _ in hs.sent])
 
+# A slow read of the list: the round began at T0, the message went 24 s later. The next one waits a gap from when it
+# went, not from when the round began.
+hs = FakeHS(batch('v', 'a', '!a', 'messenger', T0, 1) + batch('v', 'b', '!b', 'messenger', T0, 1))
+clock = [T0 + 24_000]
+sendlater.call = hs.call
+sendlater.send_due('tok', USER, T0, lambda: clock[0])
+went = next(it['sent'] for it in hs.data['items'] if it.get('sent'))
+check('odoslaná sa označí časom, keď naozaj odišla', went == T0 + 24_000, went - T0)
+clock[0] = T0 + 25_000
+sendlater.send_due('tok', USER, T0 + 25_000, lambda: clock[0])
+check('pomalé čítanie neskráti rozostup', len(hs.sent) == 1, [t for t, _ in hs.sent])
+check('ďalšia je na rade gap po naozajstnom odoslaní', sendlater.next_due('tok', USER) == T0 + 49_000, sendlater.next_due('tok', USER) - T0)
+
 sys.exit(1 if failed else 0)

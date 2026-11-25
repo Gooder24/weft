@@ -147,7 +147,10 @@ def paced(every, it, results, now):
     return "wait" if now - paced_last(every, it, results) < it["gap"] else None
 
 
-def send_due(token, user, now):
+def send_due(token, user, now, clock=None):
+    """Sends what is due at `now`. `clock` says the time each message goes (the service: the real one; a slow read of
+    the list must not shorten a `gap`), by default `now` itself (tests)."""
+    clock = clock or (lambda: now)
     every = items(token, user)
     due = sorted((it for it in every if not it.get("sent") and not it.get("failed") and it.get("at", 0) <= now),
                  key=lambda it: (it["at"], it.get("seq", 0)))
@@ -161,7 +164,7 @@ def send_due(token, user, now):
     queue, waited = list(due), set()
     while queue:
         it = queue.pop(0)
-        pace = paced(every, it, results, now)
+        pace = paced(every, it, results, clock())
         if pace == "wait": continue  # next_due says when
         try:
             why = pace or (held.get(group(it)) if it.get("batch") or it.get("seq") else None) or held_reply(token, it)
@@ -183,16 +186,16 @@ def send_due(token, user, now):
                     why = "its first part was cancelled, and it may belong to a Discord reply; send it again from Weft"
             if why:
                 held[group(it)] = why
-                results[it["id"]] = {"failed": now, "error": why}
+                results[it["id"]] = {"failed": clock(), "error": why}
                 print(f"held {it['id']}: {why}", flush=True)
                 continue
             r = call("PUT", f"/_matrix/client/v3/rooms/{q(it['room'])}/send/m.room.message/{q(it['id'])}", content, token=token)
-            results[it["id"]] = {"sent": now, "event_id": r.get("event_id")}
+            results[it["id"]] = {"sent": clock(), "event_id": r.get("event_id")}
             print(f"sent {it['id']}", flush=True)
         except HttpError as e:
             if e.status == 429 or e.status >= 500:
                 break  # the server is busy: the same item goes out on the next round
-            results[it["id"]] = {"failed": now, "error": e.body.get("error") or str(e)}
+            results[it["id"]] = {"failed": clock(), "error": e.body.get("error") or str(e)}
             print(f"failed {it['id']}: {e}", flush=True)
     if results:
         mark(token, user, results, now)
@@ -221,7 +224,7 @@ def main():
     while True:
         try:
             now = int(time.time() * 1000)
-            send_due(token, user, now)
+            send_due(token, user, now, lambda: int(time.time() * 1000))
             due = next_due(token, user)
             left = None if due is None else due - int(time.time() * 1000)
             # Still waiting after its time means the server turned it away for now: try again in a while.
