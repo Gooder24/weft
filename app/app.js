@@ -8134,6 +8134,10 @@ async function saveEdit(r) {
   const text = (S.drafts.get(r.id) || '').trim();
   const before = ev && plainBody(contentOf(m, ev));
   const said = textMessage(r, text, (S.drafts.get(r.id) || '').search(/\S|$/)); // before endEdit brings the draft back
+  // What the network allows may have changed while the editor was open: the editor stays, nothing is sent.
+  if (ev && text !== before && !(text ? canEdit(r, m, ev) : canDelete(r, m, ev))) {
+    return alert(text ? T('Túto správu už sieť nedovolí upraviť.') : T('Túto správu sieť nedovolí odstrániť.'));
+  }
   endEdit();
   if (!ev || text === before) return;
   if (!text) return deleteMessage(r, ev); // an emptied message is one to delete, as in Beeper

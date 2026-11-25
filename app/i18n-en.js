@@ -965,6 +965,8 @@ export default {
   "Obrázok": "Picture",
   "Správu sa nepodarilo zahodiť.": "The message could not be discarded.",
   "Úprava sa neuložila.": "The edit was not saved.",
+  "Túto správu už sieť nedovolí upraviť.": "The network no longer lets you edit this message.",
+  "Túto správu sieť nedovolí odstrániť.": "The network does not let you delete this message.",
   "Správu sa nepodarilo odstrániť.": "The message could not be deleted.",
   "{} neodpovedá": "{} is not answering",
   "{} nie je pripojený": "{} is not connected",
