@@ -563,6 +563,11 @@ kbd { margin-left: auto; font-family: inherit; font-size: var(--fs); color: var(
 .seen { align-self: flex-end; margin-top: 3px; font-size: var(--fs); color: var(--muted); }
 .typing { align-self: flex-start; margin-top: 3px; font-size: var(--fs); color: var(--muted); }
 .typing.mine { align-self: flex-end; }
+.typing.mine.dots { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.typing.mine.dots img { width: 16px; height: 16px; border-radius: var(--radius-s); }
+/* The dots at twice the grid stay crisp; the bubble shows only their middle rows, a message bubble's height. */
+.tbubble { display: flex; align-items: center; height: 26px; padding: 0 8px; overflow: hidden; border-radius: var(--radius-l); box-shadow: inset 0 0 0 var(--bw) var(--accent); color: var(--link); }
+.tbubble svg { display: block; flex: none; width: 48px; height: 48px; }
 .ccompose { flex: none; padding: 8px 16px 12px; border-top: 0; }
 .ccompose textarea { width: 100%; box-sizing: border-box; min-height: 36px; max-height: 200px; background: var(--card); font: inherit; font-size: var(--fs); line-height: var(--lh); padding: 8px 12px; border: var(--bw) solid var(--line); border-radius: var(--radius-l); resize: none; overflow-y: hidden; color: var(--text); outline: none; }
 .ccompose textarea:focus { border-color: var(--line-strong); }

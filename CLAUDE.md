@@ -155,8 +155,8 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   against stand-ins).
 - Karchi's typing goes out like Beeper's (`typingNote` in app.js, Settings → Správy → Písanie, account data
   `sk.karchi.typing`): Messenger, Instagram, WhatsApp and Discord show „píše…“ (the Discord appservice needs
-  `receive_ephemeral: true` for it). A 15 s pause ends it. Once the network took it, his side of the chat says „Messenger ukazuje „píše…““
-  (or that it refused): `server/typing/seen.py` (asus `~/matrix-spike/typing/`, unit `matrix-spike-typing`,
+  `receive_ephemeral: true` for it). A 15 s pause ends it. Once the network took it, his side of the chat shows what they see: the
+  network's picture and a bubble of still pixel dots (a refusal is said in words): `server/typing/seen.py` (asus `~/matrix-spike/typing/`, unit `matrix-spike-typing`,
   127.0.0.1:29334 behind Caddy's `/_typing/`) follows the bridgev2 bridges' journal for „Sent typing event“; legacy
   Discord logs no success, so it shows nothing. Checks: `overenie/typing-out/run.sh`, `overenie/typing-seen/`
   (`service_test.py`, `run.sh`).

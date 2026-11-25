@@ -2470,13 +2470,19 @@ async function typingAsk(out) {
     renderSoon();
   } catch { /* no answer: the line stays away */ }
 }
-/** Under the last message, on Karchi's side: the network shows the other side „píše…“ (or refused it). */
+/** Under the last message, on Karchi's side, what the other side sees: the network's picture and a bubble of
+ *  the desktop's three pixel dots, still (nothing in Weft moves on its own). A refusal is said in words. */
 function typingMine(parts) {
   const out = typingOut;
   if (!out?.shown || S.offline || !parts.some((x) => x.id === out.room)) return null;
-  const name = appOf(out.app)?.name || out.app;
-  return h('div', { class: 'typing mine', 'data-key': '__typingMine', role: 'status', title: out.error || null },
-    out.shown === 'shown' ? T`${name} ukazuje „píše…“` : T`${name} „píše…“ neprijal`);
+  const app = appOf(out.app);
+  const name = app?.name || out.app;
+  if (out.shown === 'failed') {
+    return h('div', { class: 'typing mine', 'data-key': '__typingMine', role: 'status', title: out.error || null }, T`${name} „píše…“ neprijal`);
+  }
+  const said = T`${name} ukazuje „píše…“`;
+  return h('div', { class: 'typing mine dots', 'data-key': '__typingMine', role: 'status', 'aria-label': said, title: said },
+    app?.icon ? h('img', { src: app.icon, alt: '' }) : null, h('span', { class: 'tbubble' }, icon('more-horizontal', 48)));
 }
 function typingStop() {
   clearTimeout(typingIdle);

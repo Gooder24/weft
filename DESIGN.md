@@ -46,6 +46,7 @@ if none fits, add the new piece here in the same change. `tools/ui-check` checks
 | Note in a chat | `.cnote`, `.rnote` | A muted line that explains a state; a button inside it is `.primary` or `.linkbtn` |
 | Suggestion in a chat | `.cnote.calsug > .linkbtn + span + button.calsugoff` | A muted line under a message offering one action (icon + words, what it found) and ✕ to wave it off |
 | State under messages | `.msgs .seen`, `.msgs .typing`; row: `.prev em.typingmark` | A muted line under the last message: who saw it (right), who is typing (left, „píše…“); in an inbox row „píše…“ in `--link` stands for the preview |
+| Own typing as they see it | `.msgs .typing.mine.dots > img + .tbubble > svg` | Right under the last message while a network shows Karchi's „píše…“: its picture and an outlined bubble with the still `more-horizontal` dots at 48 px (middle rows only); a refusal is a muted `.typing.mine` line |
 | Overlay | `.veil` (+ `.clear`, `.dark`, `.search`) | What floats over the app; Esc and a click outside close it |
 | Shortcut | `kbd` | Right-aligned, muted; the same text as in Ctrl+/ |
 
