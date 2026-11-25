@@ -673,10 +673,10 @@ index 0000000..7f982b6
 +}
 diff --git a/weft_open.go b/weft_open.go
 new file mode 100644
-index 0000000..549deaf
+index 0000000..a49792c
 --- /dev/null
 +++ b/weft_open.go
-@@ -0,0 +1,108 @@
+@@ -0,0 +1,110 @@
 +package main
 +
 +// POST /v1/channels/{channelID}/open: one of Karchi's existing Discord DMs or groups as a live room, what
@@ -690,8 +690,10 @@ index 0000000..549deaf
 +//	502 Discord did not answer
 +//
 +// Only Karchi's own channels, known to the bridge already: a DM whose receiver is his Discord account, or a group
-+// he is in (user_portal), and a group only while he is the bridge's one logged-in user (CreateMatrixRoom invites
-+// every logged-in member). One opening at a time.
++// he is in (user_portal). A group room is made only while no other account is logged in (CreateMatrixRoom invites
++// every logged-in member). An account that signs in later, also while the room is being made, is invited into its
++// groups' rooms by the bridge's own sync on READY (handlePrivateChannel -> UpdateInfo), as into any group room, so
++// no lock here could keep it out. One opening at a time.
 +
 +import (
 +	"net/http"
@@ -766,7 +768,7 @@ index 0000000..549deaf
 +			jsonResponse(w, http.StatusBadGateway, Error{Error: "Discord did not give the channel", ErrCode: "SK.KARCHI.WEFT.DISCORD"})
 +			return
 +		}
-+		// A second account may have signed in meanwhile; a new group room would invite it too.
++		// Another account signed in during the GET: no room, it would be invited at once.
 +		if _, status = weftOwnChannel(p.bridge.DB, user, account, channel); status != 0 {
 +			jsonResponse(w, http.StatusConflict, Error{Error: "The bridge has another logged-in account", ErrCode: "SK.KARCHI.WEFT.OTHER_ACCOUNTS"})
 +			return
@@ -787,10 +789,10 @@ index 0000000..549deaf
 +}
 diff --git a/weft_open_test.go b/weft_open_test.go
 new file mode 100644
-index 0000000..4ae1eca
+index 0000000..3bdb0c8
 --- /dev/null
 +++ b/weft_open_test.go
-@@ -0,0 +1,131 @@
+@@ -0,0 +1,159 @@
 +package main
 +
 +import (
@@ -803,6 +805,8 @@ index 0000000..4ae1eca
 +
 +	"github.com/bwmarrin/discordgo"
 +	"github.com/gorilla/mux"
++	"github.com/rs/zerolog"
++	"gopkg.in/yaml.v3"
 +	"maunium.net/go/maulogger/v2"
 +	"maunium.net/go/mautrix/event"
 +	"maunium.net/go/mautrix/id"
@@ -920,6 +924,32 @@ index 0000000..4ae1eca
 +	}
 +	if p := f.br.GetExistingPortalByID(database.NewPortalKey("14", "")); p == nil || p.MXID != "" {
 +		t.Errorf("a room was made: %v", p)
++	}
++}
++
++// Upstream alone: a group room that exists invites an account that signs in later (READY -> handlePrivateChannel),
++// so weftOpen's group guard can only refuse while another account is logged in. If this fails, upstream stopped
++// inviting later accounts and the guard needs another look.
++func TestWeftLaterAccountIsInvitedByUpstream(t *testing.T) {
++	f := newWeftFake(t)
++	f.ready()
++	if err := yaml.Unmarshal([]byte("username_template: 'discord_{{.}}'\ndisplayname_template: '{{.Username}}'\nchannel_name_template: '{{.Name}}'\nguild_name_template: '{{.Name}}'\n"), &f.br.Config.Bridge); err != nil {
++		t.Fatal(err)
++	}
++	f.portalRow("14", "", discordgo.ChannelTypeGroupDM, "!group")
++	portal := f.br.GetExistingPortalByID(database.NewPortalKey("14", ""))
++	row := f.br.DB.User.New()
++	row.MXID, row.DiscordID, row.DiscordToken = "@other:example", "them", "token2"
++	row.Insert()
++	other := &User{User: row, bridge: f.br, Session: f.user.Session, log: zerolog.Nop()}
++	f.br.usersByMXID[other.MXID], f.br.usersByID["them"] = other, other
++	store := f.br.AS.StateStore
++	if store.IsInvited("!group", other.MXID) {
++		t.Fatal("invited before signing in")
++	}
++	other.handlePrivateChannel(portal, &discordgo.Channel{ID: "14", Type: discordgo.ChannelTypeGroupDM, Name: "g"}, time.Now(), false, false)
++	if !store.IsInvited("!group", other.MXID) {
++		t.Fatal("upstream no longer invites a later account")
 +	}
 +}
 diff --git a/weft_reply.go b/weft_reply.go
