@@ -49,9 +49,12 @@ fi
 
 say "installing packages (git, curl, zstd, caddy)"
 export DEBIAN_FRONTEND=noninteractive
+had_caddy=$(dpkg-query -W -f='${Status}' caddy 2>/dev/null | grep -c 'install ok installed' || true)
 apt-get update -qq
 apt-get install -y -qq git curl zstd caddy ca-certificates >/dev/null
-# Debian's caddy package starts its own caddy.service on port 80; Weft runs a separate Caddy and leaves that one alone.
+# Debian's caddy package also starts its own caddy.service on port 80 of every interface. Weft runs a separate Caddy,
+# so when this installed the package, that one is switched off; a Caddy that was here before stays as it was.
+[ "$had_caddy" = 1 ] || systemctl disable -q --now caddy.service
 
 id weft >/dev/null 2>&1 || useradd --system --home-dir "$DATA" --shell /usr/sbin/nologin weft
 install -d -m 755 "$ROOT" "$ROOT/bin" "$ETC"
@@ -187,4 +190,6 @@ done
 curl -fsS "http://127.0.0.1:$PORT/_matrix/client/versions" >/dev/null || die "Weft did not start; see journalctl -u weft-homeserver -u weft-web"
 
 say "Weft runs on http://localhost:$PORT and updates itself every day"
-echo "WEFT_URL=http://localhost:$PORT/#weft-setup=$(cat "$ETC/registration-token")"
+# The address with the token that creates accounts goes only to the person installing, never into the daily
+# update's journal.
+[ "${1:-}" = --installed ] || echo "WEFT_URL=http://localhost:$PORT/#weft-setup=$(cat "$ETC/registration-token")"

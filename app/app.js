@@ -362,7 +362,7 @@ function noteOpened(id) {
 async function refreshLogins() {
   const token = S.token; // an answer for a session that has since ended changes nothing
   // A server without the EduPage bridge (a new install) answers 404 or nothing: then EduPage is simply not offered.
-  const logins = await bridge('GET', '/whoami').then((r) => { S.edupage = true; return r.logins || []; }, (err) => { if (err.status === 404 || err.status === 502) S.edupage = false; return []; });
+  const logins = await bridge('GET', '/whoami').then((r) => { S.edupage = true; return r.logins || []; }, (err) => { if (err.status === 404) S.edupage = false; return []; });
   if (S.token === token) S.logins = logins;
 }
 
@@ -4672,6 +4672,8 @@ async function matrixRegister(username, password) {
       const flow = err.status === 401 && err.details.flows?.[0]?.stages;
       if (!flow) throw err;
       const next = flow.find((stage) => !(err.details.completed || []).includes(stage));
+      // The server asks for the same stage again: it refused what was sent (a token that does not hold any more).
+      if (auth?.type === next) throw Object.assign(new Error(T('Server účet nevytvoril.')), { errcode: 'WEFT_REFUSED', status: 401 });
       if (next === 'm.login.registration_token') auth = { type: next, token: localStorage.getItem(SETUP_KEY) || '', session: err.details.session };
       else if (next === 'm.login.dummy') auth = { type: next, session: err.details.session };
       else throw err;

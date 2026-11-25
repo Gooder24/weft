@@ -8,12 +8,17 @@
 # Uninstall: wsl -d Debian -u root -- /opt/weft/src/install.sh --remove, then remove the "Weft" shortcuts, the
 # scheduled task "Weft server" (Task Scheduler) and the folder %LOCALAPPDATA%\Weft.
 $ErrorActionPreference = 'Stop'
+# Linux programs in WSL print UTF-8 (a folder like C:\Users\Lukáš comes back from wslpath intact).
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
 $Distro = 'Debian'
 $Port = 8790
 
 function Say($text) { Write-Host "weft: $text" }
 # wsl.exe prints UTF-16; the names come with NUL characters between the letters.
-function Get-Distros { (wsl.exe --list --quiet 2>$null) | ForEach-Object { ($_ -replace "`0", '').Trim() } | Where-Object { $_ } }
+function Get-Distros {
+  $ErrorActionPreference = 'Continue' # PowerShell 5.1 would stop on any line wsl.exe writes to stderr
+  (wsl.exe --list --quiet 2>$null) | ForEach-Object { ($_ -replace "`0", '').Trim() } | Where-Object { $_ }
+}
 function Test-Admin { ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) }
 
 if (-not (Get-Command wsl.exe -ErrorAction SilentlyContinue) -or -not (Get-Distros | Where-Object { $_ -eq $Distro })) {
