@@ -1254,12 +1254,23 @@ BEEPER_PIECE = 64 << 20
 BEEPER_MEDIA = re.compile(r"media/([A-Za-z0-9_-][A-Za-z0-9._-]{0,199})")  # a file of Beeper's media cache, by its id
 BEEPER_SPARE = int(os.environ.get("ARCHIVE_BEEPER_SPARE", str(2 << 30)))  # disk an upload must leave free
 beeper_lock = threading.Lock()  # one count or import at a time: both read the whole archive
+# Uploads' folders: a piece is written and a folder deleted under it, so a piece arriving while „Zrušiť“ deletes its
+# upload never brings the folder back.
+beeper_files = threading.RLock()
 
 
 def beeper_folder(upload):
     if not isinstance(upload, str) or not re.fullmatch(r"[0-9a-f]{32}", upload): return None
     path = os.path.join(BEEPER_UPLOADS, upload)
     return path if os.path.isdir(path) else None
+
+
+def beeper_forget(folder):
+    with beeper_files: shutil.rmtree(folder, ignore_errors=True)
+
+
+def beeper_bytes(folder):
+    return sum(os.path.getsize(os.path.join(d, f)) for d, _, fs in os.walk(folder) for f in fs)
 
 
 def beeper_prune(keep=None, everything=False):
@@ -1269,7 +1280,7 @@ def beeper_prune(keep=None, everything=False):
         path = os.path.join(BEEPER_UPLOADS, name)
         try: old = time.time() - os.path.getmtime(path) > 86400
         except FileNotFoundError: continue
-        if name != keep and (everything or old): shutil.rmtree(path, ignore_errors=True)
+        if name != keep and (everything or old): beeper_forget(path)
 
 
 def beeper_piece(upload, name, offset, stream, length):
@@ -1286,24 +1297,25 @@ def beeper_piece(upload, name, offset, stream, length):
     if len(data) != length: raise ValueError("the piece ended early")
     if offset == 0 and not media and not data.startswith(BEEPER_FILES[name]):
         raise ValueError("not Beeper's index.db" if name == "index.db" else "not a SQLite -wal file")
-    if upload is None:
-        upload = os.urandom(16).hex()
-        os.makedirs(os.path.join(BEEPER_UPLOADS, upload), mode=0o700)
-        os.chmod(BEEPER_UPLOADS, 0o700)
-        beeper_prune(keep=upload, everything=True)  # one person's archive, one move at a time
-    folder = beeper_folder(upload)
-    if not folder: raise LookupError(upload)
-    if media:  # where import_beeper.py reads the cache: the data folder's media/local.beeper.com/
-        os.makedirs(os.path.join(folder, "media", "local.beeper.com"), mode=0o700, exist_ok=True)
-        path = os.path.join(folder, "media", "local.beeper.com", media[1])
-    else: path = os.path.join(folder, name)
-    have = os.path.getsize(path) if os.path.exists(path) else 0
-    if offset != have: raise IndexError(have)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-    try: os.write(fd, data)
-    finally: os.close(fd)
-    os.utime(folder)
-    return upload, have + length
+    with beeper_files:
+        if upload is None:
+            upload = os.urandom(16).hex()
+            os.makedirs(os.path.join(BEEPER_UPLOADS, upload), mode=0o700)
+            os.chmod(BEEPER_UPLOADS, 0o700)
+            beeper_prune(keep=upload, everything=True)  # one person's archive, one move at a time
+        folder = beeper_folder(upload)
+        if not folder: raise LookupError(upload)
+        if media:  # where import_beeper.py reads the cache: the data folder's media/local.beeper.com/
+            os.makedirs(os.path.join(folder, "media", "local.beeper.com"), mode=0o700, exist_ok=True)
+            path = os.path.join(folder, "media", "local.beeper.com", media[1])
+        else: path = os.path.join(folder, name)
+        have = os.path.getsize(path) if os.path.exists(path) else 0
+        if offset != have: raise IndexError(have)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try: os.write(fd, data)
+        finally: os.close(fd)
+        os.utime(folder)
+        return upload, have + length
 
 
 BEEPER_MEMORY = os.environ.get("ARCHIVE_BEEPER_MEMORY", "2G")
@@ -1498,14 +1510,18 @@ class Api(BaseHTTPRequestHandler):
         folder = beeper_folder(upload)
         if not folder: return self.send(404, {"error": "no such upload"})
         if what == "forget":
-            shutil.rmtree(folder, ignore_errors=True)
+            beeper_forget(folder)
             return self.send(200, {"forgotten": True})
         if not os.path.exists(os.path.join(folder, "index.db")): return self.send(400, {"error": "index.db is missing"})
         if not beeper_lock.acquire(blocking=False): return self.send(409, {"error": "another count or import is running"})
         try:
+            # The import backs the archive up and copies the sent files beside it: room for both, and the spare left.
+            if what == "import" and shutil.disk_usage(os.path.dirname(os.path.abspath(DB))).free < (
+                    (os.path.getsize(DB) if os.path.exists(DB) else 0) + beeper_bytes(os.path.join(folder, "media")) + BEEPER_SPARE):
+                return self.send(507, {"error": "the server's disk is nearly full"})
             report = beeper_run(folder, dry_run=what == "plan")
             if what == "import":
-                shutil.rmtree(folder, ignore_errors=True)
+                beeper_forget(folder)
                 chats_changed()
         except RuntimeError as e: return self.send(422 if "not Beeper" in str(e) else 500, {"error": str(e)})
         except subprocess.TimeoutExpired: return self.send(504, {"error": "the import took too long"})
@@ -1706,12 +1722,17 @@ def claim_owner(who):
     """The first account to call an install.sh archive becomes its owner, for good (the file is written once)."""
     with _claim:
         if Api.owner is not None: return
+        # Written whole beside it, then linked in (which fails if another got there first): never an empty owner file.
+        if os.path.exists(OWNER_FILE) and not open(OWNER_FILE).read().strip(): os.unlink(OWNER_FILE)  # an older empty one
+        tmp = f"{OWNER_FILE}.{os.getpid()}.{threading.get_ident()}"
         try:
-            fd = os.open(OWNER_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            try: os.write(fd, who.encode())
-            finally: os.close(fd)
-            Api.owner = who
-        except FileExistsError: Api.owner = open(OWNER_FILE).read().strip() or None
+            with open(tmp, "w") as f: f.write(who); f.flush(); os.fsync(f.fileno())
+            os.chmod(tmp, 0o600)
+            try: os.link(tmp, OWNER_FILE); Api.owner = who
+            except FileExistsError: Api.owner = open(OWNER_FILE).read().strip() or None
+        finally:
+            try: os.unlink(tmp)
+            except FileNotFoundError: pass
         print("archive: owned by", Api.owner, flush=True)
 
 

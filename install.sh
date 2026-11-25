@@ -48,11 +48,11 @@ fi
 [ -d /run/systemd/system ] || die "needs a machine that runs systemd"
 [ "$(uname -m)" = x86_64 ] || die "only x86_64 for now (this is $(uname -m))"
 
-say "installing packages (git, curl, zstd, caddy, python3)"
+say "installing packages (git, curl, zstd, caddy, python3 with Pillow)"
 export DEBIAN_FRONTEND=noninteractive
 had_caddy=$(dpkg-query -W -f='${Status}' caddy 2>/dev/null | grep -c 'install ok installed' || true)
 apt-get update -qq
-apt-get install -y -qq git curl zstd caddy ca-certificates python3 >/dev/null
+apt-get install -y -qq git curl zstd caddy ca-certificates python3 python3-pil >/dev/null
 # Debian's caddy package also starts its own caddy.service on port 80 of every interface. Weft runs a separate Caddy,
 # so when this installed the package, that one is switched off; a Caddy that was here before stays as it was.
 [ "$had_caddy" = 1 ] || systemctl disable -q --now caddy.service
@@ -161,8 +161,10 @@ MemoryMax=200M
 [Install]
 WantedBy=multi-user.target
 EOF
-# The archive keeps old chats and takes Beeper's history in (Settings → Účty → Prejsť z Beeperu). Its import runs
-# as a child process and may need much memory for a big Beeper: when it runs out, only the child is ended.
+# The archive keeps old chats and takes Beeper's history in (Settings → Účty → Prejsť z Beeperu). It belongs to the
+# first account whose Weft calls it, written in $DATA/archive/owner; to give it to another, delete that file and
+# restart weft-archive. Pillow makes its photo previews; without ffmpeg (not installed) videos have no preview frame.
+# Its import runs as a child process and may need much memory for a big Beeper: when it runs out, only the child ends.
 cat > "$UNITS/weft-archive.service" <<EOF
 [Unit]
 Description=Weft archive of old chats (127.0.0.1:29324)

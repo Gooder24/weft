@@ -92,6 +92,14 @@ const tree = (d) => fs.readdirSync(d, { recursive: true }).filter((n) => !['Sing
   const names = ['media/../secret.txt', 'media/..\\secret.txt', 'media/u_missing', 'media/u_link', 'index.db', '../index.db', 'media/__proto__'];
   for (const name of names) { try { await handlers['beeper-piece'](ev, name, 0, 10); } catch { bad++; } }
   check('nothing else is read', bad === names.length);
+  if (linked) {
+    // A listed file swapped for a link since: not followed.
+    fs.renameSync(path.join(cache, 'u_photo1'), path.join(dir, 'u_photo1.moved'));
+    fs.symlinkSync(path.join(dir, 'secret.txt'), path.join(cache, 'u_photo1'));
+    let swapped = false; try { await handlers['beeper-piece'](ev, 'media/u_photo1', 0, 10); } catch { swapped = true; }
+    check('a listed file swapped for a link is not read', swapped);
+    fs.unlinkSync(path.join(cache, 'u_photo1')); fs.renameSync(path.join(dir, 'u_photo1.moved'), path.join(cache, 'u_photo1'));
+  }
   check('the copy is deleted', !fs.readdirSync(tmp).some((n) => n.startsWith('weft-beeper-')));
   check('Beeper\'s folder is as it was', tree(dir) === before, `${tree(dir)} vs ${before}`);
   await handlers['beeper-find'](ev);

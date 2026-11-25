@@ -1073,13 +1073,17 @@ ipcMain.handle('beeper-find', async (event) => {
 ipcMain.handle('beeper-media', async (event, ids) => {
   if (!fromApp(event)) throw new Error('Not allowed');
   if (!beeperCache || !Array.isArray(ids)) throw new Error('No Beeper found');
-  const cache = path.join(beeperCache.source, 'media', 'local.beeper.com');
+  // The cache's real place (Beeper's folder may be a link, e.g. moved to another disk); a file is read there only when
+  // it is a plain file directly in it, and read by that real path.
+  let cache;
+  try { cache = await fs.promises.realpath(path.join(beeperCache.source, 'media', 'local.beeper.com')); } catch { cache = null; }
   const found = {};
-  for (const id of ids.slice(0, 200000)) {
+  for (const id of cache ? ids.slice(0, 200000) : []) {
     if (typeof id !== 'string' || !BEEPER_MEDIA_ID.test(id)) continue;
     try { const st = await fs.promises.lstat(path.join(cache, id)); if (st.isFile() && st.size > 0) found[id] = st.size; } catch {}
   }
   beeperCache.media = found;
+  beeperCache.real = cache;
   return found;
 });
 ipcMain.handle('beeper-piece', (event, name, offset, length) => {
@@ -1089,8 +1093,12 @@ ipcMain.handle('beeper-piece', (event, name, offset, length) => {
   if (!known || !Object.hasOwn(known, id ?? name) || !Number.isSafeInteger(offset) || !(length > 0 && length <= 64 << 20)) throw new Error('No such piece');
   const size = known[id ?? name];
   // index.db from the copy; a media file from Beeper's own cache, read only (its ids never change their content).
-  const fd = fs.openSync(id ? path.join(beeperCache.source, 'media', 'local.beeper.com', id) : path.join(beeperCopy.dir, name), 'r');
+  // A file swapped for a link since it was listed is not followed (lstat; O_NOFOLLOW where the system has it).
+  if (id && !fs.lstatSync(path.join(beeperCache.real, id)).isFile()) throw new Error('No such piece');
+  const fd = id ? fs.openSync(path.join(beeperCache.real, id), fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0))
+    : fs.openSync(path.join(beeperCopy.dir, name), 'r');
   try {
+    if (id && !fs.fstatSync(fd).isFile()) throw new Error('No such piece');
     const buf = Buffer.alloc(Math.max(0, Math.min(length, size - offset)));
     fs.readSync(fd, buf, 0, buf.length, offset);
     return new Uint8Array(buf.buffer, buf.byteOffset, buf.length);

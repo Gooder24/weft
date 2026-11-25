@@ -172,7 +172,10 @@ def read_archive(database):
         for cid, room, source in a.execute("SELECT id, COALESCE(room, 'archive:' || id), source FROM chats"):
             out["chat_room"][cid] = room
             if source in ("matrix", "bridge"): out["native"].add(cid)
-        for net, chat, ts, text in a.execute("SELECT c.network, m.chat, m.ts, m.body FROM messages m JOIN chats c ON c.id = m.chat"):
+        # Beeper's own rows are matched by id (imported): compared by text and time, an import stopped after some batches
+        # would take the rest of a burst (photos a second apart, the same short text twice) for duplicates.
+        for net, chat, ts, text in a.execute("""SELECT c.network, m.chat, m.ts, m.body FROM messages m JOIN chats c ON c.id = m.chat
+                                                WHERE m.id NOT LIKE 'beeper:%'"""):
             t = norm(text)
             out["by_room"][out["chat_room"][chat]].setdefault(ts // 1000, []).append(t)
             if chat not in out["native"]: out["exact"].setdefault((net, ts // 1000, t), chat)

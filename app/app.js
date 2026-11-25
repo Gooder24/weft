@@ -14351,7 +14351,8 @@ function beeperPick(list) {
 /** The browser's media folder (Beeper's media/local.beeper.com, or a folder above it): only the files the count wants. */
 function beeperPickMedia(list) {
   const wanted = new Set((bp.report?.media_wanted || []).map(([id]) => id));
-  const files = [...list].filter((f) => wanted.has(f.name) && f.size > 0 && (f.webkitRelativePath || f.name).includes('local.beeper.com'));
+  // Only files right inside a folder named local.beeper.com (not „local.beeper.com.backup“ or one deeper).
+  const files = [...list].filter((f) => wanted.has(f.name) && f.size > 0 && (f.webkitRelativePath || '').split('/').at(-2) === 'local.beeper.com');
   bpSet({ withMedia: true, media: { wanted: wanted.size, bytes: files.reduce((n, f) => n + f.size, 0),
     files: files.map((f) => ({ name: `media/${f.name}`, size: f.size, read: (o, n) => f.slice(o, o + n) })) } });
 }

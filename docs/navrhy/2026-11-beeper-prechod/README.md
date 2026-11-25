@@ -99,8 +99,11 @@ preneseným správam. Archív na to má cesty `POST /_archive/beeper/{upload,pla
 (`server/archive/archive.py`); nahrávanie odmietne kúsok, keď by na disku ostali menej ako 2 GB
 (`ARCHIVE_BEEPER_SPARE`). Importér beží vo vlastnom procese s vlastným limitom pamäte (`systemd-run --scope`, 2 GB,
 `ARCHIVE_BEEPER_MEMORY`), mimo limitu služby archívu (384 MB): keď mu pamäť nestačí, skončí len on. V inštalácii
-`install.sh` nemá používateľ `weft` vlastný systemd, preto má služba `weft-archive` limit 2,5 GB a `OOMPolicy=continue`.
-Správy zapisuje po 2000 v jednej transakcii, takže archív medzi nimi zapisuje ďalej; prerušený import dokončí ďalší.
+`install.sh` nemá používateľ `weft` vlastný systemd, preto má služba `weft-archive` limit 2,5 GB a `OOMPolicy=continue`;
+vlastníka archívu tam zmení zmazanie `/var/lib/weft/archive/owner` a reštart `weft-archive`. Pred importom archív
+skontroluje, že sa na disk zmestí záloha aj kópie fotiek a ešte ostanú 2 GB.
+Správy zapisuje po 2000 v jednej transakcii, takže archív medzi nimi zapisuje ďalej; prerušený import dokončí ďalší
+(už prenesené správy Beepera porovnáva len podľa id, nie podľa textu a času, aby séria fotiek nevyzerala ako duplikát).
 Kontroly: `overenie/beeper-import/check.py` (importér), `overenie/beeper-move/route.py` (cesty archívu cez skutočný
 socket), `overenie/beeper-move/run.sh` (obrazovka v prehliadači aj ako desktopová appka),
 `overenie/beeper-install/run.sh` (`install.sh` v kontajneri Debian 13) a `tests/beeper/desktop.cjs` (desktopová časť
