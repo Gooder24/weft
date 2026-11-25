@@ -1440,22 +1440,14 @@ class Api(BaseHTTPRequestHandler):
     def do_POST(self):
         """POST /_archive/chats/link {chat, room}: Weft found the person of an old chat on a bridge; the
         conversation's history then belongs to that room. Karchi must be in the room. An old Discord chat goes only
-        to the bridge's room of its own channel. POST /_archive/discord/open {channel}: see discord_weft.py."""
+        to the bridge's room of its own channel."""
         url = urllib.parse.urlparse(self.path)
         path = url.path
-        if path not in ("/_archive/chats/link", "/_archive/discord/open") and not path.startswith("/_archive/beeper/"):
+        if path != "/_archive/chats/link" and not path.startswith("/_archive/beeper/"):
             return self.send(404, {"error": "not found"})
         if not self.karchi(): return self.send(401, {"error": "not Karchi"})
         if path.startswith("/_archive/beeper/"): return self.beeper(path.removeprefix("/_archive/beeper/"), dict(urllib.parse.parse_qsl(url.query)))
         token = (self.headers.get("Authorization") or "").removeprefix("Bearer ").strip()
-        if path == "/_archive/discord/open":
-            try: channel = str(json.loads(self.rfile.read(min(int(self.headers.get("Content-Length") or 0), 65536)) or b"{}")["channel"])
-            except (ValueError, KeyError, TypeError): return self.send(400, {"error": "channel is needed"})
-            if not re.fullmatch(r"\d{1,25}", channel): return self.send(400, {"error": "not a Discord channel"})
-            try: return self.send(*discord_weft.open_channel(discord_weft.bridge_db, call, Api.owner, token, channel, cmd_token=Api.hs_token))
-            except (OSError, sqlite3.Error, urllib.error.URLError) as e:
-                print("archive: discord open", channel, type(e).__name__, e, flush=True)
-                return self.send(502, {"error": "the bridge or the homeserver did not answer"})
         try:
             body = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length") or 0), 65536)) or b"{}")
             chat, room = str(body["chat"]), str(body["room"])
