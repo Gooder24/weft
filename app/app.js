@@ -8018,21 +8018,29 @@ async function toggleReact(r, ev, key) {
 
 // ------------------------------------------------------------------ editing and deleting own messages
 
-/** How long, and how many times, each network lets a sent message be edited or deleted (seconds; what
- *  the bridges announce in com.beeper.room_features). Discord has no limits. */
+/** How long, and how many times, a network lets a sent message be edited or deleted (seconds), for a room
+ *  whose bridge announces nothing in com.beeper.room_features. Discord has no limits. */
 const LIMITS = {
   whatsapp: { edit: 900, delete: 172800 },
   messenger: { edit: 900, edits: 5 },
   instagram: { edit: 900, edits: 5 },
 };
+/** What the room's bridge says Karchi may do with a sent message (its com.beeper.room_features: a level above 0
+ *  is allowed, ages in seconds), or LIMITS when it says nothing. */
+function msgRules(r) {
+  let f = null;
+  for (const [key, c] of r.state) if (key.startsWith('com.beeper.room_features|')) f = c;
+  if (!f) return { editOk: true, deleteOk: true, ...(LIMITS[r.app] || {}) };
+  return { editOk: f.edit > 0, edit: f.edit_max_age, edits: f.edit_max_count, deleteOk: f.delete > 0, delete: f.delete_max_age };
+}
 const ageOk = (ev, maxSec) => !maxSec || Date.now() - ev.origin_server_ts < maxSec * 1000;
 function canEdit(r, m, ev) {
-  const l = LIMITS[r.app] || {};
-  return ev.sender === S.userId && !ev.pending && !isRedacted(m, ev) && ev.type === 'm.room.message'
+  const l = msgRules(r);
+  return ev.sender === S.userId && !ev.pending && !isRedacted(m, ev) && ev.type === 'm.room.message' && l.editOk
     && ['m.text', 'm.emote', 'm.notice'].includes(contentOf(m, ev).msgtype) && !pollIn(ev, ev.content) && !callOf(ev) && ageOk(ev, l.edit) && !(m.editCount.get(ev.event_id) >= l.edits);
 }
 // A call's line is the network's record of it, not a message Karchi wrote: it is never edited or deleted from here.
-const canDelete = (r, m, ev) => ev.sender === S.userId && !ev.pending && !isRedacted(m, ev) && !callOf(ev) && ageOk(ev, LIMITS[r.app]?.delete);
+const canDelete = (r, m, ev) => { const l = msgRules(r); return ev.sender === S.userId && !ev.pending && !isRedacted(m, ev) && !callOf(ev) && l.deleteOk && ageOk(ev, l.delete); };
 /** The text of a message without the quote of the message it answers (the reply fallback). */
 function plainBody(c) {
   const body = c.body || '';
