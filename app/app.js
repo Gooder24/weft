@@ -7714,23 +7714,25 @@ const startsBlock = (msgs, i) => i === 0 || dayOf(msgs[i].origin_server_ts) !== 
  *  message; a click (or a finger let go, which felt each tick pass) brings that message under the header. No pick:
  *  the keys stay for typing. The ticks of the blocks in view are lit (railMark), the wheel over it scrolls the chat,
  *  and the arrow on top loads older history while the server has more. */
-let railMemo = { msgs: null, n: 0, more: false, busy: false, el: null };
+let railMemo = { sig: '', el: null };
 let railAt = -1; // the tick the pointer or finger rests on
+let railPtr = null; // where the pointer rests on the rail ({ y } on the strip, { more } on the arrow), for a rebuilt rail
 function chatRail(t) {
   const list = blocksOf(t.msgs);
   const more = t.parts.some((x) => !x.historyDone);
   const busy = t.parts.some((x) => x.loading);
   if (list.length < 2 && !more) return null;
-  const m = railMemo;
-  if (m.msgs === t.msgs && m.n === t.msgs.length && m.more === more && m.busy === busy && m.el?.isConnected) return ref(m.el);
+  // Rebuilt only when its ticks or its arrow change, not for every message or receipt.
+  const sig = `${more}${busy}${list.map(([i, day]) => (day ? '+' : '-') + t.msgs[i].event_id).join('')}`;
+  if (railMemo.sig === sig && railMemo.el?.isConnected) return ref(railMemo.el);
   railAt = -1;
   const step = list.length > 1 ? 100 / (list.length - 1) : 0;
   const el = h('div', { class: 'crail', 'aria-hidden': 'true', onwheel: railWheel },
-    more ? h('button', { class: `rmore${busy ? ' busy' : ''}`, type: 'button', tabindex: -1, onclick: railOlder, onmouseenter: railMoreCard, onmouseleave: railLeave }, icon('arrow-up')) : null,
+    more ? h('button', { class: `rmore${busy ? ' busy' : ''}`, type: 'button', tabindex: -1, onclick: railOlder, onpointerenter: railMoreCard, onpointerleave: railLeave }, icon('arrow-up')) : null,
     list.length ? h('div', { class: 'rstrip', style: { height: `${(list.length - 1) * 8 + 12}px` }, onpointerdown: railDown, onpointermove: railMove, onpointerup: railUp, onpointercancel: railLeave, onpointerleave: railLeave },
       list.map(([i, day], k) => h('span', { class: `rtick${day ? ' day' : ''}`, 'data-key': t.msgs[i].event_id, style: { top: `calc(6px + (100% - 12px) * ${(k * step / 100).toFixed(5)})` } }))) : null,
     h('div', { class: 'rcard' }));
-  railMemo = { msgs: t.msgs, n: t.msgs.length, more, busy, el };
+  railMemo = { sig, el };
   el._live = (live) => { if (railMemo.el === el) railMemo.el = live; };
   return el;
 }
@@ -7745,11 +7747,18 @@ function railIndex(strip, y) {
 function railRest(strip, k, touch) {
   if (k === railAt) return;
   const ticks = strip.children;
+  const from = railAt;
   for (let d = -2; d <= 2; d++) ticks[railAt + d]?.removeAttribute('data-near');
   railAt = k;
   for (let d = -2; d <= 2; d++) ticks[k + d]?.setAttribute('data-near', Math.abs(d));
   const tick = ticks[k];
-  if (touch) navigator.vibrate?.(tick.classList.contains('day') ? 12 : 5);
+  // A buzz for each tick the finger passed (a day's longer), however fast it went: one pulse, or a pattern of them.
+  if (touch) {
+    const passed = [];
+    const dir = from < 0 ? 0 : Math.sign(k - from);
+    for (let j = from < 0 ? k : from + dir; passed.length < 8; j += dir) { passed.push(ticks[j].classList.contains('day') ? 12 : 5); if (j === k) break; }
+    navigator.vibrate?.(passed.length === 1 ? passed[0] : passed.flatMap((ms, j) => (j ? [20, ms] : [ms])));
+  }
   const r = S.rooms.get(S.selected);
   const t = r && timelineOf(r);
   const ev = t?.msgs.find((x) => x.event_id === tick.dataset.key);
@@ -7774,14 +7783,17 @@ function railLeave(e) {
   rail.querySelector(':scope > .rcard')?.classList.remove('on');
   for (const tick of rail.querySelectorAll('.rtick[data-near]')) tick.removeAttribute('data-near');
   railAt = -1;
+  railPtr = null;
 }
 function railDown(e) {
   if (e.button !== 0) return;
   e.preventDefault(); // no text selection, no scrolling under a finger
   e.currentTarget.setPointerCapture(e.pointerId);
+  railPtr = { y: e.clientY };
   railRest(e.currentTarget, railIndex(e.currentTarget, e.clientY), e.pointerType !== 'mouse');
 }
 function railMove(e) {
+  railPtr = { y: e.clientY };
   railRest(e.currentTarget, railIndex(e.currentTarget, e.clientY), e.pointerType !== 'mouse' && e.buttons > 0);
 }
 function railUp(e) {
@@ -7797,9 +7809,13 @@ function railWheel(e) {
   const box = e.currentTarget.parentNode.querySelector(':scope > [data-scroll=chat]');
   if (box) box.scrollTop += e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? box.clientHeight : 1);
 }
+/** The arrow's card says what it does; a mouse only (a tapped finger never leaves it, the card would stay). */
 function railMoreCard(e) {
-  railCard(e.currentTarget.parentNode, e.currentTarget, [h('span', {}, e.currentTarget.classList.contains('busy') ? T('Načítavam staršie správy…') : T('Načítať staršie správy'))]);
+  if (e.pointerType !== 'mouse') return;
+  railPtr = { more: true };
+  moreCard(e.currentTarget);
 }
+const moreCard = (b) => railCard(b.parentNode, b, [h('span', {}, b.classList.contains('busy') ? T('Načítavam staršie správy…') : T('Načítať staršie správy'))]);
 /** The rail's arrow: older history from the server, a page at a time until a new tick comes (or nothing is left).
  *  The chat stays where it is. */
 async function railOlder() {
@@ -7811,7 +7827,9 @@ async function railOlder() {
   for (let k = 0; k < 8 && S.selected && selKey() === chat; k++) {
     const next = timelineOf(r).parts.filter((x) => !x.historyDone).sort((a, b) => oldestTs(b) - oldestTs(a))[0];
     if (!next || S.offline || Date.now() < (next.archiveRetry || 0)) break; // all there, or the archive asks to wait
-    await loadRoomHistory(next); // a page already coming is waited for
+    const page = loadRoomHistory(next); // a page already coming is waited for
+    render(); // the arrow shows it is loading
+    await page;
     if (count() > before) break;
   }
 }
@@ -7865,6 +7883,12 @@ function railMark(box) {
     }
     if (cur) seen.add(cur);
     for (const tick of rail.querySelectorAll('.rtick')) tick.classList.toggle('on', seen.has(tick.dataset.key));
+    // A rail rebuilt under the pointer (new ticks, the arrow loading) shows the pointer's tick and card again.
+    if (railPtr && !rail.matches(':hover')) railPtr = null;
+    if (!railPtr || rail.querySelector(':scope > .rcard.on')) return;
+    const more = rail.querySelector(':scope > .rmore');
+    const strip = rail.querySelector(':scope > .rstrip');
+    if (railPtr.more) { if (more) moreCard(more); } else if (strip) railRest(strip, railIndex(strip, railPtr.y), false);
   });
 }
 
