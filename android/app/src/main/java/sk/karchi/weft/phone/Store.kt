@@ -64,14 +64,17 @@ class Store private constructor(context: Context) {
 
     fun count(): Long = android.database.DatabaseUtils.queryNumEntries(db, "queue")
 
-    fun done(ids: Collection<String>) {
+    /** Forgets these items; returns how many the queue had. */
+    fun done(ids: Collection<String>): Int {
+        var gone = 0
         db.beginTransaction()
         try {
-            for (id in ids) db.delete("queue", "id = ?", arrayOf(id))
+            for (id in ids) gone += db.delete("queue", "id = ?", arrayOf(id))
             db.setTransactionSuccessful()
         } finally {
             db.endTransaction()
         }
+        return gone
     }
 
     /** Unpaired: the token, the CA and what was waiting go; the picked apps stay for the next pairing. */

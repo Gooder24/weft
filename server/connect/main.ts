@@ -128,8 +128,7 @@ async function phone(req: Request, url: URL) {
     const list = items(body);
     if (!list) return json({ errcode: 'M_BAD_JSON' }, 400);
     try {
-      const { taken, posted } = await host.phone(device, list);
-      phones.count(device, posted);
+      const { taken } = await host.phone(device, list, () => phones.count(device, 1));
       return json({ taken });
     } catch (err) {
       console.log(`phone ${device}: ${err instanceof Error ? err.message : err}`); // the phone keeps them and sends again

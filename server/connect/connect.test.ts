@@ -263,12 +263,14 @@ describe('phone', () => {
 
   test('SMS go into one chat per number however it is written, each once; notifications into one per app', async () => {
     const { hs, host } = setup();
+    let counted = 0;
     const taken = await host.phone('p1', [
       sms('1', '+421 900 123 456', 'Ahoj', NOW - 120_000, 'Mama'),
       sms('2', '0900123456', 'Kde si?', NOW - 60_000, 'Mama'),
       { id: 'n1', kind: 'notification', ts: NOW - 30_000, app: 'com.example.shop', appName: 'Obchod', title: 'Obchod', text: 'Zľava 20 %' },
-    ]);
+    ], () => counted++);
     expect(taken).toEqual({ taken: ['1', '2', 'n1'], posted: 3 });
+    expect(counted).toBe(3);
     expect(hs.calls.filter((c) => c.path === '/createRoom').map((c) => c.body.name)).toEqual(['Mama', 'Obchod']);
     expect(sends(hs.calls).map((c) => c.body.body)).toEqual(['Ahoj', 'Kde si?', 'Zľava 20 %']);
     expect(await host.phone('p1', [sms('1', '+421900123456', 'Ahoj', NOW - 120_000, 'Mama')])).toEqual({ taken: ['1'], posted: 0 });
@@ -307,5 +309,6 @@ describe('phone', () => {
     expect(items({ items: [{ id: '1', kind: 'sms', ts: 'x', text: 'a' }] })).toBeNull();
     expect(items({ items: Array.from({ length: 501 }, (_, i) => ({ id: String(i), kind: 'sms', ts: 1, text: 'a' })) })).toBeNull();
     expect(items(null)).toBeNull();
+    expect(items({ items: [{ id: 'x'.repeat(201), kind: 'notification', ts: 1, text: 'a' }] })).toBeNull();
   });
 });

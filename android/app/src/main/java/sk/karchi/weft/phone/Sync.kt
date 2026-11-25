@@ -46,13 +46,19 @@ class Sync : JobService() {
             val token = store.token ?: return // unpaired: nothing is read into the queue
             Sms.read(context)
             while (true) {
-                val batch = store.pending(50)
-                if (batch.isEmpty()) break
+                val waiting = store.pending(50)
+                if (waiting.isEmpty()) break
+                // SMS switched off or an app unticked after its items came in: they stay on the phone.
+                val (batch, off) = waiting.partition {
+                    if (it.optString("kind") == "sms") store.sms else it.optString("app") in store.apps
+                }
+                store.done(off.map { it.getString("id") })
+                if (batch.isEmpty()) continue
                 val taken = send(server, store.ca, token, batch)
-                store.done(taken)
+                val gone = store.done(taken)
                 store.sent = System.currentTimeMillis()
                 store.error = null
-                if (taken.isEmpty()) break
+                if (gone == 0) break // Weft answered ids this queue does not have: try again later, never in a loop
             }
         }
 

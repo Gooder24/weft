@@ -78,7 +78,8 @@ export function items(body: unknown): PhoneItem[] | null {
   const str = (v: unknown, max: number) => (typeof v === 'string' ? v.slice(0, max) : undefined);
   const out: PhoneItem[] = [];
   for (const x of list as Record<string, unknown>[]) {
-    const id = str(x?.id, 200);
+    // An id is answered back exactly as it came, so the phone can forget it: one too long is refused, not cut.
+    const id = typeof x?.id === 'string' && x.id.length <= 200 ? x.id : undefined;
     const text = str(x?.text, 10_000);
     if (!id || text === undefined || (x.kind !== 'sms' && x.kind !== 'notification') || typeof x.ts !== 'number' || !Number.isFinite(x.ts)) return null;
     out.push({

@@ -72,16 +72,19 @@ export class Host {
   }
 
   /** What a phone sent: each item once (`phoneKey`), into its SMS or app chat; returns the ids taken, which the phone
-   *  may forget, and how many were new. An item a switched-off connector does not take is taken too, so the phone
-   *  stops sending it. */
-  phone(device: string, items: PhoneItem[]) {
+   *  may forget, and how many were new (`counted` hears each at once, so a request that fails halfway still counts
+   *  what it posted). An item a switched-off connector does not take is taken too, so the phone stops sending it. */
+  phone(device: string, items: PhoneItem[], counted: () => void = () => {}) {
     return this.serial(async () => {
       const taken: string[] = [];
       let posted = 0;
       for (const p of items.toSorted((a, b) => a.ts - b.ts)) {
         const made = phoneItem(p);
         if (made && this.isOn(made[0].id) && this.now() - p.ts < BACK) {
-          if (await this.post(made[0], `phone:${phoneKey(p)}`, p.ts, made[1], { phone: device })) posted++;
+          if (await this.post(made[0], `phone:${phoneKey(p)}`, p.ts, made[1], { phone: device })) {
+            posted++;
+            counted();
+          }
         }
         taken.push(p.id);
       }
