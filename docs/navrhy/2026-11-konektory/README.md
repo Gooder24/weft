@@ -135,7 +135,9 @@ Väčšinu druhej a tretej skupiny pokryjú pravidlá na maily a appka v telefó
    cez `tools/browser-slot`. Na asuse suchý beh nad posledných 30 dní pošty vypíše počty a nezachytených
    odosielateľov a nič nezapíše.
 2. **Týždeň 2: appka v telefóne.** SMS oboma smermi (odosielanie vypnuté), SMS kódy do rohového okna, notifikácie
-   vybraných appiek, spárovanie cez QR. Kontrola: emulátor na asuse (`adb emu sms send`, falošná appka s
+   vybraných appiek, spárovanie kódom z Nastavení (QR by potreboval kameru a knižnicu; kód je osem písmen).
+   Postavené: `android/` a `server/connect/phone.ts` (prijaté aj odoslané SMS, notifikácie, párovanie); odosielanie
+   SMS z Weftu a SMS kódy ešte nie. Kontrola: emulátor na asuse (`adb emu sms send`, falošná appka s
    notifikáciami); falošné odosielanie dokáže, že žiadna SMS neodíde.
 3. **Týždeň 3: regulátor, OAuth a prvý T1 klient** (Spotify). Kontrola: falošný OAuth a API server; testy regulátora
    na podvrhnutých hodinách: rozpočet sa neprekročí, `Retry-After` drží, výzva zastaví a ostane zastavená.

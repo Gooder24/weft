@@ -269,8 +269,13 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   `@cx_*`): chats made from the mails a platform already sends (Vinted: one chat per item; Packeta: one per parcel
   with box, deadline and code), read from `archive.db` read-only, so no platform is ever contacted. Rooms are
   read-only (`isConnector` in app.js, `READ_ONLY` in `weft`); Settings → Účty → „Z mailov“ switches each. A new
-  platform is one file in `server/connect/connectors/` plus its icon and `CONNECTORS` line (README there). Design and
-  the later steps (phone, official APIs): `docs/navrhy/2026-11-konektory/`. Checks: `bun run check` there, `bun dry-run.ts`.
+  platform is one file in `server/connect/connectors/` plus its icon and `CONNECTORS` line (README there). Karchi's
+  Android phone sends SMS (both ways, one chat per number; his own as himself) and the notifications of apps he ticks
+  (one chat per app) through `android/` (Weft Telefón, Kotlin, minSdk 26 as Tailscale; `android/build.sh publish` on
+  asus puts the APK where Weft offers it): Settings → Účty → Telefón gives a 10-minute code, the phone gets its own
+  token (`server/connect/phone.ts`, `/_connect/phone/`) and pins Caddy's CA; „Odpojiť“ ends it. Sending SMS and SMS
+  codes in the corner window are not built yet. Design and the later steps (official APIs):
+  `docs/navrhy/2026-11-konektory/`. Checks: `bun run check` there, `bun dry-run.ts`, `overenie/telefon/run.sh`.
 - `server/sendlater/` is the send-later service (source of truth here, deployed to asus `~/matrix-spike/sendlater/`,
   unit `matrix-spike-sendlater`): it sends the messages Weft keeps in account data `sk.karchi.sendlater` when due.
   An item with `gap` (ms) goes at most one batch per `gap` per network (`net`), also after an outage. Check:
