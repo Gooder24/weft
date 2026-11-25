@@ -3307,7 +3307,7 @@ function laterBubbles(r, m) {
       h('div', { class: 'mrow' }, h('div', { class: 'bubble' }, bubbleBody(r, m, ev), h('span', { class: 'mtime' }, label))),
       h('div', { class: 'lateracts' },
         h('button', { onclick: () => saveLater((list) => list.map((x) => (x.id === it.id ? { ...x, at: Date.now(), failed: undefined, error: undefined } : x))) }, it.failed ? T('Skúsiť znova') : T('Poslať teraz')),
-        h('button', { onclick: () => saveLater((list) => list.filter((x) => x.id !== it.id)) }, T('Zrušiť'))));
+        h('button', { onclick: () => (it.batch?.startsWith('bc-') ? bcDropPerson(it.batch) : saveLater((list) => list.filter((x) => x.id !== it.id))) }, T('Zrušiť'))));
   });
 }
 
@@ -3467,12 +3467,18 @@ async function bcSend(o) {
   o.busy = T('Odovzdávam správy…');
   render();
   try {
-    const item = bcItem(o, 'sent');
-    const { items, at } = laterItemsOf(item, Date.now() + 3e3);
-    await saveLater((list) => addOnce(list, items));
-    if (!items.every((x) => laterItems().some((y) => y.id === x.id))) return;
-    item.to = item.to.map((t) => ({ ...t, at: at[t.key] }));
-    await saveBroadcast((d) => ({ ...d, items: bcUpsert(d.items, item) }));
+    // What the server says now, not this window: the beta may be off on another device, and another window may
+    // have confirmed (and stopped) this broadcast already; then nothing is written again.
+    const now = await call('GET', `/user/${q(S.userId)}/account_data/${BROADCAST}`).catch((err) => (err.status === 404 ? {} : Promise.reject(err)));
+    if (!now.beta) { S.overlay = null; bcOpen = null; return; }
+    if (now.items?.find((x) => x.id === o.id)?.state !== 'sent') {
+      const item = bcItem(o, 'sent');
+      const { items, at, gap } = laterItemsOf(item, Date.now() + 3e3);
+      await saveLater((list) => addOnce(list, items));
+      if (!items.every((x) => laterItems().some((y) => y.id === x.id))) return;
+      item.to = item.to.map((t) => ({ ...t, at: at[t.key], gap: gap[t.key] }));
+      await saveBroadcast((d) => ({ ...d, items: bcUpsert(d.items, item) }));
+    }
     Object.assign(o, { sent: true, step: 4, psel: 0 });
     bcOpen = null;
   } finally {
@@ -3490,7 +3496,7 @@ function bcStatus(it, t) {
   const bad = parts.find((x) => x.failed && !x.sent);
   const out = t.sent || (parts.length && parts.every((x) => x.sent)) ? { state: 'sent', at: t.sent || first.sent, event: t.event || first.event_id }
     : t.failed || bad ? { state: 'failed', at: t.failed || bad.failed, error: t.error || bad.error }
-      : parts.length ? { state: 'wait', at: first.at } : { state: 'stopped', at: t.at };
+      : parts.length && !t.stopped ? { state: 'wait', at: first.at } : { state: 'stopped', at: t.at };
   if (out.state === 'sent') {
     const ans = bcAnswer(t, out.at, out.event);
     if (ans?.text) Object.assign(out, { answer: ans.text, rsvp: guessRsvp(ans.text) });
@@ -3520,16 +3526,23 @@ let bcRecording = false;
 /** After a sync: what send-later says about a sent broadcast's messages is written into it, so it still shows after
  *  the service forgets them. */
 function bcRecord() {
-  if (bcRecording || !bcBeta()) return;
+  if (bcRecording || !bcBeta() || !S.account[LATER]) return;
   const marks = {};
+  const lost = [];
   for (const it of bcData().items || []) {
     if (it.state !== 'sent') continue;
     for (const t of it.to) {
       if (t.sent || t.failed) continue;
       const s = bcStatus(it, t);
+      if (s.state === 'stopped' && !it.stopped && !t.stopped && Date.now() - it.at < 36e5 && t.at) lost.push(...laterItemsOf({ ...it, to: [t] }, t.at).items);
       if (s.state === 'sent') marks[`${it.id}|${t.key}`] = { sent: s.at, event: s.event };
       else if (s.state === 'failed') marks[`${it.id}|${t.key}`] = { failed: s.at, error: s.error };
     }
+  }
+  if (lost.length) {
+    bcRecording = true;
+    saveLater((list) => addOnce(list, lost)).finally(() => { bcRecording = false; });
+    return;
   }
   if (!Object.keys(marks).length) return;
   bcRecording = true;
@@ -3538,8 +3551,15 @@ function bcRecord() {
 }
 /** Zastaviť: what has not gone yet never goes. */
 async function bcStop(it) {
-  await saveLater((list) => { const out = list.filter((x) => !(x.id.startsWith(`bc-${it.id}-`) && !x.sent && !x.failed)); return out.length === list.length ? list : out; });
   await saveBroadcast((d) => ({ ...d, items: (d.items || []).map((x) => (x.id === it.id ? { ...x, stopped: Date.now() } : x)) }));
+  await saveLater((list) => { const out = list.filter((x) => !(x.id.startsWith(`bc-${it.id}-`) && !x.sent && !x.failed)); return out.length === list.length ? list : out; });
+}
+/** Zrušiť on one person's waiting broadcast message in their chat: the broadcast keeps them as stopped first (so it
+ *  never writes them again), then their messages leave send-later. */
+async function bcDropPerson(batch) {
+  await saveBroadcast((d) => ({ ...d, items: (d.items || []).map((x) => (!x.to?.some((t) => batchOf(x, t) === batch) ? x
+    : { ...x, to: x.to.map((t) => (batchOf(x, t) === batch ? { ...t, stopped: Date.now() } : t)) })) }));
+  await saveLater((list) => { const out = list.filter((x) => !(x.batch === batch && !x.sent)); return out.length === list.length ? list : out; });
 }
 /** A/N/M in step 4: Karchi's own yes, no or maybe for a person (the same key again takes it back). */
 function bcSetRsvp(it, t, rsvp) {
@@ -3709,6 +3729,7 @@ function bcKey(e) {
     return false; // closes, as any overlay
   }
   if (o.busy) return false;
+  if ((k === 'Enter' || k === ' ') && !e.ctrlKey && a?.matches('button, label')) return false;
   if (o.step === 1) {
     if (e.ctrlKey) return false;
     if (k === 'ArrowDown') return move('index', 1);

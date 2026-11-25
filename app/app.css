@@ -1518,6 +1518,7 @@ button.prof-status:hover { background: var(--hover); }
 .cmd.broadcast .pane { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 6px 8px; outline: none; }
 .cmd.broadcast .cmdinput { padding: 12px 18px; }
 .cmd.broadcast .chips { padding: 10px 12px 4px; }
+.cmd.broadcast .chip { font-weight: 600; }
 .cmd.broadcast .chip:hover { border-color: var(--line-strong); }
 .cmd.broadcast .chip small { font-weight: 400; color: var(--muted); }
 .cmd.broadcast .res { padding: 7px 10px; }
@@ -1555,7 +1556,10 @@ button.prof-status:hover { background: var(--hover); }
 .cmd.broadcast .slot { display: inline-block; padding: 0 5px; border-radius: var(--radius-s); background: var(--soft); color: var(--link); }
 .cmd.broadcast .hint { color: var(--muted); }
 .cmd.broadcast .atts { padding: 0; align-items: center; }
-.cmd.broadcast .att { height: 56px; }
+.cmd.broadcast .att { height: 56px; max-width: 360px; padding: 8px 40px 8px 12px; }
+.cmd.broadcast .att small { white-space: nowrap; }
+.cmd.broadcast .attx { top: 50%; right: 6px; transform: translateY(-50%); background: none; color: var(--muted); }
+.cmd.broadcast .attx:hover { background: var(--hover); color: var(--text); }
 .cmd.broadcast label.ghost input { display: none; }
 .cmd.broadcast .pace { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .cmd.broadcast .split { flex: 1; min-height: 0; display: grid; grid-template-columns: 290px 1fr; }

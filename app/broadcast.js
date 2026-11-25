@@ -42,22 +42,28 @@ export const personId = (key) => {
 export const batchOf = (bc, t) => `bc-${bc.id}-${personId(t.key)}`;
 
 /** The send-later items of a confirmed broadcast: per person a batch of the text and the files (the same mxc for
- *  everyone), the first at `start`, the next ones 25–70 s apart. Ids come from the broadcast and the person, so a
- *  second confirmation (another device, a double press) writes the same ids and nothing more goes out.
- *  `rand` gives 0–1 (tests pass their own). Returns { items, at: { [key]: ms } }. */
+ *  everyone), the first at `start`, the next ones 25–70 s apart. Each person's pause is also their items' `gap`, so
+ *  the service keeps it random after an outage too. Ids come from the broadcast and the person, so a second
+ *  confirmation (another device, a double press) writes the same ids and nothing more goes out. A person who has
+ *  `at` and `gap` already (a list written again) keeps them. `rand` gives 0–1 (tests pass their own).
+ *  Returns { items, at: { [key]: ms }, gap: { [key]: ms } }. */
 export function laterItemsOf(bc, start, rand = Math.random) {
   const items = [];
   const at = {};
+  const gap = {};
   let when = start;
-  for (const t of bc.to) {
+  bc.to.forEach((t, i) => {
+    const pause = t.gap || Math.round(BC_GAP[0] + rand() * (BC_GAP[1] - BC_GAP[0]));
+    if (i) when += pause;
+    const due = t.at || when;
     const batch = batchOf(bc, t);
     const text = personalText(bc.text, t);
     const contents = [...(text ? [{ msgtype: 'm.text', body: text }] : []), ...(bc.files || [])];
-    contents.forEach((content, seq) => items.push({ id: `${batch}-${seq}`, room: t.room, net: t.net, at: when, seq, batch, gap: BC_GAP[0], content }));
-    at[t.key] = when;
-    when += Math.round(BC_GAP[0] + rand() * (BC_GAP[1] - BC_GAP[0]));
-  }
-  return { items, at };
+    contents.forEach((content, seq) => items.push({ id: `${batch}-${seq}`, room: t.room, net: t.net, at: due, seq, batch, gap: pause, content }));
+    at[t.key] = due;
+    gap[t.key] = pause;
+  });
+  return { items, at, gap };
 }
 /** Adds the items the list does not have yet: the same list back when it has them all. */
 export function addOnce(list, items) {
@@ -67,7 +73,7 @@ export function addOnce(list, items) {
 }
 
 /** People per network a broadcast would reach on the day of `now`, with what already went or waits that day
- *  (send-later's first parts of other broadcasts). { [net]: count } */
+ *  (send-later's first parts of other broadcasts, overdue ones too). { [net]: count } */
 export function dayCounts(bc, later, now = Date.now()) {
   const day = new Date(now);
   day.setHours(0, 0, 0, 0);
@@ -76,7 +82,7 @@ export function dayCounts(bc, later, now = Date.now()) {
   const counts = {};
   for (const x of later) {
     if (!x.id?.startsWith('bc-') || x.id.startsWith(`bc-${bc.id}-`) || x.seq || x.failed) continue;
-    const ts = x.sent || x.at;
+    const ts = x.sent || Math.max(x.at, now); // an overdue one goes as soon as it can, today
     if (ts >= from && ts < to) counts[x.net] = (counts[x.net] || 0) + 1;
   }
   for (const t of bc.to) counts[t.net] = (counts[t.net] || 0) + 1;
