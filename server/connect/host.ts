@@ -168,11 +168,15 @@ export class Host {
     const content = { msgtype: 'm.text', body: item.text, [MARK]: { connector: c.id, ...origin } };
     const sent = await this.opts.matrix.call('PUT', `/rooms/${q(room)}/send/m.room.message/${txn}`, content, { user: sender, query: { ts } });
     const event = String(sent.event_id);
-    // Old history comes read. Only then is it posted: a failed receipt sends again with the same transaction id,
-    // which the homeserver answers with the same event, and the receipt is tried again.
+    // Old history comes read. Only then is it posted: a receipt that failed for now (5xx, network) sends again with
+    // the same transaction id, which the homeserver answers with the same event, and the receipt is tried again. One
+    // the homeserver refuses (Karchi left the room) never will be, so it does not hold up what comes after.
     if (!item.mine && this.now() - ts > SEEN) {
       this.db.query('INSERT INTO unseen VALUES (?, ?) ON CONFLICT (room) DO UPDATE SET ts = MAX(ts, excluded.ts)').run(room, ts);
-      await this.opts.matrix.call('POST', `/rooms/${q(room)}/receipt/m.read/${q(event)}`, {}, { user: this.opts.matrix.admin });
+      await this.opts.matrix.call('POST', `/rooms/${q(room)}/receipt/m.read/${q(event)}`, {}, { user: this.opts.matrix.admin }).catch((err) => {
+        if (!(err instanceof MatrixError && err.status >= 400 && err.status < 500)) throw err;
+        console.log(`receipt in ${room} refused: ${err.message}`);
+      });
     }
     this.db.query('INSERT INTO posted VALUES (?, ?, ?, ?, ?)').run(key, c.id, room, event, ts);
     stored();

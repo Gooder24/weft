@@ -67,7 +67,7 @@ class Sync : JobService() {
         } catch (e: Net.HttpError) {
             if (e.code != 400 && e.code != 413) throw e
             if (batch.size == 1) listOf(batch[0].getString("id"))
-            else batch.flatMap { if (wanted(store, it)) send(store, server, token, listOf(it)) else listOf(it.getString("id")) }
+            else batch.flatMap { if (wanted(store, it) && store.has(it.getString("id"))) send(store, server, token, listOf(it)) else listOf(it.getString("id")) }
         }
 
         /** SMS switched off or an app unticked after its items came in: they stay on the phone (asked again before each

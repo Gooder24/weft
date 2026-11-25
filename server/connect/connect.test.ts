@@ -97,7 +97,7 @@ afterEach(() => {
 /** A homeserver that answers what the host asks and remembers every call; `seen` null: Karchi has no „seen up to“ yet. */
 function fakeHomeserver(seen: Record<string, unknown> | null = { keep: 5 }) {
   const calls: Call[] = [];
-  const fail = { receipts: 0 }; // the next this many read receipts fail
+  const fail = { receipts: 0, status: 500 }; // the next this many read receipts fail with this status
   let n = 0;
   const server = Bun.serve({
     port: 0,
@@ -106,7 +106,7 @@ function fakeHomeserver(seen: Record<string, unknown> | null = { keep: 5 }) {
       const path = decodeURIComponent(url.pathname.replace('/_matrix/client/v3', ''));
       const body: Record<string, unknown> = req.method === 'GET' ? {} : await req.json().catch(() => ({}));
       calls.push({ method: req.method, path, user: url.searchParams.get('user_id'), body });
-      if (path.includes('/receipt/') && fail.receipts > 0 && fail.receipts--) return Response.json({ errcode: 'M_UNKNOWN' }, { status: 500 });
+      if (path.includes('/receipt/') && fail.receipts > 0 && fail.receipts--) return Response.json({ errcode: 'M_UNKNOWN' }, { status: fail.status });
       if (path === '/createRoom') return Response.json({ room_id: `!r${++n}:test` });
       if (path.includes('/send/')) return Response.json({ event_id: `$e${++n}` });
       if (req.method === 'GET' && path.includes('/account_data/')) return seen ? Response.json(seen) : Response.json({ errcode: 'M_NOT_FOUND' }, { status: 404 });
@@ -311,6 +311,13 @@ describe('phone', () => {
     expect(txns[1]).toBe(txns[0]!); // the same transaction: the homeserver gives back the same event
     expect(hs.calls.filter((c) => c.path.includes('/receipt/m.read/'))).toHaveLength(2);
     expect(counted).toBe(1);
+  });
+
+  test('a read receipt the homeserver refuses (he left the room) holds up nothing after it', async () => {
+    const { hs, host } = setup();
+    Object.assign(hs.fail, { receipts: 1, status: 404 });
+    const result = await host.phone('p1', [sms('1', '0900123456', 'Včera', NOW - 2 * 86_400_000), sms('2', '0900999888', 'Dnes', NOW - 60_000)]);
+    expect(result).toEqual({ taken: ['1', '2'], posted: 2 });
   });
 
   test('an SMS Karchi sent is his own message in the chat, through his own account', async () => {

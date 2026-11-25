@@ -62,6 +62,8 @@ class Store private constructor(context: Context) {
 
     private fun drop(prefix: String) = db.delete("queue", "substr(id, 1, ?) = ?", arrayOf(prefix.length.toString(), prefix))
 
+    fun has(id: String) = android.database.DatabaseUtils.queryNumEntries(db, "queue", "id = ?", arrayOf(id)) > 0
+
     fun count(): Long = android.database.DatabaseUtils.queryNumEntries(db, "queue")
 
     /** Forgets these items; returns how many the queue had. */
