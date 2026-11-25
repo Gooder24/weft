@@ -48,7 +48,7 @@ jobs:
           $env:SPRAVY_SELFTEST = '1'
           foreach ($try in 1, 2) {
             $p = Start-Process dist\win-unpacked\Weft.exe -PassThru -RedirectStandardOutput "selftest-$try.txt"
-            if (-not $p.WaitForExit(120000)) { Stop-Process -Id $p.Id -Force; "try $try: no answer in 2 minutes" }
+            if (-not $p.WaitForExit(120000)) { Stop-Process -Id $p.Id -Force; "try ${try}: no answer in 2 minutes" }
             Get-Content "selftest-$try.txt"
             if (Select-String -Quiet 'selftest ok' "selftest-$try.txt") { exit 0 }
           }
