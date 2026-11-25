@@ -11,8 +11,19 @@ function sentence(text: string) {
   const body = between(text, /^(?:Vinted Email\s*)?/, END)
     .replace(/^(?:Hi|Hello|Ahoj|Dobrý deň)\b[^,]*,\s*/i, '')
     .replace(/(, [^,]+)\1(?=,)/g, '$1'); // Vinted repeats a pick-up point's street
+  const known = SLOVAK.map(([re, say]) => { const m = body.match(re); return m ? say(m) : ''; }).find(Boolean);
+  if (known) return known;
   return body.length > 400 ? `${body.slice(0, 399)}…` : body;
 }
+
+/** Vinted's usual sentences in Slovak; anything else stays as Vinted wrote it. */
+const SLOVAK: [RegExp, (m: RegExpMatchArray) => string][] = [
+  [/^Your order is on its way! Estimated delivery is (.+?) for /, (m) => `Je na ceste, príde ${m[1]}.`],
+  [/^Your (?:purchase|parcel) is waiting for you at (.+?)\. (?:Go and collect it!|Please pick it up\.)/, (m) => `Čaká na vyzdvihnutie: ${m[1]}.`],
+  [/^Your order has been marked as delivered\..*?(?:You have until (.+?) to report an issue|$)/, (m) => `Doručené. Potvrď, že je všetko v poriadku${m[1] ? `, alebo nahlás problém do ${m[1]}` : ''}.`],
+  [/^Your order has been cancelled/, () => 'Objednávka je zrušená, peniaze sa vrátia.'],
+  [/^Refund sent to your payment method/, () => 'Peniaze sú vrátené na kartu.'],
+];
 
 export function parse(m: Mail): Item[] {
   const s = m.subject;
@@ -40,7 +51,7 @@ export function parse(m: Mail): Item[] {
   if ((x = about(/^Your refund for (.+?) is on its way$/))) return thing(x, { text: 'Peniaze sú na ceste späť.' });
   if ((x = about(/^Order update for (.+)$/))) return thing(x, { text: sentence(m.text) || 'Zmena objednávky.' });
   if ((x = about(/^(.+) - Confirmation needed$/))) {
-    return thing(x, { text: `Potvrď vo Vinted, že je objednávka v poriadku. ${sentence(m.text)}`.trim() });
+    return thing(x, { text: sentence(m.text) || 'Potvrď vo Vinted, že je objednávka v poriadku.' });
   }
   return [{ thread: 'vinted', title: 'Vinted', text: s }];
 }

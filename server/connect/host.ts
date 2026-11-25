@@ -10,6 +10,7 @@ const DAY = 86_400_000;
 export const BACK = 30 * DAY; // how far back a connector looks the first time (and after being off)
 const SEEN = DAY; // an item older than this when it comes is posted read: it is history, not news
 const MARK = 'sk.karchi.connect';
+const WEFT_SEEN = 'sk.karchi.edupage.seen'; // „seen up to“ per room that `weft chats` reads; Weft's inbox counts by receipt
 
 type Row = { rowid: number; id: string; ts: number; sender: string; body: string };
 
@@ -26,7 +27,8 @@ export class Host {
       CREATE TABLE IF NOT EXISTS rooms (connector TEXT NOT NULL, thread TEXT NOT NULL, room TEXT NOT NULL, PRIMARY KEY (connector, thread));
       CREATE TABLE IF NOT EXISTS ghosts (mxid TEXT PRIMARY KEY, name TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS members (room TEXT NOT NULL, mxid TEXT NOT NULL, PRIMARY KEY (room, mxid));
-      CREATE TABLE IF NOT EXISTS posted (key TEXT PRIMARY KEY, connector TEXT NOT NULL, room TEXT NOT NULL, event TEXT NOT NULL, ts INTEGER NOT NULL);`);
+      CREATE TABLE IF NOT EXISTS posted (key TEXT PRIMARY KEY, connector TEXT NOT NULL, room TEXT NOT NULL, event TEXT NOT NULL, ts INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS unseen (room TEXT PRIMARY KEY, ts INTEGER NOT NULL);`);
     this.archive = new Database(opts.archive, { readonly: true, strict: true });
   }
 
@@ -61,25 +63,65 @@ export class Host {
     return this.busy;
   }
 
+  /** Each connector on its own: one that fails (the homeserver down, a mail its rules choke on) keeps its place in the
+   *  archive for the next pass and does not stop the others. History is marked seen at the end, also after a failure. */
   private async pass() {
     let posted = 0;
+    const failed: unknown[] = [];
     for (const c of this.opts.connectors) {
       if (!this.isOn(c.id)) continue;
-      const cursor = this.db.query<{ rowid: number }, [string]>('SELECT rowid FROM cursors WHERE connector = ?').get(c.id)?.rowid ?? 0;
-      const rows = this.archive.query<Row, [number, number]>(`SELECT m.rowid AS rowid, m.id AS id, m.ts AS ts, m.sender AS sender, m.body AS body
-        FROM messages m JOIN chats c ON c.id = m.chat
-        WHERE c.network IN ('gmail', 'outlook') AND m.me = 0 AND m.rowid > ? AND m.ts > ? ORDER BY m.rowid LIMIT 2000`).all(cursor, this.now() - BACK);
-      // The archive takes old mail newest first: a batch goes in by time, so a chat reads in order. The cursor moves
-      // only past a whole batch; a failure retries it, and what was posted is not posted again.
-      for (const row of rows.toSorted((a, b) => a.ts - b.ts)) {
-        if (!c.mail.from(row.sender)) continue;
-        const mail: Mail = { id: row.id, from: row.sender, ts: row.ts, ...flatten(row.body) };
-        for (const [i, item] of c.mail.parse(mail).entries()) if (await this.post(c, mail, i, item)) posted++;
+      try {
+        posted += await this.read(c);
+      } catch (err) {
+        failed.push(err);
       }
-      const last = rows.at(-1);
-      if (last) this.db.query('INSERT INTO cursors VALUES (?, ?) ON CONFLICT (connector) DO UPDATE SET rowid = excluded.rowid').run(c.id, last.rowid);
     }
+    try {
+      await this.markSeen();
+    } catch (err) {
+      failed.push(err);
+    }
+    if (failed.length) throw failed[0];
     return posted;
+  }
+
+  private async read(c: Connector) {
+    let posted = 0;
+    const cursor = this.db.query<{ rowid: number }, [string]>('SELECT rowid FROM cursors WHERE connector = ?').get(c.id)?.rowid ?? 0;
+    const rows = this.archive.query<Row, [number, number]>(`SELECT m.rowid AS rowid, m.id AS id, m.ts AS ts, m.sender AS sender, m.body AS body
+      FROM messages m JOIN chats c ON c.id = m.chat
+      WHERE c.network IN ('gmail', 'outlook') AND m.me = 0 AND m.rowid > ? AND m.ts > ? ORDER BY m.rowid LIMIT 2000`).all(cursor, this.now() - BACK);
+    // The archive takes old mail newest first: a batch goes in by time, so a chat reads in order. The cursor moves
+    // only past a whole batch; a failure retries it, and what was posted is not posted again.
+    for (const row of rows.toSorted((a, b) => a.ts - b.ts)) {
+      if (!c.mail.from(row.sender)) continue;
+      const mail: Mail = { id: row.id, from: row.sender, ts: row.ts, ...flatten(row.body) };
+      for (const [i, item] of c.mail.parse(mail).entries()) if (await this.post(c, mail, i, item)) posted++;
+    }
+    const last = rows.at(-1);
+    if (last) this.db.query('INSERT INTO cursors VALUES (?, ?) ON CONFLICT (connector) DO UPDATE SET rowid = excluded.rowid').run(c.id, last.rowid);
+    return posted;
+  }
+
+  /** History shows as seen in `weft` too: each room's newest old item goes into Karchi's „seen up to“ (kept in `unseen` until
+   *  written, so a failure retries it). A later value already there (he opened the chat) stays. */
+  private async markSeen() {
+    const rows = this.db.query<{ room: string; ts: number }, []>('SELECT room, ts FROM unseen').all();
+    if (!rows.length) return;
+    const m = this.opts.matrix;
+    const path = `/user/${q(m.admin)}/account_data/${WEFT_SEEN}`;
+    const seen = await m.call('GET', path, undefined, { user: m.admin }).catch((err): Record<string, unknown> => {
+      if (err instanceof MatrixError && err.status === 404) return {};
+      throw err;
+    });
+    let changed = false;
+    for (const { room, ts } of rows) {
+      const was = Number(seen[room] ?? seen._all ?? 0);
+      if (!(was >= ts)) { seen[room] = ts; changed = true; }
+    }
+    if (changed) await m.call('PUT', path, seen, { user: m.admin });
+    const done = this.db.query('DELETE FROM unseen WHERE room = ? AND ts = ?');
+    for (const { room, ts } of rows) done.run(room, ts);
   }
 
   private async post(c: Connector, mail: Mail, i: number, item: Item) {
@@ -94,6 +136,7 @@ export class Host {
     const event = String(sent.event_id);
     this.db.query('INSERT INTO posted VALUES (?, ?, ?, ?, ?)').run(key, c.id, room, event, mail.ts);
     if (this.now() - mail.ts > SEEN) {
+      this.db.query('INSERT INTO unseen VALUES (?, ?) ON CONFLICT (room) DO UPDATE SET ts = MAX(ts, excluded.ts)').run(room, mail.ts);
       await this.opts.matrix.call('POST', `/rooms/${q(room)}/receipt/m.read/${q(event)}`, {}, { user: this.opts.matrix.admin });
     }
     return true;

@@ -38,7 +38,15 @@ describe('vinted', () => {
   });
   test('an order update keeps Vinted\'s sentence without greeting or footer', () => {
     const [item] = vinted(mail('Order update for Lampa retro', 'Hi, Your parcel is waiting for you at Z-BOX Horná Dolná, Hlavná 1. Please pick it up. Go to conversation This email was sent by Vinted'));
-    expect(item?.text).toBe('Your parcel is waiting for you at Z-BOX Horná Dolná, Hlavná 1. Please pick it up.');
+    expect(item?.text).toBe('Čaká na vyzdvihnutie: Z-BOX Horná Dolná, Hlavná 1.');
+  });
+  test('a delivered order asks for the confirmation with its deadline, in Slovak', () => {
+    const [item] = vinted(mail('Hrnček - Confirmation needed', 'Hi kupec42, Your order has been marked as delivered. If you received it, confirm this. You have until 2 Mar 16:48 to report an issue. To do this, go to your conversation. Go to conversation'));
+    expect(item).toEqual({ thread: 'item:Hrnček', title: 'Hrnček', text: 'Doručené. Potvrď, že je všetko v poriadku, alebo nahlás problém do 2 Mar 16:48.' });
+  });
+  test('an unknown sentence stays as Vinted wrote it', () => {
+    const [item] = vinted(mail('Order update for Hrnček', 'Hi, Something new happened. Go to conversation'));
+    expect(item?.text).toBe('Something new happened.');
   });
   test('anything else goes to one chat „Vinted“ by its subject', () => {
     expect(vinted(mail('Leave feedback for the seller', 'Hi'))).toEqual([{ thread: 'vinted', title: 'Vinted', text: 'Leave feedback for the seller' }]);
@@ -96,6 +104,7 @@ function fakeHomeserver() {
       calls.push({ method: req.method, path, user: url.searchParams.get('user_id'), body });
       if (path === '/createRoom') return Response.json({ room_id: `!r${++n}:test` });
       if (path.includes('/send/')) return Response.json({ event_id: `$e${++n}` });
+      if (req.method === 'GET' && path.includes('/account_data/')) return Response.json({ keep: 5 });
       return Response.json({});
     },
   });
@@ -147,6 +156,29 @@ describe('host', () => {
     add('ancient', V, 'Order update for Váza\n Hi, Shipped.', NOW - 40 * 86_400_000);
     expect(await host.round()).toBe(1);
     expect(hs.calls.filter((c) => c.path.includes('/receipt/m.read/'))).toEqual([expect.objectContaining({ user: '@karchi:test' })]);
+    // Weft's own „seen up to“ (what its inbox reads) gets the room at the item's time, as Karchi
+    const put = hs.calls.filter((c) => c.method === 'PUT' && c.path.endsWith('/account_data/sk.karchi.edupage.seen'));
+    expect(put).toEqual([expect.objectContaining({ user: '@karchi:test', body: { keep: 5, '!r1:test': NOW - 3 * 86_400_000 } })]);
+    expect(await host.round()).toBe(0);
+    expect(hs.calls.filter((c) => c.method === 'PUT' && c.path.includes('/account_data/'))).toHaveLength(1);
+  });
+
+  test('news is not marked seen, and a later seen value stays', async () => {
+    const { add, hs, host } = setup();
+    add('new', V, 'Order update for Hrnček\n Hi, Shipped.');
+    await host.round();
+    expect(hs.calls.some((c) => c.path.includes('/account_data/'))).toBe(false);
+  });
+
+  test('a connector that fails does not stop the others', async () => {
+    const { add, hs, host } = setup();
+    const broken = { ...vintedConnector, mail: { ...vintedConnector.mail, parse: () => { throw new Error('rules choked'); } } };
+    const both = new Host({ ...host.opts, connectors: [broken, packetaConnector] });
+    add('v', V, 'Order update for Hrnček\n Hi, Shipped.');
+    add('p', 'Packeta Slovakia <noreply@packeta.sk>', 'Zásielka bola prevzatá\n Číslo zásielky Z 111 2222 333');
+    await expect(both.round()).rejects.toThrow('rules choked');
+    expect(sends(hs.calls)).toHaveLength(1);
+    expect(await host.round()).toBe(1); // the fixed rules pick up where the broken ones stopped
   });
 
   test('off stops new items; on again catches up without repeating', async () => {
@@ -183,6 +215,6 @@ describe('order', () => {
   });
   test('a pick-up point\'s street comes once', () => {
     const [item] = vinted(mail('Order update for Hrnček', 'Hi, Your parcel is waiting for you at Z-BOX Horná Dolná, Hlavná 1, Hlavná 1, 000 00 Horná Dolná. Please pick it up. Go to conversation'));
-    expect(item?.text).toBe('Your parcel is waiting for you at Z-BOX Horná Dolná, Hlavná 1, 000 00 Horná Dolná. Please pick it up.');
+    expect(item?.text).toBe('Čaká na vyzdvihnutie: Z-BOX Horná Dolná, Hlavná 1, 000 00 Horná Dolná.');
   });
 });
