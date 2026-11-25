@@ -132,7 +132,8 @@ FEATURES = {
 }
 USER_SCOPES = list(dict.fromkeys(s for p in PRODUCTS.values() for s in p["scopes"] + p["extra"] + WORK_ONLY))
 ALL_SCOPES = USER_SCOPES + ADMIN_ONLY
-# A sign-in that asked for "extra" and was refused for want of consent: the next one in this time asks only "scopes".
+# A sign-in that asked for "extra" and was refused for want of consent, or closed unfinished: the next one in this
+# time asks only "scopes".
 BASE_ONLY: dict[str, float] = {}
 BASE_ONLY_SECONDS = 3600
 STEP_ID = "sk.karchi.microsoft.signin"
@@ -212,7 +213,9 @@ def admin_consent_url(tenant: str = "") -> str:
     """One page where an admin of the school or company grants Weft everything (ALL_SCOPES) for every user there.
     Microsoft then sends the admin's browser to http://localhost with admin_consent=True; nothing else is needed."""
     client = ms_client() or DEFAULT_CLIENT
-    tenant = tenant if tenant and tenant != CONSUMERS else str(client.get("tenant") or "organizations")
+    tenant = tenant if tenant and tenant != CONSUMERS else str(client.get("tenant") or "")
+    if tenant in ("", "common", "consumers"):  # Microsoft takes no admin consent there; the admin's sign-in picks the tenant
+        tenant = "organizations"
     return f"{LOGIN}/{tenant}/v2.0/adminconsent?" + urllib.parse.urlencode({
         "client_id": client["client_id"], "scope": " ".join(ALL_SCOPES), "redirect_uri": REDIRECT_URI, "state": "weft"})
 
@@ -222,6 +225,8 @@ def needs_admin(tenant: str = "") -> str:
 
 
 def consent_refusal(code: str, description: str) -> bool:
+    if "AADSTS53003" in description or "AADSTS53000" in description:  # Conditional Access, not consent
+        return False
     return code in ("access_denied", "consent_required") or any(
         c in description for c in ("AADSTS65001", "AADSTS65004", "AADSTS90094", "AADSTS900941"))
 
@@ -590,10 +595,14 @@ def process(process_id: str) -> dict:
 
 
 def signin_scopes(product: str, client: dict) -> list[str]:
-    """Everything at once, unless such a sign-in was just refused for want of an admin's consent."""
-    spec = PRODUCTS[product]
+    """Everything at once, unless such a sign-in was just refused or left unfinished (see BASE_ONLY)."""
     if time.time() - BASE_ONLY.get(product, 0) < BASE_ONLY_SECONDS:
-        return spec["scopes"]
+        return PRODUCTS[product]["scopes"]
+    return all_user_scopes(product, client)
+
+
+def all_user_scopes(product: str, client: dict) -> list[str]:
+    spec = PRODUCTS[product]
     if product == "teams" or str(client.get("tenant") or "common") not in ("common", "consumers"):
         return list(dict.fromkeys(spec["scopes"] + USER_SCOPES))
     return spec["scopes"] + spec["extra"]
@@ -626,7 +635,9 @@ def start_login(product: str) -> dict:
         "type": "user_input",
         "step_id": STEP_ID,
         "instructions": f"Otvor Microsoft, vyber účet a povoľ Weftu prístup {spec['what']}.{school} Prehliadač potom "
-        "ukáže, že sa stránka nedá načítať; to je v poriadku. Skopíruj celú adresu z jeho riadku a vlož ju sem.",
+        "ukáže, že sa stránka nedá načítať; to je v poriadku. Skopíruj celú adresu z jeho riadku a vlož ju sem."
+        + (" Ak Microsoft chce schválenie správcu a ďalej ťa nepustí, zavri toto okno a pripoj účet znova: Weft vtedy "
+           "pýta len to, čo treba na poštu a chaty." if PROCESSES[process_id]["extras"] else ""),
         "sk.karchi.open_url": url,
         "sk.karchi.open_label": "Otvoriť Microsoft",
         "user_input": {"fields": [{"type": "text", "id": "redirect", "name": "Adresa stránky, ktorá sa nenačítala"}]},
@@ -658,7 +669,7 @@ def submit_login(product: str, process_id: str, found: dict, body: dict) -> dict
     except ApiError as err:
         if err.message == REVOKED:  # invalid_grant here: the code was used already or is too old
             err.message = "Tento kód od Microsoftu už neplatí."
-        elif err.errcode == "SK.KARCHI.DENIED" and found.get("extras"):
+        elif err.errcode == "SK.KARCHI.DENIED" and found.get("extras") and "Conditional Access" not in err.message:
             BASE_ONLY[product] = time.time()
             err.message += " Weft sa teraz pripojí len k tomu, čo už smie."
         raise
@@ -925,10 +936,11 @@ def consent_report(product: str) -> dict:
     logins, tenant = [], ""
     for login in ACCOUNTS.view(product):
         key = login["id"]
-        tenant = tenant or ACCOUNTS.tenant_of(product, key)
-        wanted = signin_scopes(product, ms_client() or {}) if ACCOUNTS.tenant_of(product, key) != CONSUMERS else \
-            PRODUCTS[product]["scopes"] + PRODUCTS[product]["extra"]
-        wanted = [s.rsplit("/", 1)[-1] for s in list(dict.fromkeys(wanted + ADMIN_ONLY)) if s.startswith(G)]
+        tenant = tenant or ("" if ACCOUNTS.tenant_of(product, key) == CONSUMERS else ACCOUNTS.tenant_of(product, key))
+        personal = ACCOUNTS.tenant_of(product, key) == CONSUMERS
+        wanted = PRODUCTS[product]["scopes"] + PRODUCTS[product]["extra"] if personal else \
+            all_user_scopes(product, ms_client() or {}) + ADMIN_ONLY
+        wanted = [s.rsplit("/", 1)[-1] for s in dict.fromkeys(wanted) if s.startswith(G)]
         try:
             have = ACCOUNTS.consented(product, key)
         except ApiError as err:
@@ -2013,7 +2025,10 @@ def route(product: str, method: str, parts: list[str], body: dict, args: dict, t
                     err.message += " Klikni znova Otvoriť Microsoft."
                 raise
         case "POST", ["login", "cancel", process_id]:
-            PROCESSES.pop(process_id, None)
+            # A full sign-in closed unfinished: Microsoft may have stopped it at "Need admin approval" with no way back
+            # to Weft, so the next one asks only for what mail and chats need.
+            if (PROCESSES.pop(process_id, None) or {}).get("extras"):
+                BASE_ONLY[product] = time.time()
             return {}
         case "POST", ["logout", login_id]:
             if not ACCOUNTS.remove(product, login_id):
