@@ -3047,7 +3047,7 @@ function serverPeople(r, word) {
   if (r.app !== 'discord' || !r.serverId || norm(word).length < 2) return [];
   const key = `${r.serverId}|${norm(word)}`;
   let hit = dc.people.get(key);
-  const current = () => S.mention?.room === r.id && dc.people.get(`${r.serverId}|${norm(S.mention.word)}`) === hit;
+  const current = () => S.mention?.room === r.id && !S.mention.off && dc.people.get(`${r.serverId}|${norm(S.mention.word)}`) === hit;
   if (!hit) {
     hit = { ids: [], archive: [], members: [], asked: false };
     dc.people.set(key, hit);
@@ -3058,12 +3058,16 @@ function serverPeople(r, word) {
   }
   if (!hit.asked && Date.now() >= dc.searchOff) {
     hit.asked = true;
-    setTimeout(() => {
-      if (!current()) { hit.asked = false; return; } // typed on meanwhile: asked when the word comes back
+    if (dc.wait) { clearTimeout(dc.wait.timer); dc.wait.hit.asked = false; } // a newer word: the rest starts again
+    const wait = { hit, timer: 0 };
+    dc.wait = wait;
+    wait.timer = setTimeout(() => {
+      dc.wait = null;
+      if (!current()) { hit.asked = false; return; } // another chat, closed list: asked when the word comes back
       call('GET', `/guilds/${q(r.serverId)}/members?query=${q(word.normalize('NFKC'))}&limit=10`, undefined, LINKS.find((a) => a.id === 'discord').legacy).then((body) => {
         if (!body.enabled) { dc.searchOff = Date.now() + 10 * 60e3; return; }
         hit.members = ghosts(body.members || []);
-        if (body.timeout) hit.asked = false;
+        if (body.timeout) setTimeout(() => { hit.asked = false; }, 60e3); // Discord was silent: again on later typing
         found(hit, current);
       }).catch((err) => {
         if (err.errcode === 'M_NOT_FOUND') return; // not one of his servers: this word stays without members
@@ -8848,7 +8852,7 @@ function archiveCompose(r) {
 /* The Discord bridge opens only the newest 5 DMs at its start and others when a new message comes. The archive reads
  * the bridge's database (server/archive/discord_weft.py): Karchi's DM and group channels, and opens one of them on a
  * click through the bridge's own command. Nothing here writes to Discord; the bridge reads the channel (two GETs). */
-const dc = { dms: null, channels: null, at: 0, failed: false, loading: null, opening: new Set(), people: new Map(), names: new Map(), searchOff: 0 };
+const dc = { dms: null, channels: null, at: 0, failed: false, loading: null, opening: new Set(), people: new Map(), names: new Map(), searchOff: 0, wait: null };
 const archiveGet = async (path) => {
   const res = await fetch(path, { headers: { Authorization: `Bearer ${S.token}` }, signal: AbortSignal.timeout(20e3) });
   const body = await res.json().catch(() => ({}));
