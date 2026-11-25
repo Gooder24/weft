@@ -40,7 +40,7 @@ class Listener : NotificationListenerService() {
             val text = (extras.getCharSequence(Notification.EXTRA_BIG_TEXT) ?: extras.getCharSequence(Notification.EXTRA_TEXT))?.toString() ?: return
             val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()
             // The same notification updated with the same words is one item; a new one (its own time) is another.
-            store.add(JSONObject(base.toString()).put("id", "n:${sbn.packageName}:${sbn.id}:${hash(sbn.tag)}:${n.`when`}:${hash(title, text)}")
+            store.add(JSONObject(base.toString()).put("id", "n:${sbn.packageName}:${sbn.id}:${sbn.tag?.takeIf { it.length <= 40 } ?: hash(sbn.tag)}:${n.`when`}:${hash(title, text)}")
                 .put("ts", sbn.postTime).put("text", text.take(10_000)).also { if (title != null) it.put("title", title) })
         }
         Sync.soon(this, 0)

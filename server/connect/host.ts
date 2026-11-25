@@ -81,10 +81,10 @@ export class Host {
       for (const p of items.toSorted((a, b) => a.ts - b.ts)) {
         const made = phoneItem(p);
         if (made && this.isOn(made[0].id) && this.now() - p.ts < BACK) {
-          if (await this.post(made[0], `phone:${phoneKey(p)}`, p.ts, made[1], { phone: device })) {
+          await this.post(made[0], `phone:${phoneKey(p)}`, p.ts, made[1], { phone: device }, () => {
             posted++;
             counted();
-          }
+          });
         }
         taken.push(p.id);
       }
@@ -157,8 +157,9 @@ export class Host {
     for (const { room, ts } of rows) done.run(room, ts);
   }
 
-  /** `key` makes it once; `origin` says in the event where it came from (a mail's archive id, a phone). */
-  private async post(c: Connector, key: string, ts: number, item: Item, origin: Record<string, string>) {
+  /** `key` makes it once; `origin` says in the event where it came from (a mail's archive id, a phone). `stored` hears
+   *  it the moment it is in the chat, before the read receipt that may still fail. */
+  private async post(c: Connector, key: string, ts: number, item: Item, origin: Record<string, string>, stored = () => {}) {
     if (this.db.query('SELECT 1 FROM posted WHERE key = ?').get(key)) return false;
     const room = await this.room(c, item);
     const sender = item.mine ? this.opts.matrix.admin : await this.ghost(c, item.from); // his own SMS as himself, joined with the room
@@ -168,6 +169,7 @@ export class Host {
     const sent = await this.opts.matrix.call('PUT', `/rooms/${q(room)}/send/m.room.message/${txn}`, content, { user: sender, query: { ts } });
     const event = String(sent.event_id);
     this.db.query('INSERT INTO posted VALUES (?, ?, ?, ?, ?)').run(key, c.id, room, event, ts);
+    stored();
     if (!item.mine && this.now() - ts > SEEN) {
       this.db.query('INSERT INTO unseen VALUES (?, ?) ON CONFLICT (room) DO UPDATE SET ts = MAX(ts, excluded.ts)').run(room, ts);
       await this.opts.matrix.call('POST', `/rooms/${q(room)}/receipt/m.read/${q(event)}`, {}, { user: this.opts.matrix.admin });

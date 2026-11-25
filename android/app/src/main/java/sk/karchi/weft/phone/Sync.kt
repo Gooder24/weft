@@ -49,8 +49,10 @@ class Sync : JobService() {
                 val waiting = store.pending(50)
                 if (waiting.isEmpty()) break
                 // SMS switched off or an app unticked after its items came in: they stay on the phone.
+                // A notification from before its app was last ticked (an older build's queue) stays out too.
                 val (batch, off) = waiting.partition {
-                    if (it.optString("kind") == "sms") store.sms else it.optString("app") in store.apps
+                    if (it.optString("kind") == "sms") store.sms
+                    else it.optString("app").let { app -> app in store.apps && it.optLong("ts") >= store.since(app) }
                 }
                 store.done(off.map { it.getString("id") })
                 if (batch.isEmpty()) continue
