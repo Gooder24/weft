@@ -225,7 +225,7 @@ def needs_admin(tenant: str = "") -> str:
 
 
 def consent_refusal(code: str, description: str) -> bool:
-    if "AADSTS53003" in description or "AADSTS53000" in description:  # Conditional Access, not consent
+    if re.search(r"AADSTS(530\d\d|50105)\b", description):  # Conditional Access or not assigned to the app, not consent
         return False
     return code in ("access_denied", "consent_required") or any(
         c in description for c in ("AADSTS65001", "AADSTS65004", "AADSTS90094", "AADSTS900941"))
@@ -237,8 +237,11 @@ def aad_message(code: str, description: str, product: str) -> ApiError:
     if "AADSTS65001" in description or "AADSTS90094" in description or "AADSTS900941" in description:
         return ApiError(400, "SK.KARCHI.DENIED", f"Tvoja škola alebo firma nepustí Weft {what} bez súhlasu správcu. "
                         + needs_admin())
-    if "AADSTS53003" in description or "AADSTS53000" in description:
+    if re.search(r"AADSTS530\d\d\b", description):
         return ApiError(400, "SK.KARCHI.DENIED", "Pravidlá tvojej školy alebo firmy (Conditional Access) Weft nepustia.")
+    if "AADSTS50105" in description:
+        return ApiError(400, "SK.KARCHI.DENIED", "Správca tvojej školy alebo firmy ťa k appke Weft nepriradil; "
+                        "musí ťa pridať v Entra (Enterprise applications → Weft → Users and groups).")
     if code in ("access_denied", "consent_required"):
         return ApiError(400, "SK.KARCHI.DENIED", f"Microsoft prístup nepovolil; na konci treba kliknúť Accept (Prijať).")
     if code in ("invalid_client", "unauthorized_client") or "AADSTS700016" in description or "AADSTS7000218" in description:
@@ -636,8 +639,10 @@ def start_login(product: str) -> dict:
         "step_id": STEP_ID,
         "instructions": f"Otvor Microsoft, vyber účet a povoľ Weftu prístup {spec['what']}.{school} Prehliadač potom "
         "ukáže, že sa stránka nedá načítať; to je v poriadku. Skopíruj celú adresu z jeho riadku a vlož ju sem."
-        + (" Ak Microsoft chce schválenie správcu a ďalej ťa nepustí, zavri toto okno a pripoj účet znova: Weft vtedy "
-           "pýta len to, čo treba na poštu a chaty." if PROCESSES[process_id]["extras"] else ""),
+        + (" Ak Microsoft chce schválenie správcu a ďalej ťa nepustí, klikni tu Zrušiť a pripoj účet znova: Weft vtedy "
+           "pýta len to, čo treba na poštu a chaty." if PROCESSES[process_id]["extras"] else
+           " Weft teraz pýta len to, čo treba na poštu a chaty; ostatné funkcie pridá prihlásenie (Znova prihlásiť) "
+           "po hodine alebo súhlas správcu." if all_user_scopes(product, client) != scopes else ""),
         "sk.karchi.open_url": url,
         "sk.karchi.open_label": "Otvoriť Microsoft",
         "user_input": {"fields": [{"type": "text", "id": "redirect", "name": "Adresa stránky, ktorá sa nenačítala"}]},
