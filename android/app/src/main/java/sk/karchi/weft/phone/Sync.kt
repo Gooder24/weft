@@ -19,8 +19,11 @@ class Sync : JobService() {
                 run(this)
                 false
             } catch (e: Net.HttpError) {
-                if (e.code == 401) Store.get(this).forget().also { Store.get(this).error = "Vo Wefte odpojený. Spáruj ho znova." }
-                else Store.get(this).error = e.message
+                if (e.code == 401) {
+                    Store.get(this).forget()
+                    Store.get(this).error = "Vo Wefte odpojený. Spáruj ho znova."
+                    stop(this)
+                } else Store.get(this).error = e.message
                 e.code != 401
             } catch (e: Exception) {
                 Store.get(this).error = e.message ?: e.toString()
@@ -39,19 +42,28 @@ class Sync : JobService() {
 
         fun run(context: Context) {
             val store = Store.get(context)
-            Sms.read(context)
             val server = store.server ?: return
-            val token = store.token ?: return
+            val token = store.token ?: return // unpaired: nothing is read into the queue
+            Sms.read(context)
             while (true) {
-                val batch = store.pending(200)
+                val batch = store.pending(50)
                 if (batch.isEmpty()) break
-                val res = Net.post(server, store.ca, "/_connect/phone/items", JSONObject().put("items", JSONArray(batch)), token)
-                val taken = res.getJSONArray("taken")
-                store.done((0 until taken.length()).map { taken.getString(it) })
+                val taken = send(server, store.ca, token, batch)
+                store.done(taken)
                 store.sent = System.currentTimeMillis()
                 store.error = null
-                if (taken.length() == 0) break
+                if (taken.isEmpty()) break
             }
+        }
+
+        /** The ids Weft took. A batch it refuses as a whole (too big, or one item it cannot read) goes one by one, and
+         *  an item refused alone is dropped, so one bad item never holds up the queue behind it. */
+        private fun send(server: String, ca: String?, token: String, batch: List<JSONObject>): List<String> = try {
+            val taken = Net.post(server, ca, "/_connect/phone/items", JSONObject().put("items", JSONArray(batch)), token).getJSONArray("taken")
+            (0 until taken.length()).map { taken.getString(it) }
+        } catch (e: Net.HttpError) {
+            if (e.code != 400 && e.code != 413) throw e
+            if (batch.size == 1) listOf(batch[0].getString("id")) else batch.flatMap { send(server, ca, token, listOf(it)) }
         }
 
         fun soon(context: Context, delay: Long) {

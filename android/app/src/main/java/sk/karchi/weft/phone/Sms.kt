@@ -10,32 +10,40 @@ import android.provider.ContactsContract
 import org.json.JSONObject
 
 /** SMS, received and sent, read from the phone's own SMS store into the queue. The first read takes the last 30 days;
- *  later ones what came after, looking 20 rows back for a message that was still being sent. */
+ *  later ones the rows after the last read, and again from a message that was still being sent (for a day at most). */
 object Sms {
-    private const val BACK = 30L * 86_400_000
+    private const val DAY = 86_400_000L
+    private const val BACK = 30 * DAY
     private const val INBOX = 1
     private const val SENT = 2
+    private const val OUTBOX = 4
+    private const val QUEUED = 6
 
     fun read(context: Context) {
         val store = Store.get(context)
         if (!store.sms || context.checkSelfPermission(Manifest.permission.READ_SMS) != PackageManager.PERMISSION_GRANTED) return
+        val now = System.currentTimeMillis()
         val last = store.smsLast
-        val (where, arg) = if (last < 0) "date > ?" to (System.currentTimeMillis() - BACK).toString() else "_id > ?" to (last - 20).toString()
         val names = HashMap<String, String?>()
         var newest = maxOf(last, 0)
+        var hold = Long.MAX_VALUE // a row still being sent: read again from it next time
         context.contentResolver.query(Uri.parse("content://sms"), arrayOf("_id", "address", "date", "body", "type"),
-            "$where AND type IN ($INBOX, $SENT)", arrayOf(arg), "_id")?.use { c ->
+            "_id > ?", arrayOf(last.toString()), "_id")?.use { c ->
             while (c.moveToNext()) {
                 val id = c.getLong(0)
+                val date = c.getLong(2)
+                val type = c.getInt(4)
                 newest = maxOf(newest, id)
+                if ((type == OUTBOX || type == QUEUED) && date > now - DAY) hold = minOf(hold, id - 1)
+                if (type != INBOX && type != SENT || date < now - BACK) continue
                 val address = c.getString(1) ?: continue
-                val item = JSONObject().put("id", "sms:$id").put("kind", "sms").put("ts", c.getLong(2))
-                    .put("address", address).put("text", c.getString(3) ?: "").put("out", c.getInt(4) == SENT)
+                val item = JSONObject().put("id", "sms:$id").put("kind", "sms").put("ts", date)
+                    .put("address", address).put("text", (c.getString(3) ?: "").take(10_000)).put("out", type == SENT)
                 names.getOrPut(address) { contact(context, address) }?.let { item.put("name", it) }
                 store.add(item)
             }
         }
-        store.smsLast = newest
+        store.smsLast = minOf(newest, hold)
     }
 
     /** The contact's name on the phone, when Weft Telefón may read contacts. */

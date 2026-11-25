@@ -29,12 +29,16 @@ class Store private constructor(context: Context) {
     fun pick(app: String, on: Boolean) {
         apps = if (on) apps + app else apps - app
         if (on) prefs.edit().putLong("since:$app", System.currentTimeMillis()).apply()
+        else drop("n:$app:") // unticked while offline: what waited stays on the phone
     }
     fun since(app: String) = prefs.getLong("since:$app", 0)
     var sms: Boolean
         get() = prefs.getBoolean("sms", false)
-        set(v) = prefs.edit().putBoolean("sms", v).apply()
-    var smsLast: Long // the last SMS row read; -1: not yet, the first read takes the last 30 days
+        set(v) {
+            prefs.edit().putBoolean("sms", v).apply()
+            if (!v) drop("sms:")
+        }
+    var smsLast: Long // SMS rows up to this one are read; -1: not yet, the first read takes the last 30 days
         get() = prefs.getLong("smsLast", -1)
         set(v) = prefs.edit().putLong("smsLast", v).apply()
     var sent: Long // when Weft last took items
@@ -55,6 +59,8 @@ class Store private constructor(context: Context) {
         db.rawQuery("SELECT json FROM queue ORDER BY ts LIMIT $limit", null).use { c ->
             buildList { while (c.moveToNext()) add(JSONObject(c.getString(0))) }
         }
+
+    private fun drop(prefix: String) = db.delete("queue", "substr(id, 1, ?) = ?", arrayOf(prefix.length.toString(), prefix))
 
     fun count(): Long = android.database.DatabaseUtils.queryNumEntries(db, "queue")
 

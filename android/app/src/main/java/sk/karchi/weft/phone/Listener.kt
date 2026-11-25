@@ -32,18 +32,21 @@ class Listener : NotificationListenerService() {
                 if (time < since) continue
                 val sender = sender(m) ?: extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()
                 val who = if (conversation != null && sender != null) "$sender · $conversation" else sender ?: conversation
-                store.add(JSONObject(base.toString()).put("id", "n:${sbn.packageName}:$time:${text.hashCode()}").put("ts", time)
-                    .put("text", text).also { if (who != null) it.put("title", who) })
+                store.add(JSONObject(base.toString()).put("id", "n:${sbn.packageName}:$time:${hash(sender, conversation, text)}").put("ts", time)
+                    .put("text", text.take(10_000)).also { if (who != null) it.put("title", who) })
             }
         } else {
             if (sbn.postTime < since) return
             val text = (extras.getCharSequence(Notification.EXTRA_BIG_TEXT) ?: extras.getCharSequence(Notification.EXTRA_TEXT))?.toString() ?: return
             val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()
-            store.add(JSONObject(base.toString()).put("id", "n:${sbn.key}:${text.hashCode()}").put("ts", sbn.postTime)
-                .put("text", text).also { if (title != null) it.put("title", title) })
+            // The same notification updated with the same words is one item; a new one (its own time) is another.
+            store.add(JSONObject(base.toString()).put("id", "n:${sbn.packageName}:${sbn.id}:${sbn.tag}:${n.`when`}:${hash(title, text)}")
+                .put("ts", sbn.postTime).put("text", text.take(10_000)).also { if (title != null) it.put("title", title) })
         }
         Sync.soon(this, 0)
     }
+
+    private fun hash(vararg parts: String?) = parts.joinToString("\u0000").hashCode().toUInt().toString(36)
 
     private fun sender(m: Bundle): String? {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
