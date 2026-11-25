@@ -48,13 +48,15 @@ jobs:
           'ok' | Set-Content index.html
           $server = Start-Process python -ArgumentList '-m', 'http.server', '8765', '--bind', '127.0.0.1' -PassThru -WindowStyle Hidden
           $env:SPRAVY_SELFTEST = '1'
+          $env:ELECTRON_ENABLE_LOGGING = '1'
           $env:SPRAVY_SELFTEST_SPEC = @{ url = 'http://127.0.0.1:8765/'; hidden = $true; wait_for_url_pattern = '^http://127\.0\.0\.1:8765/'
             fields = @(@{ id = 'ua'; required = $true; sources = @(@{ type = 'request_header'; name = 'User-Agent'; request_url_regex = '^http://127\.0\.0\.1:8765/' }) }) } | ConvertTo-Json -Depth 6 -Compress
           try {
             foreach ($try in 1, 2) {
-              $p = Start-Process dist\win-unpacked\Weft.exe -PassThru -RedirectStandardOutput "selftest-$try.txt"
+              $p = Start-Process dist\win-unpacked\Weft.exe -PassThru -RedirectStandardOutput "selftest-$try.txt" -RedirectStandardError "selftest-$try.err"
               if (-not $p.WaitForExit(120000)) { Stop-Process -Id $p.Id -Force; "try ${try}: no answer in 2 minutes" }
               Get-Content "selftest-$try.txt"
+              Get-Content "selftest-$try.err" -Tail 40
               if (Select-String -Quiet 'selftest ok' "selftest-$try.txt") { exit 0 }
             }
             throw 'self-test failed'
