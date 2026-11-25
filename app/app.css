@@ -220,8 +220,8 @@ kbd { margin-left: auto; font-family: inherit; font-size: var(--fs); color: var(
 .acctopts .ghost.danger { align-self: flex-start; padding: 6px 0 0; }
 .acctopts h4 { margin: 4px 0 0; font-size: var(--fs); color: var(--muted); font-weight: normal; }
 .acctopts .primary { align-self: flex-start; margin-top: 6px; }
-.subacct { display: flex; align-items: center; gap: 12px; padding: 4px 0; }
-.subacct > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.subacct { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 4px 0; }
+.subacct > span { flex: 1 1 16em; min-width: 0; overflow-wrap: anywhere; }
 .subacct > span small { display: block; color: var(--muted); }
 .subacct .ghost.danger { padding: 0; }
 .form .toggle { flex-direction: row; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: var(--fs); color: var(--text); }
