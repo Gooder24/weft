@@ -25,6 +25,7 @@ Provisioning speaks the subset of the mautrix bridgev2 API that Weft's Accounts 
   POST /<outlook|teams>/_matrix/provision/v3/login/cancel/<process>
   POST /<outlook|teams>/_matrix/provision/v3/logout/<login>
   POST /outlook/_matrix/provision/v3/send/<login>     a new mail, as Gmail's: {"to", "cc", "subject", "text", "files"}
+  GET  /<outlook|teams>/_matrix/provision/v3/consent   what each login may do, what waits, the admin's link
   POST /teams/_matrix/provision/v3/meeting/<login>    a meeting in that account's calendar, see create_meeting
   POST /teams/_matrix/provision/v3/search_users       {"query"}: people in Karchi's organization
   GET  /teams/_matrix/provision/v3/resolve_identifier/<Entra id or address>
@@ -100,11 +101,40 @@ PRODUCTS = {
                    G + "Chat.ReadWrite", G + "Files.ReadWrite.All"],
         "needs": "Chat.ReadWrite",
         "what": "k chatom v Teams",
-        # Asked for at sign-in only; a meeting redeems the refresh token for it on its own (create_meeting), so a
-        # login from before it keeps its chats and only meetings ask for a new sign-in.
-        "extra": [G + "Calendars.ReadWrite"],
     },
 }
+# Everything else Outlook and Teams can do for Karchi, asked for once so no feature needs another consent later.
+# A work or school sign-in (Teams, or Outlook through an organization's own app) asks for USER_SCOPES, both products'
+# at once; an Outlook sign-in that may be a personal account asks for Outlook's "scopes" and "extra". A user may grant
+# all of these alone where the organization lets users consent. A feature redeems the refresh token for its own
+# scopes (scoped_token), so a login that has only "scopes" keeps its mail and chats. ADMIN_ONLY needs an admin, and
+# admin_consent_url() lets one grant all of it, both products, for the whole organization in one step.
+WORK_ONLY = [G + "Mail.ReadWrite.Shared", G + "Mail.Send.Shared", G + "Calendars.ReadWrite.Shared"]  # not for personal accounts
+PRODUCTS["outlook"]["extra"] = [G + s for s in ("Calendars.ReadWrite", "Contacts.ReadWrite", "MailboxSettings.ReadWrite",
+                                                "People.Read", "Tasks.ReadWrite")]
+PRODUCTS["teams"]["extra"] = [G + s for s in ("Calendars.ReadWrite", "OnlineMeetings.ReadWrite", "Presence.Read.All",
+                                              "Presence.ReadWrite", "Team.ReadBasic.All", "Channel.ReadBasic.All",
+                                              "ChannelMessage.Send", "People.Read")]
+ADMIN_ONLY = [G + s for s in ("ChannelMessage.Read.All", "ChannelMember.Read.All", "TeamMember.Read.All", "ChatMember.ReadWrite",
+                              "OnlineMeetingTranscript.Read.All", "OnlineMeetingRecording.Read.All")]
+# What each permission gives, in the words Settings and `weft ms-consent` use for a missing one.
+FEATURES = {
+    "Mail.ReadWrite": "pošta", "Mail.Send": "odosielanie pošty", "Chat.ReadWrite": "chaty", "Files.ReadWrite.All": "súbory",
+    "User.ReadBasic.All": "ľudia z firmy", "User.Read": "tvoj profil", "Calendars.ReadWrite": "kalendár a stretnutia",
+    "Contacts.ReadWrite": "kontakty", "MailboxSettings.ReadWrite": "automatická odpoveď a nastavenia schránky",
+    "People.Read": "ľudia, s ktorými píšeš", "Tasks.ReadWrite": "úlohy (To Do)", "OnlineMeetings.ReadWrite": "Teams stretnutia",
+    "Presence.Read.All": "kto je online", "Presence.ReadWrite": "tvoj stav v Teams", "Team.ReadBasic.All": "tímy",
+    "Channel.ReadBasic.All": "kanály tímov", "ChannelMessage.Send": "písanie do kanálov", "Mail.ReadWrite.Shared": "zdieľané schránky",
+    "Mail.Send.Shared": "odosielanie zo zdieľaných schránok", "Calendars.ReadWrite.Shared": "zdieľané kalendáre",
+    "ChannelMessage.Read.All": "čítanie kanálov", "ChannelMember.Read.All": "ľudia v kanáloch", "TeamMember.Read.All": "ľudia v tímoch",
+    "ChatMember.ReadWrite": "pridávanie ľudí do chatov", "OnlineMeetingTranscript.Read.All": "prepisy stretnutí",
+    "OnlineMeetingRecording.Read.All": "nahrávky stretnutí",
+}
+USER_SCOPES = list(dict.fromkeys(s for p in PRODUCTS.values() for s in p["scopes"] + p["extra"] + WORK_ONLY))
+ALL_SCOPES = USER_SCOPES + ADMIN_ONLY
+# A sign-in that asked for "extra" and was refused for want of consent: the next one in this time asks only "scopes".
+BASE_ONLY: dict[str, float] = {}
+BASE_ONLY_SECONDS = 3600
 STEP_ID = "sk.karchi.microsoft.signin"
 PROCESSES: dict[str, dict] = {}
 PROCESS_TTL = 15 * 60
@@ -178,13 +208,30 @@ def ms_client() -> dict | None:
     return data if isinstance(data, dict) and isinstance(data.get("client_id"), str) and data["client_id"] else None
 
 
+def admin_consent_url(tenant: str = "") -> str:
+    """One page where an admin of the school or company grants Weft everything (ALL_SCOPES) for every user there.
+    Microsoft then sends the admin's browser to http://localhost with admin_consent=True; nothing else is needed."""
+    client = ms_client() or DEFAULT_CLIENT
+    tenant = tenant if tenant and tenant != CONSUMERS else str(client.get("tenant") or "organizations")
+    return f"{LOGIN}/{tenant}/v2.0/adminconsent?" + urllib.parse.urlencode({
+        "client_id": client["client_id"], "scope": " ".join(ALL_SCOPES), "redirect_uri": REDIRECT_URI, "state": "weft"})
+
+
+def needs_admin(tenant: str = "") -> str:
+    return f"Správca tvojej školy alebo firmy schváli Weft pre všetkých naraz týmto odkazom: {admin_consent_url(tenant)}"
+
+
+def consent_refusal(code: str, description: str) -> bool:
+    return code in ("access_denied", "consent_required") or any(
+        c in description for c in ("AADSTS65001", "AADSTS65004", "AADSTS90094", "AADSTS900941"))
+
+
 def aad_message(code: str, description: str, product: str) -> ApiError:
     """Microsoft's refusal (error and AADSTS code in its description) as what Karchi can do about it."""
     what = PRODUCTS[product]["what"]
     if "AADSTS65001" in description or "AADSTS90094" in description or "AADSTS900941" in description:
-        app = (ms_client() or {}).get("name") or "Weft"
         return ApiError(400, "SK.KARCHI.DENIED", f"Tvoja škola alebo firma nepustí Weft {what} bez súhlasu správcu. "
-                        f"Správca to schváli v Entra (Enterprise applications → {app} → Permissions).")
+                        + needs_admin())
     if "AADSTS53003" in description or "AADSTS53000" in description:
         return ApiError(400, "SK.KARCHI.DENIED", "Pravidlá tvojej školy alebo firmy (Conditional Access) Weft nepustia.")
     if code in ("access_denied", "consent_required"):
@@ -327,6 +374,10 @@ class Accounts:
             return [k for k in sorted(self.creds.get(product, {}), key=lambda k: self.creds[product][k].get("added", 0))
                     if self.state.get((product, k), ("",))[0] != "BAD_CREDENTIALS"]
 
+    def tenant_of(self, product: str, key: str) -> str:
+        with self.lock:
+            return str(self.creds.get(product, {}).get(key, {}).get("tid") or "")
+
     def view(self, product: str) -> list[dict]:
         with self.lock:
             out = []
@@ -416,6 +467,14 @@ class Accounts:
     def scoped_token(self, product: str, key: str, scopes: list[str]) -> str:
         """An access token for scopes beyond the product's own (a meeting's calendar). A refusal leaves the login as it
         is: chats and mail never depend on these scopes. A rotated refresh token is kept, as token() does."""
+        return self.redeem(product, key, scopes)["access_token"]
+
+    def consented(self, product: str, key: str) -> set[str]:
+        """The Graph permissions this login's app may use now (Microsoft lists them for /.default), without G."""
+        answer = self.redeem(product, key, [G + ".default", "offline_access"])
+        return {s.rsplit("/", 1)[-1] for s in str(answer.get("scope", "")).split() if s.startswith(G)}
+
+    def redeem(self, product: str, key: str, scopes: list[str]) -> dict:
         with self.lock:
             lock = self.refreshing.setdefault((product, key), threading.Lock())
         with lock:
@@ -432,7 +491,7 @@ class Accounts:
                 if live and signin_of(live) == signin_of(creds) and answer.get("refresh_token"):
                     live["refresh_token"] = answer["refresh_token"]
                     self.save()
-            return answer["access_token"]
+            return answer
 
     def graph(self, product: str, key: str, method: str, url: str, body=None, **kw):
         """Graph as this login; an expired access token is renewed once."""
@@ -530,20 +589,32 @@ def process(process_id: str) -> dict:
     return found
 
 
+def signin_scopes(product: str, client: dict) -> list[str]:
+    """Everything at once, unless such a sign-in was just refused for want of an admin's consent."""
+    spec = PRODUCTS[product]
+    if time.time() - BASE_ONLY.get(product, 0) < BASE_ONLY_SECONDS:
+        return spec["scopes"]
+    if product == "teams" or str(client.get("tenant") or "common") not in ("common", "consumers"):
+        return list(dict.fromkeys(spec["scopes"] + USER_SCOPES))
+    return spec["scopes"] + spec["extra"]
+
+
 def start_login(product: str) -> dict:
     client = ms_client()
     if not client:
         raise ApiError(503, "SK.KARCHI.NO_CLIENT", NO_CLIENT)
     process_id = uuid.uuid4().hex
     verifier = secrets.token_urlsafe(48)
-    PROCESSES[process_id] = {"created": time.time(), "verifier": verifier, "product": product}
+    scopes = signin_scopes(product, client)
+    PROCESSES[process_id] = {"created": time.time(), "verifier": verifier, "product": product,
+                             "extras": scopes != PRODUCTS[product]["scopes"]}
     spec = PRODUCTS[product]
     url = f"{LOGIN}/{client.get('tenant') or spec['tenant']}/oauth2/v2.0/authorize?" + urllib.parse.urlencode({
         "client_id": client["client_id"],
         "response_type": "code",
         "redirect_uri": REDIRECT_URI,
         "response_mode": "query",
-        "scope": " ".join(spec["scopes"] + spec.get("extra", [])),
+        "scope": " ".join(scopes),
         "state": process_id,
         "prompt": "select_account",
         "code_challenge": b64url(hashlib.sha256(verifier.encode()).digest()),
@@ -570,7 +641,12 @@ def submit_login(product: str, process_id: str, found: dict, body: dict) -> dict
         raise ApiError(400, "SK.KARCHI.INVALID_INPUT", "Táto adresa patrí k staršiemu pokusu. Vlož adresu z poslednej "
                        "karty Microsoftu, alebo klikni znova Otvoriť Microsoft.")
     if query.get("error"):
-        raise aad_message(query["error"][0], query.get("error_description", [""])[0], product)
+        error, description = query["error"][0], query.get("error_description", [""])[0]
+        if found.get("extras") and consent_refusal(error, description):
+            BASE_ONLY[product] = time.time()
+            raise ApiError(400, "SK.KARCHI.DENIED", "Microsoft nedal Weftu všetko, čo pýtal (napríklad čaká na súhlas "
+                           "správcu). Ďalšie prihlásenie pýta len to, čo už smie. " + needs_admin())
+        raise aad_message(error, description, product)
     if not code or not state:
         raise ApiError(400, "SK.KARCHI.INVALID_INPUT", "Toto nie je celá adresa od Microsoftu. Skopíruj celý riadok "
                        "adresy, začína http://localhost.")
@@ -582,6 +658,9 @@ def submit_login(product: str, process_id: str, found: dict, body: dict) -> dict
     except ApiError as err:
         if err.message == REVOKED:  # invalid_grant here: the code was used already or is too old
             err.message = "Tento kód od Microsoftu už neplatí."
+        elif err.errcode == "SK.KARCHI.DENIED" and found.get("extras"):
+            BASE_ONLY[product] = time.time()
+            err.message += " Weft sa teraz pripojí len k tomu, čo už smie."
         raise
     granted = {s.rsplit("/", 1)[-1].lower() for s in str(token.get("scope", "")).split()}
     if PRODUCTS[product]["needs"].lower() not in granted:
@@ -841,12 +920,32 @@ def mail_loop() -> None:
         MAIL_WAKE.clear()
 
 
+def consent_report(product: str) -> dict:
+    """What each login of this product may do and what still waits for consent, with the admin's link."""
+    logins, tenant = [], ""
+    for login in ACCOUNTS.view(product):
+        key = login["id"]
+        tenant = tenant or ACCOUNTS.tenant_of(product, key)
+        wanted = signin_scopes(product, ms_client() or {}) if ACCOUNTS.tenant_of(product, key) != CONSUMERS else \
+            PRODUCTS[product]["scopes"] + PRODUCTS[product]["extra"]
+        wanted = [s.rsplit("/", 1)[-1] for s in list(dict.fromkeys(wanted + ADMIN_ONLY)) if s.startswith(G)]
+        try:
+            have = ACCOUNTS.consented(product, key)
+        except ApiError as err:
+            logins.append({"id": key, "name": login["name"], "error": err.message})
+            continue
+        logins.append({"id": key, "name": login["name"], "granted": sorted(have),
+                       "missing": [{"scope": s, "what": FEATURES.get(s, s), "admin": G + s in ADMIN_ONLY}
+                                   for s in wanted if s not in have]})
+    return {"logins": logins, "admin_url": admin_consent_url(tenant)}
+
+
 # ---------------------------------------------------------------- Teams: meetings
 
 
 CALENDAR_SCOPES = [G + "Calendars.ReadWrite"]
-NEEDS_CALENDAR = ("Teams kalendár ešte nie je povolený: tento účet sa pripojil skôr, než ho Weft pýtal. "
-                  "Pripoj Teams znova (Nastavenia → Účty → Teams) a povoľ aj kalendár.")
+NEEDS_CALENDAR = ("Teams kalendár Weft ešte nesmie. Pripoj Teams znova (Nastavenia → Účty → Teams) a povoľ aj kalendár, "
+                  "alebo ak to tvoja firma nedovolí, ")
 UTC_TIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?Z")
 
 
@@ -866,7 +965,7 @@ def create_meeting(key: str, body: dict) -> dict:
         access = ACCOUNTS.scoped_token("teams", key, CALENDAR_SCOPES)
     except ApiError as err:
         if err.errcode in ("SK.KARCHI.DENIED", "SK.KARCHI.BAD_CREDENTIALS"):
-            raise ApiError(403, "SK.KARCHI.NEEDS_SIGNIN", NEEDS_CALENDAR) from None
+            raise ApiError(403, "SK.KARCHI.NEEDS_SIGNIN", NEEDS_CALENDAR + needs_admin(ACCOUNTS.tenant_of("teams", key))) from None
         raise
     online = body.get("online", True) is not False
     event = {"subject": subject, "start": {"dateTime": start[:-1], "timeZone": "UTC"},
@@ -876,7 +975,7 @@ def create_meeting(key: str, body: dict) -> dict:
         made = graph_raw(access, "POST", "/me/events", event)
     except GraphError as err:
         if err.status in (401, 403):
-            raise ApiError(403, "SK.KARCHI.NEEDS_SIGNIN", NEEDS_CALENDAR) from None
+            raise ApiError(403, "SK.KARCHI.NEEDS_SIGNIN", NEEDS_CALENDAR + needs_admin(ACCOUNTS.tenant_of("teams", key))) from None
         raise ApiError(400, "SK.KARCHI.REFUSED", f"Teams stretnutie odmietol: {err.message[:200]}") from None
     except Throttled:
         raise ApiError(504, "SK.KARCHI.UNREACHABLE", "Microsoft teraz neprijíma, stretnutie nevzniklo. Skús to o chvíľu.") from None
@@ -1926,6 +2025,8 @@ def route(product: str, method: str, parts: list[str], body: dict, args: dict, t
             send_mail(login_id, body, token)
             MAIL_WAKE.set()  # the sent mail comes into the archive with the next batch
             return {}
+        case "GET", ["consent"]:
+            return consent_report(product)
         case "POST", ["meeting", login_id] if product == "teams":
             return create_meeting(TEAMS.login_for(login_id), body)
         case "POST", ["search_users"] if product == "teams":

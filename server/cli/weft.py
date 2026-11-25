@@ -24,6 +24,8 @@
                                                             a meeting in the Teams calendar, with a Teams link unless
                                                             --no-link; WHO is an address or a name from the Teams
                                                             directory; Exchange sends the invitations (--yes to make it)
+    weft ms-consent                                         what Outlook and Teams may do in Weft, what still waits
+                                                            for consent, and the link an admin opens to grant it all
     weft cals                                               calendars
     weft cal [--from YYYY-MM-DD] [--days 7]                 events, repeating ones expanded as Weft draws them
     weft cal-add TITLE --start "YYYY-MM-DD[ HH:MM]" [--end ...|--minutes 60] [--cal NAME] [--location] [--notes]
@@ -902,6 +904,7 @@ def main(argv=None):
     s = sub.add_parser("meet"); s.add_argument("title", nargs="+"); s.add_argument("--start", required=True); s.add_argument("--end")
     s.add_argument("--minutes", type=int, default=30); s.add_argument("--with", dest="who", action="append", default=[], metavar="WHO")
     s.add_argument("--no-link", action="store_true"); s.add_argument("--yes", action="store_true")
+    sub.add_parser("ms-consent")
     s = sub.add_parser("draft"); s.add_argument("chat"); s.add_argument("text", nargs="*"); s.add_argument("--file", action="append", metavar="PATH")
     s = sub.add_parser("relay"); s.add_argument("chat"); s.add_argument("--to", required=True, metavar="FRIEND")
     s.add_argument("--note", default=""); s.add_argument("--from", dest="frm", metavar="ID"); s.add_argument("--days", type=float, default=7)
@@ -1016,6 +1019,21 @@ def main(argv=None):
         try: made = mx.bridge("teams", "POST", f"/meeting/{q(logins[0]['id'])}", body)
         except HttpError as e: raise Fail(e.body.get("error") or str(e)) from None
         return out({"sent": True, **made}, lines + [f"vytvorené v Teams kalendári; pozvánky poslal Microsoft" + ("; Teams link je v pozvánke" if made.get("joinUrl") else "")])
+
+    if a.cmd == "ms-consent":
+        reports, lines, link = {}, [], ""
+        for app in ("outlook", "teams"):
+            try: reports[app] = mx.bridge(app, "GET", "/consent")
+            except (HttpError, OSError, ValueError) as e: lines.append(f"{app}: neodpovedá ({e})"); continue
+            link = link or reports[app].get("admin_url", "")
+            for l in reports[app].get("logins") or []:
+                missing = l.get("missing") or []
+                head = f"{app.capitalize()} {l.get('name')}: "
+                if l.get("error"): lines.append(head + l["error"]); continue
+                lines.append(head + ("smie všetko" if not missing else "čaká: " + ", ".join(
+                    m["what"] + (" (len správca)" if m.get("admin") else "") for m in missing)))
+        if not any(r.get("logins") for r in reports.values()): lines.append("vo Wefte nie je pripojený Outlook ani Teams")
+        return out(reports, lines + ([f"Správca schváli všetko pre celú firmu týmto odkazom: {link}"] if link else []))
 
     if a.cmd == "mail":
         text = text_arg(a.text) if a.text else ""
