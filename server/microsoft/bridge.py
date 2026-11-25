@@ -240,8 +240,9 @@ def aad_message(code: str, description: str, product: str) -> ApiError:
     if re.search(r"AADSTS530\d\d\b", description):
         return ApiError(400, "SK.KARCHI.DENIED", "Pravidlá tvojej školy alebo firmy (Conditional Access) Weft nepustia.")
     if "AADSTS50105" in description:
-        return ApiError(400, "SK.KARCHI.DENIED", "Správca tvojej školy alebo firmy ťa k appke Weft nepriradil; "
-                        "musí ťa pridať v Entra (Enterprise applications → Weft → Users and groups).")
+        app = (ms_client() or DEFAULT_CLIENT).get("name") or "Weft"
+        return ApiError(400, "SK.KARCHI.DENIED", f"Správca tvojej školy alebo firmy ťa k appke {app} nepriradil; "
+                        f"musí ťa pridať v Entra (Enterprise applications → {app} → Users and groups).")
     if code in ("access_denied", "consent_required"):
         return ApiError(400, "SK.KARCHI.DENIED", f"Microsoft prístup nepovolil; na konci treba kliknúť Accept (Prijať).")
     if code in ("invalid_client", "unauthorized_client") or "AADSTS700016" in description or "AADSTS7000218" in description:
@@ -674,7 +675,7 @@ def submit_login(product: str, process_id: str, found: dict, body: dict) -> dict
     except ApiError as err:
         if err.message == REVOKED:  # invalid_grant here: the code was used already or is too old
             err.message = "Tento kód od Microsoftu už neplatí."
-        elif err.errcode == "SK.KARCHI.DENIED" and found.get("extras") and "Conditional Access" not in err.message:
+        elif err.errcode == "SK.KARCHI.DENIED" and found.get("extras") and "bez súhlasu správcu" in err.message:
             BASE_ONLY[product] = time.time()
             err.message += " Weft sa teraz pripojí len k tomu, čo už smie."
         raise
