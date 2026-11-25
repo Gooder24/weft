@@ -15,7 +15,9 @@ if none fits, add the new piece here in the same change. `tools/ui-check` checks
 - A network's own colour (Instagram, YouTube) is a brand, marked `/* brand */`; nothing else brings its own colour.
 - Type: `--fs` (11 px) for everything, `--fs-2` for titles, `--lh` for wrapped lines. Radii: `--radius` controls,
   `--radius-s` small things inside them, `--radius-l` what floats. Borders `--bw`.
-- No shadows (a ring `0 0 0 <width>` or `inset` is an outline), no animation that keeps running.
+- No shadows (a ring `0 0 0 <width>` or `inset` is an outline), no animation that keeps running. The one exception
+  (Karchi, 2026-11-25) is the dots of his own typing bubble: one dot lifted at a time, in steps about 3× a second,
+  only while a network shows his „píše…“.
 
 ## Icons (`app/icons.js`)
 
@@ -46,7 +48,7 @@ if none fits, add the new piece here in the same change. `tools/ui-check` checks
 | Note in a chat | `.cnote`, `.rnote` | A muted line that explains a state; a button inside it is `.primary` or `.linkbtn` |
 | Suggestion in a chat | `.cnote.calsug > .linkbtn + span + button.calsugoff` | A muted line under a message offering one action (icon + words, what it found) and ✕ to wave it off |
 | State under messages | `.msgs .seen`, `.msgs .typing`; row: `.prev em.typingmark` | A muted line under the last message: who saw it (right), who is typing (left, „píše…“); in an inbox row „píše…“ in `--link` stands for the preview |
-| Own typing as they see it | `.msgs .typing.mine.dots > img + .tbubble > svg` | Right under the last message while a network shows Karchi's „píše…“: its picture and an outlined bubble with the still `more-horizontal` dots at 48 px (middle rows only); a refusal is a muted `.typing.mine` line |
+| Own typing as they see it | `.msgs .typing.mine.dots > .tbubble[data-step] > svg` + `small` | Right under the last message while a network shows Karchi's „píše…“: his own `--accent` bubble with `typingDots()` (the `more-horizontal` dots apart, 48 px, middle rows), one lifted and filled at a time, and under it „Na Instagrame vidno, že píšeš“; a refusal is a muted `.typing.mine` line |
 | Overlay | `.veil` (+ `.clear`, `.dark`, `.search`) | What floats over the app; Esc and a click outside close it |
 | Shortcut | `kbd` | Right-aligned, muted; the same text as in Ctrl+/ |
 

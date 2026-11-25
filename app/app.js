@@ -8,7 +8,7 @@ import { T, LANG, LOCALE, setLang } from './i18n.js';
 import * as Cal from './calendar.js';
 import * as Files from './kalendarix-files.js';
 import { findWhen } from './when.js';
-import { icon } from './icons.js';
+import { icon, typingDots } from './icons.js';
 import { STASH, GONE_MS, applyStash, stashHas, stashOf } from './stash.js';
 
 import { createFeed } from './feed.js';
@@ -2467,25 +2467,35 @@ async function typingAsk(out) {
     if (typingOut !== out || !['shown', 'failed'].includes(got?.state)) return;
     out.shown = got.state;
     out.error = got.error || '';
+    if (got.state === 'shown') dotsRun(true);
     renderSoon();
   } catch { /* no answer: the line stays away */ }
 }
-/** Under the last message, on Karchi's side, what the other side sees: the network's picture and a bubble of
- *  the desktop's three pixel dots, still (nothing in Weft moves on its own). A refusal is said in words. */
+// The one thing in Weft that moves on its own (Karchi, 2026-11-25: „musí vidno že sa hýbu“): the dots of his own
+// typing bubble, one lifted at a time in steps, set on the element about 3× a second only while the network shows it.
+let dotsStep = 0, dotsTimer = 0;
+function dotsRun(on) {
+  if (!on || dotsTimer) { if (!on) { clearInterval(dotsTimer); dotsTimer = 0; } return; }
+  dotsTimer = setInterval(() => {
+    dotsStep = (dotsStep + 1) % 3;
+    for (const el of document.querySelectorAll('.tbubble')) el.dataset.step = String(dotsStep);
+  }, 350);
+}
+/** Under the last message, on Karchi's side, what the other side sees: his own bubble with the desktop's three pixel
+ *  dots hopping, and in words where it shows. A refusal is said in words only. */
 function typingMine(parts) {
   const out = typingOut;
   if (!out?.shown || S.offline || !parts.some((x) => x.id === out.room)) return null;
-  const app = appOf(out.app);
-  const name = app?.name || out.app;
   if (out.shown === 'failed') {
-    return h('div', { class: 'typing mine', 'data-key': '__typingMine', role: 'status', title: out.error || null }, T`${name} „píše…“ neprijal`);
+    return h('div', { class: 'typing mine', 'data-key': '__typingMine', role: 'status', title: out.error || null }, T`${appOf(out.app)?.name || out.app} „píše…“ neprijal`);
   }
-  const said = T`${name} ukazuje „píše…“`;
-  return h('div', { class: 'typing mine dots', 'data-key': '__typingMine', role: 'status', 'aria-label': said, title: said },
-    app?.icon ? h('img', { src: app.icon, alt: '' }) : null, h('span', { class: 'tbubble' }, icon('more-horizontal', 48)));
+  const where = { messenger: T('Na Messengeri vidno, že píšeš'), instagram: T('Na Instagrame vidno, že píšeš'), whatsapp: T('Na WhatsAppe vidno, že píšeš') }[out.app] || T('Vidno, že píšeš');
+  return h('div', { class: 'typing mine dots', 'data-key': '__typingMine', role: 'status' },
+    h('span', { class: 'tbubble', 'data-step': String(dotsStep), 'aria-hidden': 'true' }, typingDots()), h('small', {}, where));
 }
 function typingStop() {
   clearTimeout(typingIdle);
+  dotsRun(false);
   if (!typingOut) return;
   const { room } = typingOut;
   const shown = typingOut.shown;

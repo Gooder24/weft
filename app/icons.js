@@ -65,3 +65,10 @@ export function icon(name, size = 24) {
   }
   return el.cloneNode(true);
 }
+/** `more-horizontal` as its three dots apart (`<g class="d0|d1|d2">`, each with its centre cell as `.core`), so the
+ *  typing bubble can lift and fill one at a time. */
+export function typingDots(size = 48) {
+  const el = icon('more-horizontal', size);
+  el.innerHTML = [1, 9, 17].map((x, i) => `<g class="d${i}"><path d="M${x + 2} 9h2v2h-2zM${x} 11h2v2h-2zM${x + 2} 13h2v2h-2zM${x + 4} 11h2v2h-2z"/><path class="core" d="M${x + 2} 11h2v2h-2z"/></g>`).join(''); // constant markup
+  return el;
+}

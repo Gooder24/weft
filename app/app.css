@@ -563,11 +563,14 @@ kbd { margin-left: auto; font-family: inherit; font-size: var(--fs); color: var(
 .seen { align-self: flex-end; margin-top: 3px; font-size: var(--fs); color: var(--muted); }
 .typing { align-self: flex-start; margin-top: 3px; font-size: var(--fs); color: var(--muted); }
 .typing.mine { align-self: flex-end; }
-.typing.mine.dots { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
-.typing.mine.dots img { width: 16px; height: 16px; border-radius: var(--radius-s); }
-/* The dots at twice the grid stay crisp; the bubble shows only their middle rows, one line of a message tall. */
-.tbubble { display: flex; align-items: center; height: 26px; padding: 0 8px; overflow: hidden; border-radius: var(--radius-l); box-shadow: inset 0 0 0 var(--bw) var(--accent); color: var(--link); }
+.typing.mine.dots { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; margin-top: 6px; }
+/* His own bubble. The dots at twice the grid stay crisp; it shows only their middle rows, one line of a message tall.
+   The lifted dot (data-step, set by dotsRun in app.js) jumps two grid cells and fills: steps, never a glide. */
+.tbubble { display: flex; align-items: center; height: 26px; padding: 0 8px; overflow: hidden; border-radius: var(--radius-l); background: var(--accent); color: var(--accent-text); }
 .tbubble svg { display: block; flex: none; width: 48px; height: 48px; }
+.tbubble .core { display: none; }
+.tbubble[data-step="0"] .d0, .tbubble[data-step="1"] .d1, .tbubble[data-step="2"] .d2 { transform: translateY(-2px); }
+.tbubble[data-step="0"] .d0 .core, .tbubble[data-step="1"] .d1 .core, .tbubble[data-step="2"] .d2 .core { display: inline; }
 .ccompose { flex: none; padding: 8px 16px 12px; border-top: 0; }
 .ccompose textarea { width: 100%; box-sizing: border-box; min-height: 36px; max-height: 200px; background: var(--card); font: inherit; font-size: var(--fs); line-height: var(--lh); padding: 8px 12px; border: var(--bw) solid var(--line); border-radius: var(--radius-l); resize: none; overflow-y: hidden; color: var(--text); outline: none; }
 .ccompose textarea:focus { border-color: var(--line-strong); }
