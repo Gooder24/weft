@@ -42,11 +42,17 @@ jobs:
 
       - name: The app starts on Windows (hidden self-test against example.com)
         shell: pwsh
+        timeout-minutes: 6
         run: |
+          # Two tries of two minutes: a slow network to example.com must not hang the build.
           $env:SPRAVY_SELFTEST = '1'
-          $p = Start-Process dist\win-unpacked\Weft.exe -PassThru -Wait -RedirectStandardOutput selftest.txt
-          Get-Content selftest.txt
-          if (-not (Select-String -Quiet 'selftest ok' selftest.txt)) { throw "self-test failed ($($p.ExitCode))" }
+          foreach ($try in 1, 2) {
+            $p = Start-Process dist\win-unpacked\Weft.exe -PassThru -RedirectStandardOutput selftest.txt
+            if (-not $p.WaitForExit(120000)) { Stop-Process -Id $p.Id -Force; "try $try: no answer in 2 minutes" }
+            Get-Content selftest.txt
+            if (Select-String -Quiet 'selftest ok' selftest.txt) { exit 0 }
+          }
+          throw 'self-test failed'
 
       - uses: actions/upload-artifact@v4
         with:
