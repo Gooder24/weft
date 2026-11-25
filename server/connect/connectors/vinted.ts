@@ -22,7 +22,7 @@ const SLOVAK: [RegExp, (m: RegExpMatchArray) => string][] = [
   [/^Your (?:purchase|parcel) is waiting for you at (.+?)\. (?:Go and collect it!|Please pick it up\.)/, (m) => `Čaká na vyzdvihnutie: ${m[1]}.`],
   [/^Your order has been marked as delivered\..*?(?:You have until (.+?) to report an issue|$)/, (m) => `Doručené. Potvrď, že je všetko v poriadku${m[1] ? `, alebo nahlás problém do ${m[1]}` : ''}.`],
   [/^Your order has been cancelled/, () => 'Objednávka je zrušená, peniaze sa vrátia.'],
-  [/^Refund sent to your payment method/, () => 'Peniaze sú vrátené na kartu.'],
+  [/^Refund sent to your payment method/, () => 'Peniaze sú vrátené na pôvodný spôsob platby.'],
 ];
 
 export function parse(m: Mail): Item[] {

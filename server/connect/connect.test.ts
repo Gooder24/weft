@@ -91,8 +91,8 @@ afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-/** A homeserver that answers what the host asks and remembers every call. */
-function fakeHomeserver() {
+/** A homeserver that answers what the host asks and remembers every call; `seen` null: Karchi has no „seen up to“ yet. */
+function fakeHomeserver(seen: Record<string, unknown> | null = { keep: 5 }) {
   const calls: Call[] = [];
   let n = 0;
   const server = Bun.serve({
@@ -104,7 +104,7 @@ function fakeHomeserver() {
       calls.push({ method: req.method, path, user: url.searchParams.get('user_id'), body });
       if (path === '/createRoom') return Response.json({ room_id: `!r${++n}:test` });
       if (path.includes('/send/')) return Response.json({ event_id: `$e${++n}` });
-      if (req.method === 'GET' && path.includes('/account_data/')) return Response.json({ keep: 5 });
+      if (req.method === 'GET' && path.includes('/account_data/')) return seen ? Response.json(seen) : Response.json({ errcode: 'M_NOT_FOUND' }, { status: 404 });
       return Response.json({});
     },
   });
@@ -113,7 +113,7 @@ function fakeHomeserver() {
 }
 
 const NOW = 1_800_000_000_000;
-function setup() {
+function setup(seen?: Record<string, unknown> | null) {
   const dir = mkdtempSync(join(tmpdir(), 'connect-'));
   dirs.push(dir);
   const archive = new Database(join(dir, 'archive.db'), { strict: true });
@@ -122,7 +122,7 @@ function setup() {
     INSERT INTO chats VALUES ('gmail:a:1', 'gmail', 't', NULL, 'gmail'), ('messenger:x', 'messenger', 't', NULL, 'x');`);
   const add = (id: string, sender: string, body: string, ts = NOW - 60_000, chat = 'gmail:a:1') =>
     archive.query('INSERT OR REPLACE INTO messages VALUES (?, ?, ?, ?, 0, ?)').run(id, chat, ts, sender, body);
-  const hs = fakeHomeserver();
+  const hs = fakeHomeserver(seen);
   const matrix = new Matrix(hs.url, 'as', 'puppet', '@karchi:test', '@connectbot:test');
   const host = new Host({ archive: join(dir, 'archive.db'), state: join(dir, 'connect.db'), matrix, connectors: [vintedConnector, packetaConnector], now: () => NOW });
   return { add, hs, host };
@@ -161,6 +161,13 @@ describe('host', () => {
     expect(put).toEqual([expect.objectContaining({ user: '@karchi:test', body: { keep: 5, '!r1:test': NOW - 3 * 86_400_000 } })]);
     expect(await host.round()).toBe(0);
     expect(hs.calls.filter((c) => c.method === 'PUT' && c.path.includes('/account_data/'))).toHaveLength(1);
+  });
+
+  test('without any „seen up to“ yet, history writes none: everything before Weft\'s first run counts as seen', async () => {
+    const { add, hs, host } = setup(null);
+    add('old', V, 'Order update for Hrnček\n Hi, Shipped.', NOW - 3 * 86_400_000);
+    expect(await host.round()).toBe(1);
+    expect(hs.calls.some((c) => c.method === 'PUT' && c.path.includes('/account_data/'))).toBe(false);
   });
 
   test('news is not marked seen, and a later seen value stays', async () => {

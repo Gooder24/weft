@@ -111,7 +111,8 @@ export class Host {
     const m = this.opts.matrix;
     const path = `/user/${q(m.admin)}/account_data/${WEFT_SEEN}`;
     const seen = await m.call('GET', path, undefined, { user: m.admin }).catch((err): Record<string, unknown> => {
-      if (err instanceof MatrixError && err.status === 404) return {};
+      // None yet: everything before now counts as seen (Weft starts it so on its first run), so history needs no write.
+      if (err instanceof MatrixError && err.status === 404) return { _all: this.now() };
       throw err;
     });
     let changed = false;
