@@ -14294,11 +14294,14 @@ function callSettings() {
 
 /* Settings → Účty → „Prejsť z Beeperu“: Beeper Desktop's index.db goes to the archive in pieces
  * (server/archive/archive.py `beeper`), which first only counts what would come (import_beeper.py --dry-run) and
- * imports on „Preniesť“. The desktop app finds Beeper's folder itself (desktop/main.js beeper-find); a browser picks
- * the file. Nothing in Beeper changes, and sign-ins are not taken over: networks are connected in Weft as usual. */
+ * imports on „Preniesť“. The count names the photos and files of Beeper's media cache the new messages show
+ * (media_wanted); with „Aj fotky a súbory“ those go along before the import. The desktop app finds Beeper's folder
+ * and its cache itself (desktop/main.js beeper-find, beeper-media); a browser picks index.db and then the media folder.
+ * Nothing in Beeper changes, and sign-ins are not taken over: networks are connected in Weft as usual. */
 const BEEPER_PIECE = 16 << 20;
 // run: each find, pick and cancel starts a new one; a flow whose run is gone stops at its next step (and forgets its upload).
-const bp = { phase: 'idle', progress: 0, report: null, upload: null, error: '', run: 0 };
+// media: the wanted files found ({ files, bytes, wanted }), withMedia: whether they go along.
+const bp = { phase: 'idle', progress: 0, report: null, upload: null, error: '', run: 0, media: null, withMedia: true };
 const bpSet = (patch) => { Object.assign(bp, patch); render(); };
 const bpCount = (n) => (n || 0).toLocaleString(LOCALE);
 
@@ -14322,43 +14325,73 @@ function beeperPick(list) {
   beeperSend(++bp.run, [index, wal].filter(Boolean).map((f, i) => ({ name: i ? 'index.db-wal' : 'index.db', size: f.size, read: (o, n) => f.slice(o, o + n) })));
 }
 
+/** The browser's media folder (Beeper's media/local.beeper.com, or a folder above it): only the files the count wants. */
+function beeperPickMedia(list) {
+  const wanted = new Set((bp.report?.media_wanted || []).map(([id]) => id));
+  const files = [...list].filter((f) => wanted.has(f.name) && f.size > 0 && (f.webkitRelativePath || f.name).includes('local.beeper.com'));
+  bpSet({ withMedia: true, media: { wanted: wanted.size, bytes: files.reduce((n, f) => n + f.size, 0),
+    files: files.map((f) => ({ name: `media/${f.name}`, size: f.size, read: (o, n) => f.slice(o, o + n) })) } });
+}
+
 async function beeperCall(path, body, query) {
   const res = await fetch(`/_archive/beeper/${path}${query ? `?${query}` : ''}`, {
     method: 'POST', body, headers: { Authorization: `Bearer ${S.token}`, 'Content-Type': query ? 'application/octet-stream' : 'application/json' },
   });
   const out = await res.json().catch(() => ({}));
   const said = { "not Beeper's index.db": T('Toto nie je index.db z Beeperu.'), 'another count or import is running': T('Ešte dobieha predchádzajúce počítanie. Skús to o chvíľu znova.'),
-    'the import ran out of memory': T('Serveru na tento Beeper nestačila pamäť.') }[out.error]; // i18n-ignore: the archive's error keys
+    'the import ran out of memory': T('Serveru na tento Beeper nestačila pamäť.'), "the server's disk is nearly full": T('Na serveri už nie je dosť miesta.') }[out.error]; // i18n-ignore: the archive's error keys
   if (!res.ok) throw Object.assign(new Error(said || out.error || T`archív odpovedal ${res.status}`), { status: res.status, out });
   return out;
 }
 
 const beeperForget = (upload) => { if (upload) beeperCall('forget', JSON.stringify({ upload })).catch(() => {}); };
 
-async function beeperSend(run, files) {
+/** Sends the files in pieces into the upload (a new one without it); false when the run was cancelled meanwhile. */
+async function beeperPieces(run, files, upload) {
   const total = files.reduce((n, f) => n + f.size, 0) || 1;
-  bpSet({ phase: 'sending', progress: 0, report: null, upload: null });
-  let sent = 0, upload = null;
-  try {
-    for (const f of files) {
-      for (let offset = 0; offset < f.size;) {
-        const query = new URLSearchParams({ file: f.name, offset: String(offset), ...(upload ? { upload } : {}) });
-        const piece = await f.read(offset, Math.min(BEEPER_PIECE, f.size - offset));
-        if (run !== bp.run) return beeperForget(upload);
+  let sent = 0;
+  for (const f of files) {
+    for (let offset = 0; offset < f.size;) {
+      const query = new URLSearchParams({ file: f.name, offset: String(offset), ...(upload ? { upload } : {}) });
+      const piece = await f.read(offset, Math.min(BEEPER_PIECE, f.size - offset));
+      if (run !== bp.run) return false; // an upload made before is bp.upload, which beeperCancel forgot
+      const known = upload;
+      let size;
+      try {
         const got = await beeperCall('upload', piece, query);
-        upload = got.upload;
-        // Cancelled while this piece was on its way: its upload exists only now, so forget it here.
-        if (run !== bp.run) return beeperForget(upload);
-        bp.upload = upload;
-        sent += got.size - offset;
-        offset = got.size;
-        bpSet({ progress: sent / total });
+        upload = got.upload; size = got.size;
+      } catch (e) {
+        if (!(e.status === 409 && Number.isSafeInteger(e.out?.size))) throw e;
+        size = e.out.size; // the archive has more of this file already (a retry): go on from there
       }
+      // Cancelled while this piece was on its way: a new upload exists only now, so forget it here.
+      if (run !== bp.run) { if (!known) beeperForget(upload); return false; }
+      bp.upload = upload;
+      sent += Math.max(0, size - offset);
+      offset = size;
+      bpSet({ progress: sent / total });
     }
-    window.desktop?.beeperDone?.();
+  }
+  return true;
+}
+
+async function beeperSend(run, files) {
+  bpSet({ phase: 'sending', progress: 0, report: null, upload: null, media: null, withMedia: true });
+  try {
+    if (!await beeperPieces(run, files, null)) return;
+    window.desktop?.beeperDone?.(); // the copy of index.db; Beeper's media cache can still be read
     bpSet({ phase: 'counting' });
-    const report = await beeperCall('plan', JSON.stringify({ upload }));
-    if (run === bp.run) bpSet({ phase: 'ready', report });
+    const report = await beeperCall('plan', JSON.stringify({ upload: bp.upload }));
+    if (run !== bp.run) return;
+    const wanted = report.media_wanted || [];
+    // The desktop app looks the wanted files up in Beeper's cache; a browser asks for the media folder on the plan.
+    if (wanted.length && window.desktop?.beeperMedia) {
+      const found = Object.entries(await window.desktop.beeperMedia(wanted.map(([id]) => id)));
+      if (run !== bp.run) return;
+      bp.media = { wanted: wanted.length, bytes: found.reduce((n, [, size]) => n + size, 0),
+        files: found.map(([id, size]) => ({ name: `media/${id}`, size, read: (o, n) => window.desktop.beeperPiece(`media/${id}`, o, n) })) };
+    }
+    bpSet({ phase: 'ready', report });
   } catch (e) {
     window.desktop?.beeperDone?.();
     if (run === bp.run) bpSet({ phase: 'error', error: e.message }); // cancelled: beeperCancel forgot the upload
@@ -14367,8 +14400,13 @@ async function beeperSend(run, files) {
 
 async function beeperImport() {
   const run = ++bp.run;
-  bpSet({ phase: 'importing' });
   try {
+    const media = bp.withMedia ? bp.media?.files || [] : [];
+    if (media.length) {
+      bpSet({ phase: 'sendingMedia', progress: 0 });
+      if (!await beeperPieces(run, media, bp.upload)) return;
+    }
+    bpSet({ phase: 'importing' });
     const report = await beeperCall('import', JSON.stringify({ upload: bp.upload }));
     if (run !== bp.run) return;
     bpSet({ phase: 'done', report, upload: null });
@@ -14380,7 +14418,7 @@ function beeperCancel() {
   const upload = bp.upload;
   bp.run++;
   window.desktop?.beeperDone?.();
-  bpSet({ phase: 'idle', upload: null, report: null, progress: 0, error: '' });
+  bpSet({ phase: 'idle', upload: null, report: null, progress: 0, error: '', media: null, withMedia: true });
   beeperForget(upload);
 }
 
@@ -14400,7 +14438,7 @@ function beeperTable(report) {
 }
 
 function beeperSettings() {
-  if (!S.archiveAt && bp.phase === 'idle') return null; // a server without the archive (install.sh has none yet)
+  if (!S.archiveAt && bp.phase === 'idle') return null; // no archive here, or it belongs to another account of the server
   const desktop = !!window.desktop?.beeperFind;
   const pick = h('label', { class: 'ghost bppick' }, icon('file'), T('Vybrať index.db'),
     h('input', { type: 'file', multiple: true, hidden: true, onchange: (e) => { const files = e.target.files; beeperPick(files); e.target.value = ''; } }));
@@ -14416,14 +14454,32 @@ function beeperSettings() {
     counting: () => [h('p', { class: 'hint' }, T('Počítam, čo pribudne…')), cancel],
     ready: () => {
       const added = Object.values(bp.report.networks || {}).reduce((a, n) => a + (n.new || 0), 0);
-      return [beeperTable(bp.report),
+      const wanted = bp.report.media_wanted || [];
+      const m = bp.media;
+      const withMedia = bp.withMedia && m?.files.length > 0;
+      // Photos and files: a switch once some were found, else where to find them (a browser) or that Beeper has none.
+      const media = !wanted.length ? null : m?.files.length ? h('label', { class: 'bcheck' },
+        h('input', { type: 'checkbox', checked: bp.withMedia, onchange: (e) => bpSet({ withMedia: e.target.checked }) }),
+        h('span', {}, T`Aj fotky a súbory: ${bpCount(m.files.length)}, ${fileSize(m.bytes)}`,
+          h('small', {}, m.files.length < m.wanted
+            ? T`Beeper má uložené ${bpCount(m.files.length)} z ${bpCount(m.wanted)}; pri ostatných bude vo Wefte napísané, čo tam bolo.`
+            : T('Beeper ich má uložené všetky.'))))
+        : desktop ? h('p', { class: 'hint' }, T('Fotky a súbory týchto správ Beeper uložené nemá; vo Wefte bude pri správe napísané, čo tam bolo.'))
+          : [h('label', { class: 'ghost bppick' }, icon('images'), T('Pridať fotky a súbory'),
+            h('input', { type: 'file', webkitdirectory: true, hidden: true, onchange: (e) => { const files = e.target.files; beeperPickMedia(files); e.target.value = ''; } })),
+          h('p', { class: 'hint' }, m ? T`V tomto priečinku nie je ani jeden z ${bpCount(wanted.length)} súborov. Vyber priečinok media v BeeperTexts.`
+            : T`Správy ukazujú ${bpCount(wanted.length)} fotiek a súborov. Ak ich chceš preniesť, vyber priečinok media v priečinku BeeperTexts; pošlú sa len tieto.`)];
+      return [beeperTable(bp.report), media,
         h('p', { class: 'hint' }, added
-          ? T('Správy, ktoré Weft už má, sa nepridajú. Chat padne do tej istej miestnosti, kde už vo Wefte píšeš; chaty sietí, ktoré Weft nemá, budú medzi starými konverzáciami. Fotky a súbory ostanú v Beeperi, vo Wefte bude pri správe napísané, čo tam bolo. Pred zápisom sa archív zálohuje.')
-          : T('Weft už má všetko, čo je v tomto Beeperi.')),
-        h('div', { class: 'row' }, added ? h('button', { class: 'primary', type: 'button', onclick: beeperImport }, T('Preniesť')) : null, cancel)];
+          ? [T('Správy, ktoré Weft už má, sa nepridajú. Chat padne do tej istej miestnosti, kde už vo Wefte píšeš; chaty sietí, ktoré Weft nemá, budú medzi starými konverzáciami. Pred zápisom sa archív zálohuje.'), ' ',
+            withMedia ? T('Fotky a súbory budú pri správach.') : T('Fotky a súbory ostanú v Beeperi, vo Wefte bude pri správe napísané, čo tam bolo.')]
+          : withMedia ? T('Správy už vo Wefte sú, prenesú sa k nim fotky a súbory.') : T('Weft už má všetko, čo je v tomto Beeperi.')),
+        h('div', { class: 'row' }, added || withMedia ? h('button', { class: 'primary', type: 'button', onclick: beeperImport }, T('Preniesť')) : null, cancel)];
     },
+    sendingMedia: () => [h('p', { class: 'hint' }, T`Posielam fotky a súbory… ${Math.floor(bp.progress * 100)} %`), cancel],
     importing: () => h('p', { class: 'hint' }, T('Prenášam…')),
     done: () => [h('p', { class: 'hint' }, T`Hotovo: pribudlo ${bpCount(bp.report.added_messages || 0)} správ. Beeper môžeš nechať tak, Weft ho už nepotrebuje.`),
+      bp.report.media_copied ? h('p', { class: 'hint' }, T`Fotky a súbory: ${bpCount(bp.report.media_copied)}, ${fileSize(bp.report.media_bytes || 0)}.`) : null,
       h('button', { class: 'ghost', type: 'button', onclick: () => bpSet({ phase: 'idle', report: null }) }, T('Zavrieť'))],
     error: () => [h('p', { class: 'hint warn' }, bp.error), h('button', { class: 'primary', type: 'button', onclick: beeperCancel }, T('Skúsiť znova'))],
   }[bp.phase]();

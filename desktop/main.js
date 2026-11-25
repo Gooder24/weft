@@ -1017,8 +1017,9 @@ ipcMain.handle('follow', (event, spec) => {
 });
 
 // „Prejsť z Beeperu“ (app.js beeperMove): Beeper Desktop's data folder on this computer. Its index.db (with the -wal
-// beside it) is copied while Beeper is closed, and the app sends the copy to the archive piece by piece. Nothing in
-// Beeper's folder is changed; the copy is deleted when the app is done with it or quits.
+// beside it) is copied while Beeper is closed, and the app sends the copy to the archive piece by piece, then the
+// photos and files of Beeper's media cache the archive's count asks for, read in place. Nothing in Beeper's folder is
+// changed; the copy is deleted when the app is done with it or quits.
 const beeperDir = () => (process.platform === 'win32' ? path.join(process.env.APPDATA || '', 'BeeperTexts')
   : path.join(os.homedir(), process.platform === 'darwin' ? 'Library/Application Support/BeeperTexts' : '.config/BeeperTexts'));
 /** Whether Beeper holds its single-instance lock: on Linux and macOS a link "<host>-<pid>", on Windows a lockfile it keeps open. */
@@ -1031,7 +1032,9 @@ const beeperRunning = (dir) => {
   if (process.platform !== 'win32') return false;
   try { fs.closeSync(fs.openSync(path.join(dir, 'lockfile'), 'r+')); return false; } catch (e) { return e.code === 'EBUSY' || e.code === 'EPERM'; }
 };
-let beeperCopy = null; // { dir, files: { 'index.db': bytes, 'index.db-wal'?: bytes } }
+let beeperCopy = null; // { dir, files: { 'index.db': bytes, 'index.db-wal'?: bytes } }, deleted by beeper-done
+let beeperCache = null; // { source, media: { id: bytes } }: Beeper's media cache, read in place until the next find
+const BEEPER_MEDIA_ID = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,199}$/; // as the archive accepts them
 const forgetBeeper = () => { if (beeperCopy) fs.rmSync(beeperCopy.dir, { recursive: true, force: true }); beeperCopy = null; };
 /** Copies an earlier run left behind (it crashed or was killed): they hold decrypted chats. One Weft runs at a time. */
 const sweepBeeper = () => {
@@ -1045,6 +1048,7 @@ app.whenReady().then(() => { try { sweepBeeper(); } catch {} });
 ipcMain.handle('beeper-find', async (event) => {
   if (!fromApp(event)) throw new Error('Not allowed');
   forgetBeeper();
+  beeperCache = null;
   try { sweepBeeper(); } catch {}
   const dir = beeperDir();
   if (!fs.existsSync(path.join(dir, 'index.db'))) return { found: false };
@@ -1061,14 +1065,32 @@ ipcMain.handle('beeper-find', async (event) => {
   } catch (e) { fs.rmSync(copy, { recursive: true, force: true }); throw e; }
   if (!files['index.db-wal']) delete files['index.db-wal']; // an empty -wal holds nothing
   beeperCopy = { dir: copy, files };
+  beeperCache = { source: dir, media: {} };
   return { found: true, running: false, files };
+});
+/** Which of these media ids Beeper's cache holds, with their sizes; only those can be read afterwards. */
+ipcMain.handle('beeper-media', async (event, ids) => {
+  if (!fromApp(event)) throw new Error('Not allowed');
+  if (!beeperCache || !Array.isArray(ids)) throw new Error('No Beeper found');
+  const cache = path.join(beeperCache.source, 'media', 'local.beeper.com');
+  const found = {};
+  for (const id of ids.slice(0, 200000)) {
+    if (typeof id !== 'string' || !BEEPER_MEDIA_ID.test(id)) continue;
+    try { const st = await fs.promises.lstat(path.join(cache, id)); if (st.isFile() && st.size > 0) found[id] = st.size; } catch {}
+  }
+  beeperCache.media = found;
+  return found;
 });
 ipcMain.handle('beeper-piece', (event, name, offset, length) => {
   if (!fromApp(event)) throw new Error('Not allowed');
-  if (!beeperCopy || !(name in beeperCopy.files) || !Number.isSafeInteger(offset) || !(length > 0 && length <= 64 << 20)) throw new Error('No such piece');
-  const fd = fs.openSync(path.join(beeperCopy.dir, name), 'r');
+  const id = typeof name === 'string' && name.startsWith('media/') ? name.slice(6) : null;
+  const known = id ? beeperCache?.media : beeperCopy?.files;
+  if (!known || !Object.hasOwn(known, id ?? name) || !Number.isSafeInteger(offset) || !(length > 0 && length <= 64 << 20)) throw new Error('No such piece');
+  const size = known[id ?? name];
+  // index.db from the copy; a media file from Beeper's own cache, read only (its ids never change their content).
+  const fd = fs.openSync(id ? path.join(beeperCache.source, 'media', 'local.beeper.com', id) : path.join(beeperCopy.dir, name), 'r');
   try {
-    const buf = Buffer.alloc(Math.max(0, Math.min(length, beeperCopy.files[name] - offset)));
+    const buf = Buffer.alloc(Math.max(0, Math.min(length, size - offset)));
     fs.readSync(fd, buf, 0, buf.length, offset);
     return new Uint8Array(buf.buffer, buf.byteOffset, buf.length);
   } finally { fs.closeSync(fd); }

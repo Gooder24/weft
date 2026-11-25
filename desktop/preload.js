@@ -13,8 +13,10 @@ contextBridge.exposeInMainWorld('desktop', {
   // The follow window (main.js): a profile on Instagram or Facebook with only its follow / add-friend button.
   followNetworks: ipcRenderer.sendSync('follow-networks'),
   follow: (spec) => ipcRenderer.invoke('follow', spec),
-  // „Prejsť z Beeperu“ (main.js): a copy of Beeper Desktop's index.db, read in pieces, deleted by beeperDone.
+  // „Prejsť z Beeperu“ (main.js): a copy of Beeper Desktop's index.db and the cached files asked for, read in pieces;
+  // beeperDone deletes the copy.
   beeperFind: () => ipcRenderer.invoke('beeper-find'),
   beeperPiece: (name, offset, length) => ipcRenderer.invoke('beeper-piece', name, offset, length),
+  beeperMedia: (ids) => ipcRenderer.invoke('beeper-media', ids),
   beeperDone: () => ipcRenderer.invoke('beeper-done'),
 });

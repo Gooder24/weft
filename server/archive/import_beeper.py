@@ -35,6 +35,8 @@ NETWORKS = {"facebookgo": ("messenger", "messenger"), "facebook": ("messenger", 
             "instagramgo": ("instagram", "instagram"), "instagram": ("instagram", "instagram"),
             "whatsapp": ("whatsapp", "whatsapp"), "discordgo": ("discord", "discord"), "discord": ("discord", "discord")}
 SKIP = {"REACTION", "MEMBERSHIP", "HIDDEN"}
+SAFE_ID = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]{0,199}")  # a cached file's name that is safe as a path
+BATCH = 2000  # messages per write transaction: the archive service keeps writing in between
 LABELS = {"IMAGE": "[Fotka]", "VIDEO": "[Video]", "VOICE": "[Zvuková správa]", "AUDIO": "[Zvuk]",
           "FILE": "[Súbor]", "STICKER": "[Nálepka]", "POLL": "[Anketa]"}
 
@@ -208,7 +210,13 @@ def plan(source, database, spike):
     stats = collections.defaultdict(collections.Counter)
     chats, messages, fill, state = [], [], [], collections.Counter()
     cache = Path(source) / "media" / "local.beeper.com"
-    planned, oldest = set(), {}
+    planned, oldest, wanted = set(), {}, {}
+
+    def want(row, positions=None):
+        for i, a in enumerate(row["media"]):
+            if a and (positions is None or i in positions) and SAFE_ID.fullmatch(fid := file_id(a)):
+                stated = a.get("fileSize")
+                wanted[fid] = stated if isinstance(stated, int) and 0 <= stated < 1 << 62 else None
     with closing(read_beeper(source)) as b:
         account_of = {r["threadID"]: r["accountID"] for r in b.execute("SELECT threadID, accountID FROM threads")}
         names = {(r["room_id"], r["id"]): r["full_name"] or r["nickname"] for r in b.execute(
@@ -257,8 +265,9 @@ def plan(source, database, spike):
                 if row["id"] in arch["imported"] or row["id"] in planned or same_message(have, m["timestamp"], text, m["type"] in LABELS):
                     s["already_in_weft"] += 1
                     # Imported before without its file, and Beeper's cache has it now: --media fills it in.
-                    need = {i for i, a in enumerate(row["media"]) if (row["id"], i) in arch["no_file"] and a
-                            and (cache / file_id(a)).is_file()}
+                    missing = {i for i, a in enumerate(row["media"]) if (row["id"], i) in arch["no_file"] and a}
+                    want(row, missing)
+                    need = {i for i in missing if (cache / file_id(row["media"][i])).is_file()}
                     if need: fill.append({**row, "need": need}); s["files_to_fill"] += len(need)
                     continue
                 new.append(row); planned.add(row["id"])
@@ -270,6 +279,7 @@ def plan(source, database, spike):
                 new = [r for r in new if r["ts"] < arch["floor"][room] - 3000]
                 s["older_than_weft"] += len(new)
             s["new"] += len(new)
+            for r in new: want(r)
             s["media"] += sum(1 for r in new for a in r["media"] if a)
             # What the new rows take in archive.db, counted as estimate.py does (its OVERHEAD is indexes and search).
             s["archive_bytes"] += sum(estimate.OVERHEAD + len(r["body"].encode()) + len(r["raw"].encode()) for r in new)
@@ -279,6 +289,9 @@ def plan(source, database, spike):
     return {"chats": chats, "messages": messages, "fill": fill,
             "report": {"networks": {k: dict(v) | ({"oldest": oldest[k]} if k in oldest else {}) for k, v in sorted(stats.items())},
                        "inbox_state": dict(state),
+                       # Beeper's cached files these messages show, by id with the size Beeper states (or null): Weft
+                       # sends only these from the data folder's media/local.beeper.com/.
+                       "media_wanted": sorted(wanted.items()),
                        "account_count": len(set(account_of.values()))}}
 
 
@@ -332,10 +345,12 @@ def run(source, database, spike, media_root=None, dry_run=False):
                 # An export that never had a room gets its own, as join_chat gives it: one conversation, not two.
                 c.execute("UPDATE chats SET room = ? WHERE id = ? AND room IS NULL", ("archive:" + joins, joins))
             c.execute("INSERT OR IGNORE INTO beeper_chats VALUES (?,?,?)", (chat, account, channel))
-        for m in p["messages"] + (p["fill"] if media_root else []):
-            added += c.execute("INSERT OR IGNORE INTO messages VALUES (?,?,?,?,?,?)",
-                               (m["id"], m["chat"], m["ts"], m["sender"], m["me"], m["body"])).rowcount
-            c.execute("INSERT OR IGNORE INTO beeper_data VALUES (?,?)", (m["id"], m["raw"]))
+    rows = p["messages"] + (p["fill"] if media_root else [])
+    # Batches, each its own transaction, so the archive service's writes never wait for the whole import; an import
+    # that stops midway is finished by the next one (ids are kept, files without a copy are filled in).
+    for start in range(0, len(rows), BATCH):
+        batch, media = rows[start:start + BATCH], []
+        for m in batch:
             for position, a in enumerate(m["media"]):
                 if not a or ("need" in m and position not in m["need"]): continue  # no file, or one copied already
                 path = size = None
@@ -344,22 +359,27 @@ def run(source, database, spike, media_root=None, dry_run=False):
                 local = files / file_id(a)
                 mime = a.get("mimeType") if isinstance(a.get("mimeType"), str) else None
                 mime = mime or mimetypes.guess_type(name)[0] or "application/octet-stream"
-                if media_root and local.is_file():
+                if media_root and local.is_file():  # copied before the transaction: it holds no lock meanwhile
                     ext = os.path.splitext(name)[1].lower() or mimetypes.guess_extension(mime) or ""
                     path, size = store_media(local, Path(media_root) / "beeper", ext if re.fullmatch(r"\.[a-z0-9]{1,5}", ext) else "")
                     copied += 1; copied_bytes += size
                 kind = mime.split("/")[0] if mime.split("/")[0] in ("image", "video", "audio") else "file"
                 box = {k: v for k, v in obj(a, "size").items() if isinstance(v, int) and 0 < v < 1 << 31}  # the picture's
                 stated = a.get("fileSize") if isinstance(a.get("fileSize"), int) and 0 <= a["fileSize"] < 1 << 62 else None
-                c.execute("""INSERT INTO message_media (message, position, path, kind, mime, bytes, original_uri, w, h)
-                    VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(message, position) DO UPDATE SET
-                    path=COALESCE(excluded.path, message_media.path), bytes=COALESCE(excluded.bytes, message_media.bytes)""",
-                          # "beeper:<id>", not the mxc: Beeper's media server is not Weft's homeserver, so the
-                          # archive must not try to fetch it there; without a copied file the label stays.
-                          (m["id"], position, path, kind, mime, size or stated,
-                           # Ending in Beeper's file name, the archive's download keeps that name.
-                           "beeper:" + file_id(a) + "/" + name.replace("/", "_").replace("?", "_"),
-                           box.get("width"), box.get("height")))
+                # "beeper:<id>", not the mxc: Beeper's media server is not Weft's homeserver, so the archive must not
+                # try to fetch it there; without a copied file the label stays. Ending in Beeper's file name, the
+                # archive's download keeps that name.
+                media.append((m["id"], position, path, kind, mime, size or stated,
+                              "beeper:" + file_id(a) + "/" + name.replace("/", "_").replace("?", "_"),
+                              box.get("width"), box.get("height")))
+        with c:
+            for m in batch:
+                added += c.execute("INSERT OR IGNORE INTO messages VALUES (?,?,?,?,?,?)",
+                                   (m["id"], m["chat"], m["ts"], m["sender"], m["me"], m["body"])).rowcount
+                c.execute("INSERT OR IGNORE INTO beeper_data VALUES (?,?)", (m["id"], m["raw"]))
+            c.executemany("""INSERT INTO message_media (message, position, path, kind, mime, bytes, original_uri, w, h)
+                VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(message, position) DO UPDATE SET
+                path=COALESCE(excluded.path, message_media.path), bytes=COALESCE(excluded.bytes, message_media.bytes)""", media)
     c.close()
     report.update({"added_messages": added, "media_copied": copied, "media_bytes": copied_bytes,
                    "backup": str(backup) if backup else None})

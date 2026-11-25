@@ -1246,6 +1246,8 @@ BEEPER_UPLOADS = os.path.join(os.path.dirname(os.path.abspath(DB)), "beeper-uplo
 BEEPER_FILES = {"index.db": b"SQLite format 3\0", "index.db-wal": (b"\x37\x7f\x06\x82", b"\x37\x7f\x06\x83")}
 BEEPER_MAX = 8 << 30  # per file; Beeper's index.db holds the decrypted messages and their search index
 BEEPER_PIECE = 64 << 20
+BEEPER_MEDIA = re.compile(r"media/([A-Za-z0-9_-][A-Za-z0-9._-]{0,199})")  # a file of Beeper's media cache, by its id
+BEEPER_SPARE = int(os.environ.get("ARCHIVE_BEEPER_SPARE", str(2 << 30)))  # disk an upload must leave free
 beeper_lock = threading.Lock()  # one count or import at a time: both read the whole archive
 
 
@@ -1267,13 +1269,17 @@ def beeper_prune(keep=None, everything=False):
 
 def beeper_piece(upload, name, offset, stream, length):
     """Write one piece of an uploaded file at its end. Returns (upload, size) or raises ValueError (bad piece) or
-    LookupError (no such upload) or IndexError (the offset is not the file's end: the size there lets it resume)."""
-    if name not in BEEPER_FILES or not 0 < length <= BEEPER_PIECE or offset < 0 or offset + length > BEEPER_MAX:
+    LookupError (no such upload) or IndexError (the offset is not the file's end: the size there lets it resume)
+    or OSError (the disk would get too full). A photo or file of Beeper's cache is media/<id>, after index.db."""
+    media = BEEPER_MEDIA.fullmatch(name)
+    if not (name in BEEPER_FILES or media) or not 0 < length <= BEEPER_PIECE or offset < 0 or offset + length > BEEPER_MAX:
         raise ValueError("not a piece of Beeper's index.db")
     if upload is None and (name != "index.db" or offset): raise ValueError("an upload starts with index.db")
+    os.makedirs(BEEPER_UPLOADS, mode=0o700, exist_ok=True)
+    if shutil.disk_usage(BEEPER_UPLOADS).free < length + BEEPER_SPARE: raise OSError("the server's disk is nearly full")
     data = stream.read(length)
     if len(data) != length: raise ValueError("the piece ended early")
-    if offset == 0 and not data.startswith(BEEPER_FILES[name]):
+    if offset == 0 and not media and not data.startswith(BEEPER_FILES[name]):
         raise ValueError("not Beeper's index.db" if name == "index.db" else "not a SQLite -wal file")
     if upload is None:
         upload = os.urandom(16).hex()
@@ -1282,7 +1288,10 @@ def beeper_piece(upload, name, offset, stream, length):
         beeper_prune(keep=upload, everything=True)  # one person's archive, one move at a time
     folder = beeper_folder(upload)
     if not folder: raise LookupError(upload)
-    path = os.path.join(folder, name)
+    if media:  # where import_beeper.py reads the cache: the data folder's media/local.beeper.com/
+        os.makedirs(os.path.join(folder, "media", "local.beeper.com"), mode=0o700, exist_ok=True)
+        path = os.path.join(folder, "media", "local.beeper.com", media[1])
+    else: path = os.path.join(folder, name)
     have = os.path.getsize(path) if os.path.exists(path) else 0
     if offset != have: raise IndexError(have)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
@@ -1314,7 +1323,8 @@ def beeper_scope():
 def beeper_run(folder, dry_run):
     """import_beeper.py in its own process and memory limit: it reads the whole archive and index.db, and running out
     of memory there must not end the archive service."""
-    cmd = beeper_scope() + [sys.executable, os.path.join(HERE, "import_beeper.py"), folder, "--db", DB, "--spike", SPIKE]
+    cmd = beeper_scope() + [sys.executable, os.path.join(HERE, "import_beeper.py"), folder, "--db", DB, "--spike", SPIKE,
+                            "--media", "--media-dir", MEDIA]  # the photos and files sent along, if any
     out = subprocess.run(cmd + (["--dry-run"] if dry_run else []), capture_output=True, text=True, timeout=3600)
     if out.returncode:
         last = (out.stderr.strip().splitlines() or ["the import stopped"])[-1]
@@ -1462,9 +1472,9 @@ class Api(BaseHTTPRequestHandler):
         return self.send(409, {"error": "already linked or not in the archive"})
 
     def beeper(self, what, args):
-        """POST /_archive/beeper/upload?file=index.db|index.db-wal&offset=N[&upload=ID] with a piece as the body
-        (without upload: a new one, from index.db's start) → {upload, size}; a wrong offset answers 409 with the size
-        there. POST /_archive/beeper/{plan,import,forget} {upload}: count only, import (backs up the archive first,
+        """POST /_archive/beeper/upload?file=index.db|index.db-wal|media/<id>&offset=N[&upload=ID] with a piece as
+        the body (without upload: a new one, from index.db's start) → {upload, size}; a wrong offset answers 409 with
+        the size there, a nearly full disk 507. The count's media_wanted names the media files worth sending. POST /_archive/beeper/{plan,import,forget} {upload}: count only, import (backs up the archive first,
         then deletes the upload) or delete it."""
         beeper_prune()
         if what == "upload":
@@ -1474,6 +1484,7 @@ class Api(BaseHTTPRequestHandler):
             except ValueError as e: return self.send(400, {"error": str(e)})
             except IndexError as e: return self.send(409, {"error": "another offset", "size": e.args[0]})  # before LookupError, its base
             except LookupError: return self.send(404, {"error": "no such upload"})
+            except OSError as e: return self.send(507, {"error": str(e)})
             return self.send(200, {"upload": upload, "size": size})
         if what not in ("plan", "import", "forget"): return self.send(404, {"error": "not found"})
         try: upload = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length") or 0), 4096)) or b"{}").get("upload")
