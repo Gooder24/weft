@@ -79,6 +79,10 @@ function bridgeFailure(ev) {
   return hit ? { target, kind: hit[1], sure: hit[2] === 'was not', reason: hit[3].trim() } : null;
 }
 const failReason = (reason) => (/aren't on your friends list|not on your friends list/i.test(reason) ? T('Discord tu dovolí písať len priateľom. Napíš mu v appke Discord alebo mu tam pošli žiadosť o priateľstvo.')
+  // The Discord bridge's reply guard (server/bridges/discord-weft.patch, weft_reply.go): the message went nowhere.
+  : /replied to is not on Discord/i.test(reason) ? T('Správu, na ktorú odpovedáš, Discord nepozná, takže odpoveď neodišla.')
+  : /replied to is in a Discord thread/i.test(reason) ? T('Správa, na ktorú odpovedáš, je vo vlákne na Discorde. Odpovedať na ňu sa dá len v appke Discord.')
+  : /did not start the thread/i.test(reason) ? T('Discord nezaložil vlákno, takže správa neodišla.')
   : /logged out|relogin|not logged in/i.test(reason) ? T('účet je odhlásený, prihlás sa znova v Nastaveniach')
   : /timed? ?out|timeout/i.test(reason) ? T('sieť neodpovedala') : reason);
 // Polls (MSC3381): bridges send the unstable types, the stable ones are here for the day they switch.
@@ -3035,25 +3039,53 @@ function mentionHits(r) {
   const more = serverPeople(r, a.word).filter((id) => !inRoom.has(id) && r.members.get(id)?.membership !== 'join');
   return [...here, ...more.slice(0, Math.max(0, 8 - here.length)).map((id) => ({ id, score: 99, server: true }))];
 }
-/** "@" in a channel of a Discord server: its people from the collected history (archive, nothing asks Discord),
- *  as the bridge's ghosts, from the second letter on. A late answer for another word or chat is only kept. */
+/** "@" in a channel of a Discord server, from the second letter on: who wrote there in the collected history
+ *  (archive, nothing asks Discord), then the server's members whose name starts so, when the bridge's search is
+ *  on (GET /v1/guilds/<id>/members, bridge.weft.member_search; one gateway request per prefix, asked once the word
+ *  rests). As the bridge's ghosts; a late answer for another word or chat is only kept. */
 function serverPeople(r, word) {
   if (r.app !== 'discord' || !r.serverId || norm(word).length < 2) return [];
   const key = `${r.serverId}|${norm(word)}`;
-  const hit = dc.people.get(key);
-  if (hit) return hit;
-  dc.people.set(key, []);
-  archiveGet(`/_archive/discord/people?guild=${q(r.serverId)}&q=${q(norm(word))}`).then((body) => {
-    const domain = S.userId.split(':').slice(1).join(':');
-    const ids = (body.people || []).filter((p) => /^\d+$/.test(p.user)).map((p) => {
-      const id = `@discord_${p.user}:${domain}`;
-      dc.names.set(id, p.name);
-      return id;
-    });
-    dc.people.set(key, ids);
-    if (S.mention?.room === r.id && serverPeople(r, S.mention.word) === ids) render();
-  }).catch(() => setTimeout(() => dc.people.delete(key), 60e3)); // nobody for a minute, then ask again
-  return [];
+  let hit = dc.people.get(key);
+  const current = () => S.mention?.room === r.id && dc.people.get(`${r.serverId}|${norm(S.mention.word)}`) === hit;
+  if (!hit) {
+    hit = { ids: [], archive: [], members: [], asked: false };
+    dc.people.set(key, hit);
+    archiveGet(`/_archive/discord/people?guild=${q(r.serverId)}&q=${q(norm(word))}`).then((body) => {
+      hit.archive = ghosts((body.people || []).map((p) => ({ id: p.user, name: p.name })));
+      found(hit, current);
+    }).catch(() => setTimeout(() => dc.people.delete(key), 60e3)); // nobody for a minute, then ask again
+  }
+  if (!hit.asked && Date.now() >= dc.searchOff) {
+    hit.asked = true;
+    setTimeout(() => {
+      if (!current()) { hit.asked = false; return; } // typed on meanwhile: asked when the word comes back
+      call('GET', `/guilds/${q(r.serverId)}/members?query=${q(word.normalize('NFKC'))}&limit=10`, undefined, LINKS.find((a) => a.id === 'discord').legacy).then((body) => {
+        if (!body.enabled) { dc.searchOff = Date.now() + 10 * 60e3; return; }
+        hit.members = ghosts(body.members || []);
+        if (body.timeout) hit.asked = false;
+        found(hit, current);
+      }).catch((err) => {
+        if (err.errcode === 'M_NOT_FOUND') return; // not one of his servers: this word stays without members
+        hit.asked = false;
+        dc.searchOff = Date.now() + (err.status === 503 ? 60e3 : 10 * 60e3); // connecting; an older bridge or none
+      });
+    }, 400);
+  }
+  return hit.ids;
+}
+/** Discord people ({id, name}) as the bridge's ghosts, their names kept for the "@" list. */
+function ghosts(people) {
+  const domain = S.userId.split(':').slice(1).join(':');
+  return people.filter((p) => /^\d+$/.test(p.id)).map((p) => {
+    const id = `@discord_${p.id}:${domain}`;
+    if (p.name) dc.names.set(id, p.name);
+    return id;
+  });
+}
+function found(hit, current) {
+  hit.ids = [...new Set([...hit.archive, ...hit.members])];
+  if (current()) render();
 }
 /** A person in the "@" list: as memberName, a network's name in plain letters. */
 const mentionLabel = (r, id) => ((id !== S.userId && nickOf(id)) || unnamedGhost(r, id) ? memberName(r, id) : mentionName(r, id));
@@ -8816,7 +8848,7 @@ function archiveCompose(r) {
 /* The Discord bridge opens only the newest 5 DMs at its start and others when a new message comes. The archive reads
  * the bridge's database (server/archive/discord_weft.py): Karchi's DM and group channels, and opens one of them on a
  * click through the bridge's own command. Nothing here writes to Discord; the bridge reads the channel (two GETs). */
-const dc = { dms: null, channels: null, at: 0, failed: false, loading: null, opening: new Set(), people: new Map(), names: new Map() };
+const dc = { dms: null, channels: null, at: 0, failed: false, loading: null, opening: new Set(), people: new Map(), names: new Map(), searchOff: 0 };
 const archiveGet = async (path) => {
   const res = await fetch(path, { headers: { Authorization: `Bearer ${S.token}` }, signal: AbortSignal.timeout(20e3) });
   const body = await res.json().catch(() => ({}));
@@ -8890,30 +8922,32 @@ async function discordContacts() {
   });
 }
 
-/** One of Karchi's Discord channels as a live room: the archive asks the bridge (once) and waits for the room.
- *  `archived`: the old chat whose history then belongs to it. */
+/** One of Karchi's Discord channels as a live room: the bridge opens it like its create-portal command
+ *  (POST /v1/channels/<id>/open, server/bridges/discord-weft.patch). `archived`: the old chat whose history then
+ *  belongs to it. */
 async function openDiscord(x, archived = null) {
   if (dc.opening.has(x.channel)) return;
   dc.opening.add(x.channel);
   const from = S.selected; // the chat open now: if Karchi stays there, the opened one replaces it
   render();
   try {
-    const res = await fetch('/_archive/discord/open', {
-      method: 'POST', headers: { Authorization: `Bearer ${S.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ channel: x.channel }),
-      signal: AbortSignal.timeout(40e3),
-    }).catch((err) => { throw new Error(err.name === 'TimeoutError' ? T('archív neodpovedá') : err.message); });
-    const body = await res.json().catch(() => ({}));
-    if (res.status === 202) return alert(body.state === 'busy' ? T('Práve sa otvára iný chat z Discordu. Skús to o chvíľu.') : T('Chat sa ešte otvára. Skús to o minútu znova.'));
-    if (res.status === 409 && body.error === 'not_joined') {
+    const legacy = LINKS.find((a) => a.id === 'discord').legacy;
+    const res = await call('POST', `/channels/${q(x.channel)}/open`, {}, legacy, AbortSignal.timeout(60e3)).catch((err) => {
+      throw new Error(err.name === 'TimeoutError' ? T('most neodpovedá')
+        : err.status === 404 && err.errcode === 'M_NOT_FOUND' ? T('tento chat nie je medzi tvojimi chatmi na Discorde')
+        : err.status === 404 || err.status === 405 ? T('most je starší a chat otvoriť nevie')
+        : err.status === 409 ? T('skupinu Weft neotvorí, kým je v moste prihlásený aj iný účet Discordu')
+        : err.status === 503 ? T('most sa ešte pripája na Discord, skús to o chvíľu')
+        : err.status === 502 ? T('Discord kanál neposlal')
+        : err.message);
+    });
+    if (res.state === 'invited') await call('POST', `/rooms/${q(res.room_id)}/join`, {});
+    else if (res.state !== 'joined') {
       if (confirm(T('Tento chat most už má, ale ty v ňom nie si. Otvoriť ho v appke Discord?'))) window.open(discordChannel(x.channel), '_blank', 'noopener');
       return;
     }
-    if (res.status === 404) throw new Error(T('tento chat nie je medzi tvojimi chatmi na Discorde'));
-    if (res.status === 502) throw new Error(T('most alebo server neodpovedá'));
-    if (res.status === 409 && body.error === 'the bridge has other accounts') throw new Error(T('skupinu Weft neotvorí, kým je v moste prihlásený aj iný účet Discordu'));
-    if (!res.ok || !body.room) throw new Error(res.status === 409 ? T('most nemá správcovskú miestnosť') : body.error || T`archív odpovedal ${res.status}`);
-    x.room = body.room;
-    const room = archived ? await linkArchived(archived, body.room) : body.room;
+    x.room = res.room_id;
+    const room = archived ? await linkArchived(archived, res.room_id) : res.room_id;
     if (S.selected === from && S.selected !== room) { select(room); S.focusComposer = true; }
     loadDiscord(true);
   } catch (err) {

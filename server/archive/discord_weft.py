@@ -1,29 +1,15 @@
-"""Discord in Weft without touching the bridge (DISCORD-PLAN.md, phase 0).
-
-The legacy mautrix-discord bridge opens only the 5 newest DMs at its start and every other one when a new message
-comes. The archive reads the bridge's own database (read-only) and lets Weft:
+"""Discord in Weft from the bridge's own database (DISCORD-PLAN.md, phase 0), read-only:
 
     GET  /_archive/discord/dms                  Karchi's DM and group channels: channel, person, name, room
-    POST /_archive/discord/open {channel}       one of them as a live room, through the bridge's own command
     GET  /_archive/discord/channels             each bridged room's channel type (5: announcements) and server
     GET  /_archive/discord/people?guild=&q=     people who wrote on a server, from the collected history (for "@")
 
-Nothing here talks to Discord. `open` sends `!discord create-portal <channel>` to Karchi's management room with
-the bridge; the bridge then reads the channel and backfills its last messages (initial backfill limit) with their
-avatars and files, as for any new message.
-One command at a time, and none again for a channel that is still opening (2 minutes)."""
-import json, os, re, sqlite3, threading, time, urllib.error, urllib.parse
+Nothing here talks to Discord. Opening one of the DMs as a live room is the bridge's own
+POST /v1/channels/<id>/open (server/bridges/discord-weft.patch); link_allowed guards the old history it gets."""
+import os, sqlite3
 
 BRIDGE_DB = os.environ.get("DISCORD_BRIDGE_DB", os.path.expanduser("~/matrix-spike/discord/bridge.db"))
-BOT_LOCALPART = os.environ.get("DISCORD_BOT", "discordbot")
-OPEN_WAIT = float(os.environ.get("DISCORD_OPEN_WAIT", "20"))  # seconds to wait for the room and Karchi in it
-PENDING_FOR = 120  # a channel still opening gets no second command this long
 DM, GROUP, ANNOUNCEMENTS = 1, 3, 5
-q = lambda s: urllib.parse.quote(s, safe="")
-
-lock = threading.Lock()  # one command at a time, also from two windows or devices
-pending = {}  # channel -> when its command went out
-
 
 def bridge_db():
     return sqlite3.connect(f"file:{BRIDGE_DB}?mode=ro", uri=True, timeout=10)
@@ -130,81 +116,3 @@ def fold(s):
     import unicodedata
     return "".join(ch for ch in unicodedata.normalize("NFD", s or "").lower() if unicodedata.category(ch) != "Mn")
 
-
-def open_channel(b_open, call, owner, token, channel, sleep=time.sleep, now=time.monotonic, cmd_token=None):
-    """POST /_archive/discord/open: (http status, body). The room once Karchi is in it; `pending` when the bridge
-    has not finished within OPEN_WAIT seconds (Weft asks again later; no second command for 2 minutes).
-    `cmd_token`: the one login that sends commands (the archive's own), so a resent transaction id is the same
-    transaction whichever window or device asks; `token` (Karchi's, from the request) reads and joins."""
-    cmd_token = cmd_token or token
-
-    def look():
-        b = b_open()
-        try:
-            _, mgmt = me(b, owner)
-            row = next((x for x in dms(b, owner) if x["channel"] == channel), None)
-            accounts = b.execute("SELECT count(*) FROM user WHERE dcid IS NOT NULL AND dcid != ''").fetchone()[0]
-            portals = {x for x, in b.execute("SELECT mxid FROM portal WHERE mxid IS NOT NULL AND mxid != ''")}
-        finally: b.close()
-        if not row: return None, (404, {"error": "not one of Karchi's Discord chats"})
-        # The bridge invites every member of a group who is logged in to it too: only Karchi may be. The bridge's
-        # permissions admit Karchi's Matrix account alone (one Discord login), so no account can appear between
-        # this check and the bridge running the command; this only guards a config that changed.
-        if row["type"] == "group" and accounts != 1: return None, (409, {"error": "the bridge has other accounts"})
-        return (mgmt, row["room"], portals), None
-
-    joined = lambda: set(call("GET", "/_matrix/client/v3/joined_rooms", token=token, timeout=15).get("joined_rooms", []))
-    inside = lambda room: room in joined() or try_join(call, token, room)
-    opening = lambda: channel in pending and now() - pending[channel]["at"] < PENDING_FOR
-    got, refused = look()
-    if refused: return refused
-    if got[1]:
-        if inside(got[1]): return 200, {"room": got[1]}
-        # The bridge writes the room before it invites: a channel still opening waits below.
-        # Otherwise it does not invite again for a chat it has already ("That channel is already bridged").
-        if not opening(): return 409, {"error": "not_joined", "room": got[1]}
-    # Another chat opening holds the lock for at most OPEN_WAIT: wait a little, then this one is `busy` (not sent).
-    if not lock.acquire(timeout=5): return 202, {"state": "pending" if opening() else "busy"}
-    try:
-        # Everything again under the lock: another request may have opened it, or the bridge changed meanwhile.
-        got, refused = look()
-        if refused: return refused
-        mgmt, room, portals = got
-        if room and inside(room):
-            pending.pop(channel, None)
-            return 200, {"room": room}
-        if room and not opening(): return 409, {"error": "not_joined", "room": room}
-        entry = pending.get(channel) if opening() else None
-        if not entry or not entry["sent"]:
-            # Checked before every send, also a resend: the command goes only to Karchi's room with the bot.
-            if not mgmt or mgmt in portals: return 409, {"error": "the bridge has no management room"}
-            bot = f"@{BOT_LOCALPART}:{owner.split(':', 1)[1]}"
-            try: members = call("GET", f"/_matrix/client/v3/rooms/{q(mgmt)}/joined_members", token=token, timeout=15).get("joined", {})
-            except urllib.error.HTTPError: members = {}
-            if set(members) != {owner, bot}: return 409, {"error": "the bridge has no management room"}
-            if not entry or entry["mgmt"] != mgmt:
-                entry = pending[channel] = {"at": now(), "txn": f"weft-open-{channel}-{int(time.time() * 1000)}",
-                                            "sent": False, "mgmt": mgmt}
-            # The same transaction id when a first try got no answer: the homeserver keeps one command.
-            call("PUT", f"/_matrix/client/v3/rooms/{q(mgmt)}/send/m.room.message/{q(entry['txn'])}",
-                 {"msgtype": "m.text", "body": f"!discord create-portal {channel}"}, token=cmd_token, timeout=15)
-            entry["sent"] = True
-        deadline = now() + OPEN_WAIT
-        while True:
-            sleep(1)
-            got, refused = look()
-            if refused: return refused
-            if got[1] and inside(got[1]):
-                pending.pop(channel, None)
-                return 200, {"room": got[1]}
-            if now() >= deadline: return 202, {"state": "pending"}
-    finally: lock.release()
-
-
-def try_join(call, token, room):
-    """Takes an invitation the bridge left (without one the homeserver refuses, and nothing happens)."""
-    try:
-        call("POST", f"/_matrix/client/v3/rooms/{q(room)}/join", {}, token=token, timeout=15)
-        return True
-    except urllib.error.HTTPError:
-        return False
