@@ -320,6 +320,14 @@ describe('phone', () => {
     expect(result).toEqual({ taken: ['1', '2'], posted: 2 });
   });
 
+  test('a receipt the homeserver asks to wait with (429) is tried again', async () => {
+    const { hs, host } = setup();
+    Object.assign(hs.fail, { receipts: 1, status: 429 });
+    const old = sms('1', '0900123456', 'Včera', NOW - 2 * 86_400_000);
+    await expect(host.phone('p1', [old])).rejects.toThrow();
+    expect((await host.phone('p1', [old])).posted).toBe(1);
+  });
+
   test('an SMS Karchi sent is his own message in the chat, through his own account', async () => {
     const { hs, host } = setup();
     await host.phone('p1', [sms('1', '0900123456', 'Ahoj', NOW - 120_000, 'Mama'), { ...sms('2', '0900123456', 'Čau', NOW - 60_000, 'Mama'), out: true }]);

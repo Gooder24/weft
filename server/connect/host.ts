@@ -166,7 +166,14 @@ export class Host {
     await this.join(room, sender);
     const txn = `cx-${new Bun.CryptoHasher('sha256').update(key).digest('hex').slice(0, 32)}`;
     const content = { msgtype: 'm.text', body: item.text, [MARK]: { connector: c.id, ...origin } };
-    const sent = await this.opts.matrix.call('PUT', `/rooms/${q(room)}/send/m.room.message/${txn}`, content, { user: sender, query: { ts } });
+    const sent = await this.opts.matrix.call('PUT', `/rooms/${q(room)}/send/m.room.message/${txn}`, content, { user: sender, query: { ts } })
+      .catch((err) => {
+        // Karchi left the chat and his own SMS cannot go in as him: skip it rather than hold up everything after it.
+        if (!(item.mine && err instanceof MatrixError && err.status === 403)) throw err;
+        console.log(`${key} not posted in ${room}: ${err.message}`);
+        return null;
+      });
+    if (!sent) return false;
     const event = String(sent.event_id);
     // Old history comes read. Only then is it posted: a receipt that failed for now (5xx, network) sends again with
     // the same transaction id, which the homeserver answers with the same event, and the receipt is tried again. One
@@ -174,7 +181,7 @@ export class Host {
     if (!item.mine && this.now() - ts > SEEN) {
       this.db.query('INSERT INTO unseen VALUES (?, ?) ON CONFLICT (room) DO UPDATE SET ts = MAX(ts, excluded.ts)').run(room, ts);
       await this.opts.matrix.call('POST', `/rooms/${q(room)}/receipt/m.read/${q(event)}`, {}, { user: this.opts.matrix.admin }).catch((err) => {
-        if (!(err instanceof MatrixError && err.status >= 400 && err.status < 500)) throw err;
+        if (!(err instanceof MatrixError && err.status >= 400 && err.status < 500 && err.status !== 408 && err.status !== 429)) throw err;
         console.log(`receipt in ${room} refused: ${err.message}`);
       });
     }
