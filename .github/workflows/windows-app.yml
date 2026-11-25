@@ -40,19 +40,25 @@ jobs:
 
       - run: npm run dist:win
 
-      - name: The app starts on Windows (hidden self-test against example.com)
+      - name: The app starts on Windows (hidden self-test of a login window against a page on this machine)
         shell: pwsh
         timeout-minutes: 6
         run: |
-          # Two tries of two minutes: a slow network to example.com must not hang the build.
+          # A page on 127.0.0.1, so the check needs no outside site; two tries of two minutes, never a hung build.
+          'ok' | Set-Content index.html
+          $server = Start-Process python -ArgumentList '-m', 'http.server', '8765', '--bind', '127.0.0.1' -PassThru -WindowStyle Hidden
           $env:SPRAVY_SELFTEST = '1'
-          foreach ($try in 1, 2) {
-            $p = Start-Process dist\win-unpacked\Weft.exe -PassThru -RedirectStandardOutput "selftest-$try.txt"
-            if (-not $p.WaitForExit(120000)) { Stop-Process -Id $p.Id -Force; "try ${try}: no answer in 2 minutes" }
-            Get-Content "selftest-$try.txt"
-            if (Select-String -Quiet 'selftest ok' "selftest-$try.txt") { exit 0 }
-          }
-          throw 'self-test failed'
+          $env:SPRAVY_SELFTEST_SPEC = @{ url = 'http://127.0.0.1:8765/'; hidden = $true; wait_for_url_pattern = '^http://127\.0\.0\.1:8765/'
+            fields = @(@{ id = 'ua'; required = $true; sources = @(@{ type = 'request_header'; name = 'User-Agent'; request_url_regex = '^http://127\.0\.0\.1:8765/' }) }) } | ConvertTo-Json -Depth 6 -Compress
+          try {
+            foreach ($try in 1, 2) {
+              $p = Start-Process dist\win-unpacked\Weft.exe -PassThru -RedirectStandardOutput "selftest-$try.txt"
+              if (-not $p.WaitForExit(120000)) { Stop-Process -Id $p.Id -Force; "try ${try}: no answer in 2 minutes" }
+              Get-Content "selftest-$try.txt"
+              if (Select-String -Quiet 'selftest ok' "selftest-$try.txt") { exit 0 }
+            }
+            throw 'self-test failed'
+          } finally { Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue }
 
       - uses: actions/upload-artifact@v4
         with:
