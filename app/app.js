@@ -266,7 +266,8 @@ async function boot() {
     if (token && user) saveSession(token, user);
   }
   // Not signed in: the welcome with the language first, unless this device already chose one and has no new server to set up.
-  if (!S.token) return show(localStorage.getItem('ep_lang') && !localStorage.getItem(SETUP_KEY) ? 'login' : 'welcome');
+  // A device that chose „Mám už účet“ before opens on the login form; a language picked on the welcome screen keeps it.
+  if (!S.token) return show(localStorage.getItem('ep_lang') && !localStorage.getItem(SETUP_KEY) && !sessionStorage.getItem('ep_welcome') ? 'login' : 'welcome');
   const run = ++bootRun; // "Prihlásiť sa znova" and a later boot() end this one
   // The kept profile pictures come with the copy, so its first frame has them (both ways it is drawn, below).
   const kept = Promise.all([readSnapshot(), avatarsReady()]).then(([snap]) => snap);
@@ -15174,7 +15175,7 @@ function welcomeView() {
     h('p', {}, T('Všetky tvoje správy v jednej schránke: Messenger, Instagram, WhatsApp, Discord, EduPage, Gmail, Outlook a Teams.')),
     h('div', { class: 'seg', role: 'radiogroup', 'aria-label': T('Jazyk') }, LANGS.map(([id, label]) =>
       h('button', { type: 'button', role: 'radio', lang: id, 'aria-checked': String(LANG === id), class: LANG === id ? 'on' : '',
-        onclick: () => { setLang(id); if (id !== LANG) location.reload(); else render(); } }, label))),
+        onclick: () => { sessionStorage.setItem('ep_welcome', '1'); setLang(id); if (id !== LANG) location.reload(); else render(); } }, label))),
     // Without the installer's code a new account needs an invitation code (registerView asks for it).
     setup ? h('button', { class: 'primary', type: 'button', onclick: () => show('register') }, T('Vytvoriť účet')) : null,
     h('button', { class: setup ? 'ghost' : 'primary', type: 'button', onclick: () => { setLang(LANG); show('login'); } }, T('Mám už účet')),
@@ -15249,7 +15250,9 @@ function loginView() {
   h('label', {}, T('Heslo'), pass),
   // Keep the live region mounted before its text changes, including on repeated refusals.
   h('div', { class: 'err', role: 'alert', 'aria-atomic': 'true' }, S.error),
-  h('button', { class: 'primary', type: 'submit', disabled: S.busy }, S.busy ? T('Prihlasujem…') : T('Prihlásiť')));
+  h('button', { class: 'primary', type: 'submit', disabled: S.busy }, S.busy ? T('Prihlasujem…') : T('Prihlásiť')),
+  // Back to the welcome screen: the language and „Mám pozvánku“ stay reachable from here.
+  h('button', { class: 'ghost', type: 'button', onclick: () => { S.error = ''; sessionStorage.setItem('ep_welcome', '1'); show('welcome'); } }, T('Späť')));
 }
 
 function connectView() {

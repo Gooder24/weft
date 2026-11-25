@@ -8,6 +8,7 @@ const KNOWN = {};
 const USER = 'input[name=user]';
 const PASSWORD = 'input[name=password]';
 const SUBMIT = 'form.form button[type=submit]';
+const BACK = 'form.form button[type=button]';
 
 const focusedName = (page) => page.evaluate(() => {
   const el = document.activeElement;
@@ -36,31 +37,31 @@ async function main() {
     await app.page.waitForSelector(PASSWORD);
     const page = app.page;
     const unfocused = {};
-    for (const sel of [USER, PASSWORD, SUBMIT]) unfocused[sel] = await looks(page, sel);
+    for (const sel of [USER, PASSWORD, SUBMIT, BACK]) unfocused[sel] = await looks(page, sel);
     check('start-unfocused', (await focusedName(page)) === 'body', `focus starts on ${await focusedName(page)}`);
 
     const order = [];
     const indicators = [];
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 4; i++) {
       await page.keyboard.press('Tab');
       order.push(await focusedName(page));
-      const sel = [USER, PASSWORD, SUBMIT][i];
+      const sel = [USER, PASSWORD, SUBMIT, BACK][i];
       indicators.push(hasFocusIndicator(unfocused[sel], await looks(page, sel)));
     }
-    check('tab-order', order.join(' > ') === 'user > password > submit', `Tab order: ${order.join(' > ')}`);
+    check('tab-order', order.join(' > ') === 'user > password > submit > button', `Tab order: ${order.join(' > ')}`);
     check('focus-indicator', indicators.every(Boolean), `visible focus indicator on each control: ${indicators.join(', ')}`);
 
     await page.keyboard.press('Tab');
     check('no-keyboard-trap', !(await insideForm(page)), `after the last control Tab goes to: ${await focusedName(page)}`);
 
     const reverse = [];
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 4; i++) {
       await page.keyboard.down('Shift');
       await page.keyboard.press('Tab');
       await page.keyboard.up('Shift');
       reverse.push(await focusedName(page));
     }
-    check('reverse-order', reverse.join(' > ') === 'submit > password > user', `Shift+Tab order: ${reverse.join(' > ')}`);
+    check('reverse-order', reverse.join(' > ') === 'button > submit > password > user', `Shift+Tab order: ${reverse.join(' > ')}`);
 
     await page.keyboard.press('Tab');
     check('refocus-password', (await focusedName(page)) === 'password', `focus is on: ${await focusedName(page)}`);
