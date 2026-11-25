@@ -2564,6 +2564,9 @@ async function sendChat(r, given = null) {
     S.mention = null;
   }
   render();
+  // The first part carries the reply. On Discord every part does: the bridge refuses a reply it cannot place only
+  // after the server took it, and the text under a refused file must not go out on its own.
+  const carries = (p) => !!reply && (p === parts[0] || r.app === 'discord');
   for (const [i, part] of parts.entries()) {
     try {
       const content = part.file ? await part.content : { ...said };
@@ -2571,7 +2574,7 @@ async function sendChat(r, given = null) {
         // Checked again after the uploads: the message may have been deleted (or found in a thread) meanwhile.
         content['m.relates_to'] = reply;
         await checkReply(r, content);
-      }
+      } else if (carries(part)) content['m.relates_to'] = reply;
       // The text is written down before it goes: a window closed while asus does not answer still sends it later.
       if (!part.file) saveOutbox([...outbox(), { txn: part.txn, room: r.id, at: Date.now(), content }]);
       const res = await call('PUT', `/rooms/${q(r.id)}/send/m.room.message/${part.txn}`, content, undefined, part.file ? undefined : AbortSignal.timeout(30000));
@@ -2605,13 +2608,13 @@ async function sendChat(r, given = null) {
         if (p === wait) continue;
         if (p.text) saveOutbox(outbox().filter((x) => x.txn !== p.txn));
         const shown = r.pending.get(p.txn)?.content;
-        const rel = reply && p === parts[0] ? { 'm.relates_to': reply } : {};
+        const rel = carries(p) ? { 'm.relates_to': reply } : {};
         failLocal(r, p.txn, err, () => sendAgain(r, 'm.room.message', shown,
           async () => ({ ...(p.file ? await fileContent(p.file) : said), ...rel })));
       }
       const shown = wait && r.pending.get(wait.txn);
       if (wait && outbox().some((x) => x.txn === wait.txn) && shown) { shown.waiting = true; r.version++; }
-      else if (wait) queueOut(r, wait.txn, { ...said, ...(reply && i === 0 && rest[0] === wait ? { 'm.relates_to': reply } : {}) });
+      else if (wait) queueOut(r, wait.txn, { ...said, ...(carries(wait) ? { 'm.relates_to': reply } : {}) });
       if (wait) goOffline();
       render();
       return;
