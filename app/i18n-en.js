@@ -290,6 +290,7 @@ export default {
   "Nie": "No",
   "Možnosti": "Options",
   "Načítavam staršie správy…": "Loading older messages…",
+  "Načítať staršie správy": "Load older messages",
   "Na najnovšie správy (Ctrl+↓)": "To the newest messages (Ctrl+↓)",
   "Na najnovšie správy": "To the newest messages",
   "Uložená história · iba na čítanie": "Saved history · read only",

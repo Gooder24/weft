@@ -2158,8 +2158,13 @@ function messageSummary(m, ev) {
   return String(c.body || '').replace(/^(> .*\n)+\n/, '').replace(/\s+/g, ' ').trim();
 }
 
-/** Pages back through the room on Matrix, then through the archive on asus once the room's start is reached. */
-async function loadRoomHistory(r) {
+/** Pages back through the room on Matrix, then through the archive on asus once the room's start is reached. While a
+ *  page is coming, a second call waits for that one. */
+function loadRoomHistory(r) {
+  if (!r.loading) r.historyPage = historyPage(r);
+  return r.historyPage;
+}
+async function historyPage(r) {
   if (r.loading || r.historyDone || S.offline || Date.now() < (r.archiveRetry || 0)) return;
   r.loading = true;
   const epoch = r.epoch; // a limited sync empties the room meanwhile: an answer from before it is dropped
@@ -7699,32 +7704,111 @@ function blocksOf(msgs) {
 const startsBlock = (msgs, i) => i === 0 || dayOf(msgs[i].origin_server_ts) !== dayOf(msgs[i - 1].origin_server_ts)
   || msgs[i].origin_server_ts - msgs[i - 1].origin_server_ts >= BLOCK_GAP;
 
-/** The rail: one tick per block of the loaded chat, a day's longer. Resting on one shows its day, time and first
- *  message; a click brings that message under the header (no pick: the keys stay for typing). The tick of the block at the top of the view is lit (railMark). */
-let railMemo = { msgs: null, n: 0, el: null };
+/** The rail (T3 Code's outline): one tick per block of the loaded chat, evenly spaced, a day's longer. The pointer
+ *  anywhere on it rests on the nearest tick, which grows with its neighbours and shows its day, time and first
+ *  message; a click (or a finger let go, which felt each tick pass) brings that message under the header. No pick:
+ *  the keys stay for typing. The ticks of the blocks in view are lit (railMark), the wheel over it scrolls the chat,
+ *  and the arrow on top loads older history while the server has more. */
+let railMemo = { msgs: null, n: 0, more: false, busy: false, el: null };
+let railAt = -1; // the tick the pointer or finger rests on
 function chatRail(t) {
   const list = blocksOf(t.msgs);
-  if (list.length < 2) return null;
-  if (railMemo.msgs === t.msgs && railMemo.n === t.msgs.length && railMemo.el?.isConnected) return ref(railMemo.el);
-  const el = h('div', { class: 'crail', 'aria-hidden': 'true' }, h('div', { class: 'rlist' }, list.map(([i, day]) => {
-    const ev = t.msgs[i];
-    const er = t.roomOf(ev);
-    const who = ev.sender === S.userId ? T('Ty') : firstName(memberName(er, ev.sender));
-    return h('button', { class: `rtick${day ? ' day' : ''}`, type: 'button', tabindex: -1, 'data-key': ev.event_id, onmouseenter: placeRailCard, onclick: () => railJump(ev.event_id) },
-      h('span', { class: 'rcard' }, h('b', {}, `${dayLabel(ev.origin_server_ts)} ${timeLabel(ev.origin_server_ts)}`),
-        h('span', {}, `${who}: ${messageSummary(roomModel(er), ev).slice(0, 160)}`)));
-  })));
-  railMemo = { msgs: t.msgs, n: t.msgs.length, el };
+  const more = t.parts.some((x) => !x.historyDone);
+  const busy = t.parts.some((x) => x.loading);
+  if (list.length < 2 && !more) return null;
+  const m = railMemo;
+  if (m.msgs === t.msgs && m.n === t.msgs.length && m.more === more && m.busy === busy && m.el?.isConnected) return ref(m.el);
+  railAt = -1;
+  const step = list.length > 1 ? 100 / (list.length - 1) : 0;
+  const el = h('div', { class: 'crail', 'aria-hidden': 'true', onwheel: railWheel },
+    more ? h('button', { class: `rmore${busy ? ' busy' : ''}`, type: 'button', tabindex: -1, onclick: railOlder, onmouseenter: railMoreCard, onmouseleave: railLeave }, icon('arrow-up')) : null,
+    list.length ? h('div', { class: 'rstrip', style: { height: `${(list.length - 1) * 8 + 12}px` }, onpointerdown: railDown, onpointermove: railMove, onpointerup: railUp, onpointercancel: railLeave, onpointerleave: railLeave },
+      list.map(([i, day], k) => h('span', { class: `rtick${day ? ' day' : ''}`, 'data-key': t.msgs[i].event_id, style: { top: `calc(6px + (100% - 12px) * ${(k * step / 100).toFixed(5)})` } }))) : null,
+    h('div', { class: 'rcard' }));
+  railMemo = { msgs: t.msgs, n: t.msgs.length, more, busy, el };
   el._live = (live) => { if (railMemo.el === el) railMemo.el = live; };
   return el;
 }
-/** The card of the tick under the mouse goes to its left, beside it, inside the window. */
-function placeRailCard(e) {
-  const tick = e.currentTarget;
-  const card = tick.querySelector('.rcard');
-  const at = tick.getBoundingClientRect();
-  card.style.left = `${Math.max(8, at.left - card.offsetWidth - 8)}px`;
-  card.style.top = `${Math.max(8, Math.min(at.top + at.height / 2 - card.offsetHeight / 2, innerHeight - card.offsetHeight - 8))}px`;
+/** The tick nearest to the pointer: the strip's height spread evenly over its ticks. */
+function railIndex(strip, y) {
+  const n = strip.children.length;
+  const a = strip.getBoundingClientRect();
+  const span = a.height - 12;
+  if (n < 2 || span <= 0) return 0;
+  return Math.max(0, Math.min(n - 1, Math.round(((y - a.top - 6) / span) * (n - 1))));
+}
+function railRest(strip, k, touch) {
+  if (k === railAt) return;
+  const ticks = strip.children;
+  for (let d = -2; d <= 2; d++) ticks[railAt + d]?.removeAttribute('data-near');
+  railAt = k;
+  for (let d = -2; d <= 2; d++) ticks[k + d]?.setAttribute('data-near', Math.abs(d));
+  const tick = ticks[k];
+  if (touch) navigator.vibrate?.(tick.classList.contains('day') ? 12 : 5);
+  const r = S.rooms.get(S.selected);
+  const t = r && timelineOf(r);
+  const ev = t?.msgs.find((x) => x.event_id === tick.dataset.key);
+  if (!ev) return;
+  const er = t.roomOf(ev);
+  const who = ev.sender === S.userId ? T('Ty') : firstName(memberName(er, ev.sender));
+  railCard(strip.parentNode, tick, [h('b', {}, `${dayLabel(ev.origin_server_ts)} ${timeLabel(ev.origin_server_ts)}`),
+    h('span', {}, `${who}: ${messageSummary(roomModel(er), ev).slice(0, 160)}`)]);
+}
+/** The rail's one card, to the left of `at`, inside the window. */
+function railCard(rail, at, content) {
+  const card = rail.querySelector(':scope > .rcard');
+  card.replaceChildren(...content);
+  card.classList.add('on');
+  const a = at.getBoundingClientRect();
+  card.style.left = `${Math.max(8, rail.getBoundingClientRect().left - card.offsetWidth - 6)}px`;
+  card.style.top = `${Math.max(8, Math.min(a.top + a.height / 2 - card.offsetHeight / 2, innerHeight - card.offsetHeight - 8))}px`;
+}
+function railLeave(e) {
+  if (e.type === 'pointerleave' && e.currentTarget.hasPointerCapture?.(e.pointerId)) return; // a drag goes on outside it
+  const rail = e.currentTarget.closest('.crail');
+  rail.querySelector(':scope > .rcard')?.classList.remove('on');
+  for (const tick of rail.querySelectorAll('.rtick[data-near]')) tick.removeAttribute('data-near');
+  railAt = -1;
+}
+function railDown(e) {
+  if (e.button !== 0) return;
+  e.preventDefault(); // no text selection, no scrolling under a finger
+  e.currentTarget.setPointerCapture(e.pointerId);
+  railRest(e.currentTarget, railIndex(e.currentTarget, e.clientY), e.pointerType !== 'mouse');
+}
+function railMove(e) {
+  railRest(e.currentTarget, railIndex(e.currentTarget, e.clientY), e.pointerType !== 'mouse' && e.buttons > 0);
+}
+function railUp(e) {
+  const strip = e.currentTarget;
+  if (!strip.hasPointerCapture(e.pointerId)) return;
+  strip.releasePointerCapture(e.pointerId);
+  const tick = strip.children[railIndex(strip, e.clientY)];
+  const over = e.pointerType === 'mouse' && document.elementFromPoint(e.clientX, e.clientY)?.closest('.rstrip') === strip;
+  if (!over) railLeave({ type: 'pointerup', currentTarget: strip });
+  if (tick) railJump(tick.dataset.key);
+}
+function railWheel(e) {
+  const box = e.currentTarget.parentNode.querySelector(':scope > [data-scroll=chat]');
+  if (box) box.scrollTop += e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? box.clientHeight : 1);
+}
+function railMoreCard(e) {
+  railCard(e.currentTarget.parentNode, e.currentTarget, [h('span', {}, e.currentTarget.classList.contains('busy') ? T('Načítavam staršie správy…') : T('Načítať staršie správy'))]);
+}
+/** The rail's arrow: older history from the server, a page at a time until a new tick comes (or nothing is left).
+ *  The chat stays where it is. */
+async function railOlder() {
+  const r = S.rooms.get(S.selected);
+  if (!r) return;
+  const chat = selKey();
+  const count = () => blocksOf(timelineOf(r).msgs).length;
+  const before = count();
+  for (let k = 0; k < 8 && S.selected && selKey() === chat; k++) {
+    const next = timelineOf(r).parts.filter((x) => !x.historyDone).sort((a, b) => oldestTs(b) - oldestTs(a))[0];
+    if (!next || S.offline || Date.now() < (next.archiveRetry || 0)) break; // all there, or the archive asks to wait
+    await loadRoomHistory(next); // a page already coming is waited for
+    if (count() > before) break;
+  }
 }
 function railJump(id) {
   const r = S.rooms.get(S.selected);
@@ -7744,7 +7828,8 @@ function showMsg(t, i) {
   if (from < 0) from = Math.max(0, t.msgs.length - CHAT_FIRST);
   if (i < from) t.holder.drawFrom = t.msgs[Math.max(0, i - 10)].event_id;
 }
-/** Lights the tick of the block at the top of the open chat's view and keeps it in sight on the rail. */
+/** Lights the ticks of the blocks in the open chat's view: from the one its top is in to the last one starting above
+ *  its bottom. */
 let railFrame = 0;
 function railMark(box) {
   if (railFrame) return;
@@ -7758,7 +7843,13 @@ function railMark(box) {
     rail.style.top = `${top - d.top + 12}px`;
     rail.style.bottom = `${d.bottom - b.bottom + 12}px`;
     let cur = null;
-    for (const sep of box.querySelectorAll('.cday[data-block]')) { if (sep.getBoundingClientRect().top <= top) cur = sep.dataset.block; else break; }
+    const seen = new Set();
+    for (const sep of box.querySelectorAll('.cday[data-block]')) {
+      const y = sep.getBoundingClientRect().top;
+      if (y <= top) cur = sep.dataset.block;
+      else if (y < b.bottom) seen.add(sep.dataset.block);
+      else break;
+    }
     // No separator above the view: the block of the first message drawn.
     if (!cur) {
       const r = S.rooms.get(S.selected);
@@ -7767,13 +7858,8 @@ function railMark(box) {
       const i = t ? t.msgs.findIndex((ev) => ev.event_id === first) : -1;
       if (i >= 0) cur = t.msgs[blocksOf(t.msgs).findLast(([b]) => b <= i)?.[0] ?? 0]?.event_id;
     }
-    let lit = null;
-    for (const tick of rail.querySelectorAll('.rtick')) { const on = tick.dataset.key === cur; tick.classList.toggle('on', on); if (on) lit = tick; }
-    if (lit) {
-      const a = lit.getBoundingClientRect(), b = rail.getBoundingClientRect();
-      if (a.top < b.top) rail.scrollTop -= b.top - a.top + 8;
-      else if (a.bottom > b.bottom) rail.scrollTop += a.bottom - b.bottom + 8;
-    }
+    if (cur) seen.add(cur);
+    for (const tick of rail.querySelectorAll('.rtick')) tick.classList.toggle('on', seen.has(tick.dataset.key));
   });
 }
 
