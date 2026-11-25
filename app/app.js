@@ -3430,6 +3430,7 @@ async function bcGo(o, n) {
   if (o.busy || n === o.step) return;
   if (o.sent) return; // a sent broadcast is only what became of it
   if (n === 4 || (n >= 2 && !bcReach(o).length)) return; // step 4 comes by confirming (bcSend)
+  if (n === 3 && !bcHasMessage(o)) { document.querySelector('.cmd.broadcast .field textarea')?.focus(); return; }
   if (n === 3) {
     if (o.files.some((f) => f instanceof File)) {
       o.busy = T('Nahrávam prílohy…');
@@ -3462,9 +3463,11 @@ function bcRefusal(o, later = laterItems()) {
   const over = Object.entries(dayCounts({ id: o.id, to: o.to }, later)).filter(([, n]) => n > BC_DAY);
   return over.map(([net, n]) => T`${appOf(net)?.name || net}: dnes by to bolo ${n} ľudí, najviac je ${BC_DAY}. Vyhoď ${n - BC_DAY} (Delete) alebo zvyšok rozošli zajtra.`).join(' ');
 }
+/** Something to send: text beyond the greeting's slots, or a file. */
+const bcHasMessage = (o) => !!o.tpl.replace(/\{(oslovenie|meno)\}/g, '').trim() || o.files.length > 0;
 /** Confirming: the messages go to send-later first, then the broadcast is noted as sent. */
 async function bcSend(o) {
-  if (o.busy || o.sent || !o.to.length || bcRefusal(o)) return;
+  if (o.busy || o.sent || !o.to.length || !bcHasMessage(o) || bcRefusal(o)) return;
   o.busy = T('Odovzdávam správy…');
   render();
   try {
