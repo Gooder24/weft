@@ -13118,15 +13118,15 @@ function editPerson(p, change) {
  *  stays as the other way in. Outlook and Teams sign in the same way on Microsoft's page (server/microsoft). */
 const LINKS = [
   // The Meta bridge searches people but keeps no contact list: GET /contacts answers 404.
-  { id: 'messenger', name: 'Messenger', icon: '/messenger.ico', base: '/_bridges/messenger/_matrix/provision/v3', flow: 'facebook', noContactList: true },
+  { id: 'messenger', name: 'Messenger', icon: '/messenger.ico', base: '/_bridges/messenger/_matrix/provision/v3', flow: 'facebook', noContactList: true, multi: true },
   // guardsRelogin: its bridge refuses another account's cookies when a login is signed in again (our patch,
   // server/bridges/instagram-relogin.patch), so that login's id may go with the new sign-in.
-  { id: 'instagram', name: 'Instagram', icon: '/instagram.png', base: '/_bridges/instagram/_matrix/provision/v3', flow: 'instagram', noContactList: true, guardsRelogin: true },
+  { id: 'instagram', name: 'Instagram', icon: '/instagram.png', base: '/_bridges/instagram/_matrix/provision/v3', flow: 'instagram', noContactList: true, guardsRelogin: true, multi: true },
   // WhatsApp pairs as a linked device: Karchi scans a QR code with his phone. Pairing by phone number
   // and code stays as a fallback; on 2026-11-05 WhatsApp accepted the code but never finished pairing.
   // No login window is needed, so it works outside the desktop app too.
   {
-    id: 'whatsapp', name: 'WhatsApp', icon: '/whatsapp.webp', base: '/_bridges/whatsapp/_matrix/provision/v3', flow: 'qr', anywhere: true,
+    id: 'whatsapp', name: 'WhatsApp', icon: '/whatsapp.webp', base: '/_bridges/whatsapp/_matrix/provision/v3', flow: 'qr', anywhere: true, multi: true,
     otherFlow: { qr: ['phone', T('Pripojiť kódom cez telefónne číslo')], phone: ['qr', T('Pripojiť QR kódom')] },
     // Menu names as in WhatsApp's English help; the app shows them in its own language.
     hints: {
@@ -13266,6 +13266,8 @@ function advance(step) {
     S.link = null;
     S.panel = 'settings';
     S.setTab = 'accounts';
+    S.acctOpen = l.app.id; // the network's row opens, so the new account is in sight
+    if (S.msConsent) delete S.msConsent[l.app.id];
     refreshLinks();
     render();
     // Signed in again as somebody else: that is a second login, and the lost one still waits.
@@ -13630,27 +13632,12 @@ function accountSettings() {
       login ? h('button', { class: 'ghost danger', onclick: edupageLogout }, T('Odhlásiť EduPage')) : null) : null,
     LINKS.map((app) => {
       const logins = S.links[app.id];
-      // Two logins of a one-account network (signed in again as somebody else): each gets its own row.
-      if ((app.multi || logins?.length > 1) && logins?.length) return multiLinkRows(app, logins);
-      const first = logins?.[0];
-      // Discord's row opens to its servers and its logout, like EduPage's.
-      if (app.id === 'discord' && first) return [
-        openableAcct('discord', app.icon, app.name, first.name + linkStatus(first)),
-        S.acctOpen === 'discord' ? h('div', { class: 'acctopts' },
-          discordServers(),
-          signedOut(first) ? h('button', { class: 'primary', type: 'button', onclick: () => signInAgain(app, first) }, T('Znova prihlásiť')) : null,
-          h('button', { class: 'ghost danger', type: 'button', onclick: () => unlink(app, first) }, T('Odhlásiť Discord'))) : null,
-      ];
-      return h('div', { class: 'acct' }, h('img', { class: 'appicon', src: app.icon, alt: '' }),
+      if (logins?.length) return appAccounts(app, logins);
+      return h('div', { class: 'acct', 'data-key': `acct:${app.id}` }, h('img', { class: 'appicon', src: app.icon, alt: '' }),
         h('span', {}, appLabel(app), h('small', {},
-          logins === undefined ? T('zisťujem…') : logins === null ? T('most neodpovedá')
-            : first ? first.name + linkStatus(first) : T('nepripojené'))),
-        logins === null ? null : first
-          ? h('div', { class: 'row' }, signedOut(first) ? h('button', { class: 'primary', onclick: () => signInAgain(app, first) }, T('Znova prihlásiť')) : null, h('button', { class: 'ghost danger', onclick: () => unlink(app, first) }, T('Odhlásiť')))
-          : h('button', { class: 'primary', onclick: () => startLink(app) }, T('Pripojiť')));
+          logins === undefined ? T('zisťujem…') : logins === null ? T('most neodpovedá') : T('nepripojené'))),
+        logins === null ? null : h('button', { class: 'primary', onclick: () => startLink(app) }, T('Pripojiť')));
     }),
-    // Two Discord logins get plain rows; their servers stay listed below them.
-    S.links.discord?.length > 1 ? discordServers() : null,
     callSettings(),
   ];
 }
@@ -14026,17 +14013,56 @@ const linkStatus = (l) => {
 /** An app's name in Settings and Ctrl+N: a network still in beta says so after its name. */
 const appLabel = (app) => (app.beta ? `${app.name} (beta)` : app.name);
 
-/** An app with several logins (Gmail): a row per account, each with its own logout, and one more to add. */
-function multiLinkRows(app, logins) {
+/** A network with an account: one row that opens (like EduPage's) to its accounts, each with its own sign-out, what
+ *  the network adds (Gmail's codes, Discord's servers, Microsoft's features) and „Pridať ďalší účet“, so a second
+ *  account never stands as one more row in the list. */
+function appAccounts(app, logins) {
+  const open = S.acctOpen === app.id;
+  const down = logins.filter((l) => linkStatus(l)).length;
+  const sub = logins.length === 1 ? logins[0].name + linkStatus(logins[0])
+    : (logins.length < 5 ? T`${logins.length} účty` : T`${logins.length} účtov`) + (down ? ` · ${T`odpojené: ${down}`}` : '');
   return [
-    logins.map((l) => h('div', { class: 'acct', 'data-key': `${app.id}:${l.id}` }, h('img', { class: 'appicon', src: app.icon, alt: '' }),
-      h('span', {}, appLabel(app), h('small', {}, l.name + linkStatus(l))),
-      app.id === 'gmail' ? codeModeSelect(l) : null,
-      h('div', { class: 'row' }, signedOut(l) ? h('button', { class: 'primary', onclick: () => signInAgain(app, l) }, T('Znova prihlásiť')) : null,
-        h('button', { class: 'ghost danger', onclick: () => unlink(app, l, l.name) }, T('Odhlásiť'))))),
-    app.multi ? h('div', { class: 'acct' }, h('img', { class: 'appicon', src: app.icon, alt: '' }),
-      h('span', {}, appLabel(app), h('small', {}, T('ďalší účet'))),
-      h('button', { class: 'primary', onclick: () => startLink(app) }, T('Pridať'))) : null,
+    openableAcct(app.id, app.icon, appLabel(app), sub),
+    open ? h('div', { class: 'acctopts' },
+      logins.map((l) => h('div', { class: 'subacct', 'data-key': `${app.id}:${l.id}` },
+        h('span', {}, l.name, linkStatus(l) ? h('small', {}, linkStatus(l).slice(3)) : null),
+        app.id === 'gmail' ? codeModeSelect(l) : null,
+        h('div', { class: 'row' }, signedOut(l) ? h('button', { class: 'primary', type: 'button', onclick: () => signInAgain(app, l) }, T('Znova prihlásiť')) : null,
+          h('button', { class: 'ghost danger', type: 'button', onclick: () => unlink(app, l, l.name) }, T('Odhlásiť'))))),
+      app.id === 'discord' ? discordServers() : null,
+      app.flow === 'microsoft' ? microsoftFeatures(app) : null,
+      app.multi ? h('button', { class: 'primary', type: 'button', onclick: () => startLink(app) }, T('Pridať ďalší účet'))
+        : h('p', { class: 'hint' }, T`${app.name} vo Wefte vie zatiaľ len jeden účet.`)) : null,
+  ];
+}
+
+/** Outlook and Teams: what each account may do and what still waits for consent (bridge GET /consent, asked when the
+ *  row opens). Signing in again asks for everything; where only an admin may consent, one link grants it all. */
+function microsoftFeatures(app) {
+  const all = (S.msConsent ||= {});
+  if (all[app.id] === undefined) {
+    all[app.id] = 'loading';
+    prov(app, 'GET', '/consent').then((r) => { all[app.id] = r; }, () => { all[app.id] = null; }).then(() => { if (S.panel === 'settings') render(); });
+  }
+  const r = all[app.id];
+  if (r === 'loading') return h('p', { class: 'hint' }, T('Zisťujem, čo Microsoft Weftu dovolil…'));
+  if (!r) return h('p', { class: 'hint' }, T('Most Microsoftu neodpovedá.'));
+  const waiting = (r.logins || []).filter((l) => l.missing?.length);
+  const copy = async (e) => {
+    const b = e.currentTarget;
+    try { await navigator.clipboard.writeText(r.admin_url); b.textContent = T('Skopírované'); }
+    catch { prompt(T('Odkaz pre správcu:'), r.admin_url); }
+  };
+  return [
+    h('h4', {}, T('Funkcie Microsoftu')),
+    (r.logins || []).map((l) => h('p', { class: 'hint', 'data-key': `ms:${l.id}` }, l.error ? `${l.name}: ${l.error}`
+      : l.missing?.length ? T`${l.name}: čaká na súhlas: ${l.missing.map((m) => m.what).join(', ')}` : T`${l.name}: všetko povolené`,
+      waiting.length > 1 && l.missing?.length ? [' ', h('button', { class: 'linkbtn', type: 'button', onclick: () => signInAgain(app, S.links[app.id]?.find((x) => x.id === l.id) || l) }, T('Povoliť všetko'))] : null)),
+    waiting.length ? h('p', { class: 'hint' }, T('Povoliť všetko ťa prihlási znova a Microsoft sa spýta na všetko naraz. Ak to škola alebo firma nedovolí, jej správca to povolí pre všetkých jedným odkazom.')) : null,
+    waiting.length ? h('div', { class: 'row' },
+      waiting.length === 1 ? h('button', { class: 'primary', type: 'button', onclick: () => signInAgain(app, S.links[app.id]?.find((x) => x.id === waiting[0].id) || waiting[0]) }, T('Povoliť všetko')) : null,
+      h('button', { class: 'ghost', type: 'button', onclick: copy }, T('Kopírovať odkaz pre správcu')),
+      h('button', { class: 'ghost', type: 'button', onclick: () => { delete all[app.id]; render(); } }, T('Skontrolovať znova'))) : null,
   ];
 }
 
