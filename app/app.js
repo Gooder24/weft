@@ -14050,10 +14050,13 @@ function microsoftFeatures(app) {
     all[app.id] = 'loading';
     prov(app, 'GET', '/consent').then((r) => { all[app.id] = r; }, () => { all[app.id] = null; }).then(() => { if (S.panel === 'settings') render(); });
   }
-  const r = all[app.id];
+  let r = all[app.id];
   if (r === 'loading') return h('p', { class: 'hint' }, T('Zisťujem, čo Microsoft Weftu dovolil…'));
   if (!r) return h('p', { class: 'hint' }, T('Most Microsoftu neodpovedá.'));
-  const waiting = (r.logins || []).filter((l) => l.missing?.length);
+  // An account signed out since the bridge answered is no longer listed.
+  const here = new Set((S.links[app.id] || []).map((l) => l.id));
+  r = { ...r, logins: (r.logins || []).filter((l) => here.has(l.id)) };
+  const waiting = r.logins.filter((l) => l.missing?.length);
   const copy = async (e) => {
     const b = e.currentTarget;
     try { await navigator.clipboard.writeText(r.admin_url); b.textContent = T('Skopírované'); }
