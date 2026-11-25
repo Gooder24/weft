@@ -20,6 +20,10 @@
                                                             to FRIEND's chat (--draft: only a draft there), without
                                                             CHAT's name and photo unless --show-name (server/relay/)
     weft relays [--cancel ID]                               what waits for an answer, and what came of it
+    weft meet TITLE --start "YYYY-MM-DD HH:MM" [--end ...|--minutes 30] --with WHO... [--no-link] [--yes]
+                                                            a meeting in the Teams calendar, with a Teams link unless
+                                                            --no-link; WHO is an address or a name from the Teams
+                                                            directory; Exchange sends the invitations (--yes to make it)
     weft cals                                               calendars
     weft cal [--from YYYY-MM-DD] [--days 7]                 events, repeating ones expanded as Weft draws them
     weft cal-add TITLE --start "YYYY-MM-DD[ HH:MM]" [--end ...|--minutes 60] [--cal NAME] [--location] [--notes]
@@ -895,6 +899,9 @@ def main(argv=None):
     s = sub.add_parser("mail"); s.add_argument("to"); s.add_argument("text", nargs="*"); s.add_argument("--yes", action="store_true")
     s.add_argument("--subject", default=""); s.add_argument("--cc", default=""); s.add_argument("--from", dest="frm", metavar="ACCOUNT")
     s.add_argument("--file", action="append", metavar="PATH")
+    s = sub.add_parser("meet"); s.add_argument("title", nargs="+"); s.add_argument("--start", required=True); s.add_argument("--end")
+    s.add_argument("--minutes", type=int, default=30); s.add_argument("--with", dest="who", action="append", default=[], metavar="WHO")
+    s.add_argument("--no-link", action="store_true"); s.add_argument("--yes", action="store_true")
     s = sub.add_parser("draft"); s.add_argument("chat"); s.add_argument("text", nargs="*"); s.add_argument("--file", action="append", metavar="PATH")
     s = sub.add_parser("relay"); s.add_argument("chat"); s.add_argument("--to", required=True, metavar="FRIEND")
     s.add_argument("--note", default=""); s.add_argument("--from", dest="frm", metavar="ID"); s.add_argument("--days", type=float, default=7)
@@ -982,6 +989,33 @@ def main(argv=None):
         ops = ([{"op": "del", "cal": c["id"], "uid": a.uid}] if to["id"] != c["id"] else []) + [{"op": "put", "cal": to["id"], "event": ev}]
         cal_ops(mx, ops)
         return out(ev, [f"zmenené: {ev['title']} ({to.get('name')})"])
+
+    if a.cmd == "meet":
+        start, all_day = parse_when(a.start)
+        if all_day: raise Fail("stretnutie potrebuje čas: --start \"2026-11-12 14:00\"")
+        end = parse_when(a.end)[0] if a.end else start + dt.timedelta(minutes=a.minutes)
+        if end <= start: raise Fail("koniec je pred začiatkom")
+        if not a.who: raise Fail("s kým? --with adresa alebo meno")
+        logins = [l for l in mx.bridge("teams", "GET", "/whoami").get("logins") or [] if isinstance(l, dict) and l.get("id")
+                  and not (isinstance(l.get("state"), dict) and l["state"].get("state_event") == "BAD_CREDENTIALS")]
+        if not logins: raise Fail("vo Wefte nie je pripojený Teams")
+        people = []
+        for who in a.who:
+            if "@" in who: people.append((who, who)); continue
+            found = [r for r in mx.bridge("teams", "POST", "/search_users", {"query": who}).get("results") or []
+                     if any(str(i).startswith("teams:") and "@" in str(i) for i in r.get("identifiers") or [])]
+            person = pick(found, who, "človek v Teams", lambda r: r.get("name") or "")
+            people.append((person["name"], next(str(i)[6:] for i in person["identifiers"] if str(i).startswith("teams:") and "@" in str(i))))
+        utc = lambda d: d.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        lines = [f"Stretnutie: {' '.join(a.title)}", f"Kedy: {start:%Y-%m-%d %H:%M}–{end:%H:%M}" + ("" if end.date() == start.date() else f" ({end:%Y-%m-%d})"),
+                 "S: " + ", ".join(f"{n} <{m}>" if n != m else m for n, m in people), "Teams link: " + ("nie" if a.no_link else "áno")]
+        if not a.yes:
+            return out({"sent": False, "attendees": [m for _, m in people]}, ["NEVYTVORENÉ (pozvánky by odišli hneď)."] + lines + ["Pridaj --yes, ak to Karchi chce."])
+        body = {"subject": " ".join(a.title), "start": utc(start), "end": utc(end), "online": not a.no_link,
+                "attendees": ", ".join(f"{n.replace(',', ' ')} <{m}>" if n != m else m for n, m in people)}
+        try: made = mx.bridge("teams", "POST", f"/meeting/{q(logins[0]['id'])}", body)
+        except HttpError as e: raise Fail(e.body.get("error") or str(e)) from None
+        return out({"sent": True, **made}, lines + [f"vytvorené v Teams kalendári; pozvánky poslal Microsoft" + ("; Teams link je v pozvánke" if made.get("joinUrl") else "")])
 
     if a.cmd == "mail":
         text = text_arg(a.text) if a.text else ""

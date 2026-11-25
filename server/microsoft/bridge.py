@@ -25,6 +25,7 @@ Provisioning speaks the subset of the mautrix bridgev2 API that Weft's Accounts 
   POST /<outlook|teams>/_matrix/provision/v3/login/cancel/<process>
   POST /<outlook|teams>/_matrix/provision/v3/logout/<login>
   POST /outlook/_matrix/provision/v3/send/<login>     a new mail, as Gmail's: {"to", "cc", "subject", "text", "files"}
+  POST /teams/_matrix/provision/v3/meeting/<login>    a meeting in that account's calendar, see create_meeting
   POST /teams/_matrix/provision/v3/search_users       {"query"}: people in Karchi's organization
   GET  /teams/_matrix/provision/v3/resolve_identifier/<Entra id or address>
   POST /teams/_matrix/provision/v3/create_dm/<Entra id>
@@ -99,6 +100,9 @@ PRODUCTS = {
                    G + "Chat.ReadWrite", G + "Files.ReadWrite.All"],
         "needs": "Chat.ReadWrite",
         "what": "k chatom v Teams",
+        # Asked for at sign-in only; a meeting redeems the refresh token for it on its own (create_meeting), so a
+        # login from before it keeps its chats and only meetings ask for a new sign-in.
+        "extra": [G + "Calendars.ReadWrite"],
     },
 }
 STEP_ID = "sk.karchi.microsoft.signin"
@@ -195,14 +199,15 @@ def aad_message(code: str, description: str, product: str) -> ApiError:
     return ApiError(504, "SK.KARCHI.UNREACHABLE", UNREACHABLE)
 
 
-def token_request(tenant: str, fields: dict, product: str, client_id: str = "") -> dict:
-    """client_id: the app a login was made with (its refresh token works only there), if not today's."""
+def token_request(tenant: str, fields: dict, product: str, client_id: str = "", scopes: list[str] | None = None) -> dict:
+    """client_id: the app a login was made with (its refresh token works only there), if not today's.
+    scopes: other than the product's own (a refresh token gives any scope its sign-in consented to)."""
     client = ms_client()
     if client_id and client_id != (client or {}).get("client_id"):
         client = {"client_id": client_id}
     if not client:
         raise ApiError(503, "SK.KARCHI.NO_CLIENT", NO_CLIENT)
-    data = {**fields, "client_id": client["client_id"], "scope": " ".join(PRODUCTS[product]["scopes"])}
+    data = {**fields, "client_id": client["client_id"], "scope": " ".join(scopes or PRODUCTS[product]["scopes"])}
     if client.get("client_secret"):
         data["client_secret"] = client["client_secret"]
     req = urllib.request.Request(f"{LOGIN}/{tenant}/oauth2/v2.0/token", data=urllib.parse.urlencode(data).encode())
@@ -408,6 +413,27 @@ class Accounts:
                 self.access[(product, key)] = (answer["access_token"], time.time() + int(answer.get("expires_in") or 3600))
             return answer["access_token"]
 
+    def scoped_token(self, product: str, key: str, scopes: list[str]) -> str:
+        """An access token for scopes beyond the product's own (a meeting's calendar). A refusal leaves the login as it
+        is: chats and mail never depend on these scopes. A rotated refresh token is kept, as token() does."""
+        with self.lock:
+            lock = self.refreshing.setdefault((product, key), threading.Lock())
+        with lock:
+            with self.lock:
+                creds = self.creds.get(product, {}).get(key)
+                if not creds:
+                    raise ApiError(404, "SK.KARCHI.NO_LOGIN", "Tento účet tu už nie je.")
+                creds = dict(creds)
+            tenant = "consumers" if creds.get("tid") == CONSUMERS else creds.get("tid") or PRODUCTS[product]["tenant"]
+            answer = token_request(tenant, {"grant_type": "refresh_token", "refresh_token": creds["refresh_token"]}, product,
+                                   str(creds.get("client") or ""), scopes)
+            with self.lock:
+                live = self.creds.get(product, {}).get(key)
+                if live and signin_of(live) == signin_of(creds) and answer.get("refresh_token"):
+                    live["refresh_token"] = answer["refresh_token"]
+                    self.save()
+            return answer["access_token"]
+
     def graph(self, product: str, key: str, method: str, url: str, body=None, **kw):
         """Graph as this login; an expired access token is renewed once."""
         signin = self.signin(product, key)
@@ -517,7 +543,7 @@ def start_login(product: str) -> dict:
         "response_type": "code",
         "redirect_uri": REDIRECT_URI,
         "response_mode": "query",
-        "scope": " ".join(spec["scopes"]),
+        "scope": " ".join(spec["scopes"] + spec.get("extra", [])),
         "state": process_id,
         "prompt": "select_account",
         "code_challenge": b64url(hashlib.sha256(verifier.encode()).digest()),
@@ -813,6 +839,51 @@ def mail_loop() -> None:
             db = None
         MAIL_WAKE.wait(5 if pending else MAIL_SECONDS)
         MAIL_WAKE.clear()
+
+
+# ---------------------------------------------------------------- Teams: meetings
+
+
+CALENDAR_SCOPES = [G + "Calendars.ReadWrite"]
+NEEDS_CALENDAR = ("Teams kalendár ešte nie je povolený: tento účet sa pripojil skôr, než ho Weft pýtal. "
+                  "Pripoj Teams znova (Nastavenia → Účty → Teams) a povoľ aj kalendár.")
+UTC_TIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?Z")
+
+
+def create_meeting(key: str, body: dict) -> dict:
+    """A meeting in the Teams account's calendar: {"subject", "start", "end" (UTC, ...Z), "attendees" ("a@b, c@d"),
+    "online" (a Teams link, default true)}. Exchange sends the invitations itself."""
+    subject = body.get("subject").strip() if isinstance(body.get("subject"), str) else ""
+    start, end = body.get("start"), body.get("end")
+    if not subject:
+        raise ApiError(400, "SK.KARCHI.INVALID_INPUT", "Stretnutie potrebuje názov.")
+    if not (isinstance(start, str) and UTC_TIME.fullmatch(start) and isinstance(end, str) and UTC_TIME.fullmatch(end)):
+        raise ApiError(400, "SK.KARCHI.INVALID_INPUT", "Začiatok a koniec píš v UTC, napríklad 2026-01-31T14:40:00Z.")
+    if end <= start:
+        raise ApiError(400, "SK.KARCHI.INVALID_INPUT", "Koniec je pred začiatkom.")
+    attendees = [{**a, "type": "required"} for a in recipients(body.get("attendees"))]
+    try:
+        access = ACCOUNTS.scoped_token("teams", key, CALENDAR_SCOPES)
+    except ApiError as err:
+        if err.errcode in ("SK.KARCHI.DENIED", "SK.KARCHI.BAD_CREDENTIALS"):
+            raise ApiError(403, "SK.KARCHI.NEEDS_SIGNIN", NEEDS_CALENDAR) from None
+        raise
+    online = body.get("online", True) is not False
+    event = {"subject": subject, "start": {"dateTime": start[:-1], "timeZone": "UTC"},
+             "end": {"dateTime": end[:-1], "timeZone": "UTC"}, "attendees": attendees,
+             **({"isOnlineMeeting": True, "onlineMeetingProvider": "teamsForBusiness"} if online else {})}
+    try:
+        made = graph_raw(access, "POST", "/me/events", event)
+    except GraphError as err:
+        if err.status in (401, 403):
+            raise ApiError(403, "SK.KARCHI.NEEDS_SIGNIN", NEEDS_CALENDAR) from None
+        raise ApiError(400, "SK.KARCHI.REFUSED", f"Teams stretnutie odmietol: {err.message[:200]}") from None
+    except Throttled:
+        raise ApiError(504, "SK.KARCHI.UNREACHABLE", "Microsoft teraz neprijíma, stretnutie nevzniklo. Skús to o chvíľu.") from None
+    log("created a teams meeting")
+    return {"id": made.get("id"), "webLink": made.get("webLink"),
+            "joinUrl": (made.get("onlineMeeting") or {}).get("joinUrl"), "start": start, "end": end,
+            "attendees": [a["emailAddress"]["address"] for a in attendees]}
 
 
 # ---------------------------------------------------------------- Teams: Matrix side
@@ -1855,6 +1926,8 @@ def route(product: str, method: str, parts: list[str], body: dict, args: dict, t
             send_mail(login_id, body, token)
             MAIL_WAKE.set()  # the sent mail comes into the archive with the next batch
             return {}
+        case "POST", ["meeting", login_id] if product == "teams":
+            return create_meeting(TEAMS.login_for(login_id), body)
         case "POST", ["search_users"] if product == "teams":
             return {"results": TEAMS.search(TEAMS.login_for(args.get("login_id", "")), str(body.get("query") or ""))}
         case "GET", ["resolve_identifier", ident] if product == "teams":
