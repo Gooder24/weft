@@ -1,14 +1,99 @@
+diff --git a/config/bridge.go b/config/bridge.go
+index c546aa8..c13c04c 100644
+--- a/config/bridge.go
++++ b/config/bridge.go
+@@ -58,6 +58,8 @@ type BridgeConfig struct {
+ 	UseDiscordCDNUpload         bool `yaml:"use_discord_cdn_upload"`
+ 	ForbidDMingStrangers        bool `yaml:"forbid_dming_strangers"`
+ 
++	Weft WeftConfig `yaml:"weft"`
++
+ 	Proxy string `yaml:"proxy"`
+ 
+ 	CacheMedia  string      `yaml:"cache_media"`
+@@ -238,3 +240,8 @@ func (bc BridgeConfig) FormatGuildName(params GuildNameParams) string {
+ 	_ = bc.guildNameTemplate.Execute(&buffer, params)
+ 	return buffer.String()
+ }
++
++// WeftConfig: Weft's additions (weft_members.go). MemberSearch lets "@" ask Discord for server members by prefix.
++type WeftConfig struct {
++	MemberSearch bool `yaml:"member_search"`
++}
+diff --git a/config/upgrade.go b/config/upgrade.go
+index 3d7a9fa..b5247fc 100644
+--- a/config/upgrade.go
++++ b/config/upgrade.go
+@@ -64,6 +64,7 @@ func DoUpgrade(helper *up.Helper) {
+ 	helper.Copy(up.Bool, "bridge", "enable_webhook_avatars")
+ 	helper.Copy(up.Bool, "bridge", "use_discord_cdn_upload")
+ 	helper.Copy(up.Bool, "bridge", "forbid_dming_strangers")
++	helper.Copy(up.Bool, "bridge", "weft", "member_search")
+ 	helper.Copy(up.Str|up.Null, "bridge", "proxy")
+ 	helper.Copy(up.Str, "bridge", "cache_media")
+ 	helper.Copy(up.Bool, "bridge", "direct_media", "enabled")
+diff --git a/example-config.yaml b/example-config.yaml
+index 0c1ab13..a23fdef 100644
+--- a/example-config.yaml
++++ b/example-config.yaml
+@@ -175,6 +175,10 @@ bridge:
+     # considers this to be a "risky" action. Note that the bridge will conservatively reject all outgoing DMs from users
+     # until it has synced that user's relationships from Discord.
+     forbid_dming_strangers: true
++    # Weft's additions. member_search: "@" in Weft asks Discord for a server's members by name prefix
++    # (one gateway request per prefix, at most 10 members, at least a second apart).
++    weft:
++        member_search: false
+     # Proxy for Discord connections
+     proxy:
+     # Should mxc uris copied from Discord be cached?
+diff --git a/portal.go b/portal.go
+index 922ef9a..3128ec4 100644
+--- a/portal.go
++++ b/portal.go
+@@ -1258,6 +1258,8 @@ func errorToStatusReason(err error) (reason event.MessageStatusReason, status ev
+ 		errors.Is(err, attachment.UnsupportedAlgorithm),
+ 		errors.Is(err, errCantStartThread):
+ 		return event.MessageStatusUnsupported, event.MessageStatusFail, true, true, "", nil
++	case weftRefusal(err) != "":
++		return event.MessageStatusUnsupported, event.MessageStatusFail, true, true, weftRefusal(err), nil
+ 	case errors.Is(err, errDMingStranger):
+ 		return event.MessageStatusGenericError, event.MessageStatusFail, true, true, "You can't message users who aren't on your friends list. Use the Discord app to chat or add them as a friend to continue.", nil
+ 	case errors.Is(err, errRelationshipsNotReady):
+@@ -1628,12 +1630,20 @@ func (portal *Portal) handleMatrixMessage(sender *User, evt *event.Event) {
+ 				portal.log.Warn().Err(err).
+ 					Str("thread_root_mxid", threadRoot.String()).
+ 					Msg("Failed to start thread from Matrix")
++				// Weft (weft_reply.go): not into the parent channel instead.
++				go portal.sendMessageMetrics(evt, fmt.Errorf("%w: %v", errWeftThreadFailed, err), "Dropping")
++				return
+ 			}
+ 		}
+ 	}
+ 	if threadID != "" {
+ 		channelID = threadID
+ 	}
++	// Weft (weft_reply.go): a reply that would lose its target goes nowhere, not to the whole channel.
++	if err := weftReplyCheck(content, func(mxid id.EventID) *database.Message { return portal.bridge.DB.Message.GetByMXID(portal.Key, mxid) }, threadID); err != nil {
++		go portal.sendMessageMetrics(evt, err, "Dropping")
++		return
++	}
+ 
+ 	var sendReq discordgo.MessageSend
+ 
 diff --git a/provisioning.go b/provisioning.go
-index c9ff3ab..b594c9e 100644
+index c9ff3ab..b47d1e0 100644
 --- a/provisioning.go
 +++ b/provisioning.go
-@@ -72,6 +72,10 @@ func newProvisioningAPI(br *DiscordBridge) *ProvisioningAPI {
+@@ -72,6 +72,12 @@ func newProvisioningAPI(br *DiscordBridge) *ProvisioningAPI {
  	r.HandleFunc("/v1/guilds/{guildID}", p.guildsBridge).Methods(http.MethodPost)
  	r.HandleFunc("/v1/guilds/{guildID}", p.guildsUnbridge).Methods(http.MethodDelete)
  
-+	// Weft (weft.go): read-only.
++	// Weft (weft*.go): open writes to Matrix only; members asks Discord, only when switched on.
 +	r.HandleFunc("/v1/account", p.weftAccount).Methods(http.MethodGet)
 +	r.HandleFunc("/v1/contacts", p.weftContacts).Methods(http.MethodGet)
++	r.HandleFunc("/v1/channels/{channelID}/open", p.weftOpen).Methods(http.MethodPost)
++	r.HandleFunc("/v1/guilds/{guildID}/members", p.weftMembers).Methods(http.MethodGet)
 +
  	if p.bridge.Config.Bridge.Provisioning.DebugEndpoints {
  		p.log.Debugln("Enabling debug API at /debug")
@@ -32,19 +117,22 @@ index 8c0d6ec..31396a2 100644
  		err = session.LoadMainPage(context.TODO())
 diff --git a/weft.go b/weft.go
 new file mode 100644
-index 0000000..0eab740
+index 0000000..7b5aad2
 --- /dev/null
 +++ b/weft.go
-@@ -0,0 +1,228 @@
+@@ -0,0 +1,235 @@
 +package main
 +
-+// Weft's read-only additions to the legacy Discord bridge (DISCORD-PLAN.md, phase 1). Everything here answers from
-+// what the bridge already holds in memory or in its database: no request goes to Discord.
++// Weft's additions to the legacy Discord bridge (DISCORD-PLAN.md, phases 0 and 1). The two below answer from what
++// the bridge already holds in memory or in its database: no request goes to Discord.
 +//
-+//	GET /v1/account   whether the friend list is known yet, the account's current required action, and what this
-+//	                  bridge can do for Weft (writes and member search: never in this build)
++//	GET /v1/account   whether the friend list is known yet, the account's current required action, and whether
++//	                  "@" may search a server's members (bridge.weft.member_search, weft_members.go)
 +//	GET /v1/contacts  friends, friend requests, blocked people and the other person of each DM, with the friendship
 +//	                  and the DM channel and room, if any; 503 until the gateway's READY brought the friend list
++//
++// Also Weft's: the reply guard (weft_reply.go), POST /v1/channels/{id}/open (weft_open.go) and
++// GET /v1/guilds/{id}/members (weft_members.go, the one that asks Discord, off by default).
 +
 +import (
 +	"net/http"
@@ -92,6 +180,10 @@ index 0000000..0eab740
 +	s.Lock()
 +	defer s.Unlock()
 +	if session != s.session {
++		return
++	}
++	if c, ok := evt.(*discordgo.GuildMembersChunk); ok {
++		user.weftSearch().deliver(c)
 +		return
 +	}
 +	if r, ok := evt.(*discordgo.Ready); ok {
@@ -163,14 +255,14 @@ index 0000000..0eab740
 +	Connected          bool   `json:"connected"`
 +	RelationshipsReady bool   `json:"relationships_ready"`
 +	RequiredAction     string `json:"required_action"`
-+	Writes             bool   `json:"writes"`
 +	MemberSearch       bool   `json:"member_search"`
 +}
 +
 +func (p *ProvisioningAPI) weftAccount(w http.ResponseWriter, r *http.Request) {
 +	user := r.Context().Value("user").(*User)
 +	_, action, _, _, ok := user.weftNow()
-+	jsonResponse(w, http.StatusOK, weftAccount{Connected: user.Connected(), RelationshipsReady: ok, RequiredAction: action})
++	jsonResponse(w, http.StatusOK, weftAccount{Connected: user.Connected(), RelationshipsReady: ok, RequiredAction: action,
++		MemberSearch: p.bridge.Config.Bridge.Weft.MemberSearch})
 +}
 +
 +type weftContact struct {
@@ -262,6 +354,785 @@ index 0000000..0eab740
 +	}
 +	if c.Name == "" {
 +		c.Name = c.Username
++	}
++}
+diff --git a/weft_members.go b/weft_members.go
+new file mode 100644
+index 0000000..958e84a
+--- /dev/null
++++ b/weft_members.go
+@@ -0,0 +1,197 @@
++package main
++
++// GET /v1/guilds/{guildID}/members?query=<name prefix>&limit=<1..10>: members of one of Karchi's servers whose name
++// starts so, for "@" in Weft (DISCORD-PLAN.md, point 3, step 2). One gateway request (op 8, as discordgo's
++// RequestGuildMembers) per server and prefix, at most 10 members, one search at a time, at least weftSearchGap
++// apart, answers kept weftSearchKeep. Never an empty prefix (the whole list is what scrapers ask for).
++//
++// Off unless bridge.weft.member_search is true; off it answers {"enabled": false, "members": []}.
++// On: {"enabled": true, "members": [{id, name, username, nick, avatar_url, bot}], "timeout": bool}; timeout means
++// Discord sent nothing within weftSearchWait (not kept, asked again next time).
++
++import (
++	"crypto/rand"
++	"encoding/hex"
++	"net/http"
++	"strconv"
++	"strings"
++	"sync"
++	"time"
++
++	"github.com/bwmarrin/discordgo"
++	"github.com/gorilla/mux"
++)
++
++var (
++	weftSearchGap  = time.Second
++	weftSearchWait = 3 * time.Second
++	weftSearchKeep = 10 * time.Minute
++)
++
++const weftSearchLimit = 10
++
++// weftRequestMembers sends the gateway request (a variable for tests).
++var weftRequestMembers = func(session *discordgo.Session, guild, query, nonce string) error {
++	return session.RequestGuildMembers(guild, query, weftSearchLimit, nonce, false)
++}
++
++type weftSearcher struct {
++	sync.Mutex // one search at a time
++	last       time.Time
++	kept       map[string]weftKept
++
++	waitLock sync.Mutex
++	waiting  map[string]chan *discordgo.GuildMembersChunk // nonce -> its search
++}
++
++type weftKept struct {
++	at      time.Time
++	members []*discordgo.Member
++}
++
++var weftSearchers sync.Map // *User -> *weftSearcher
++
++func (user *User) weftSearch() *weftSearcher {
++	s, _ := weftSearchers.LoadOrStore(user, &weftSearcher{kept: map[string]weftKept{}, waiting: map[string]chan *discordgo.GuildMembersChunk{}})
++	return s.(*weftSearcher)
++}
++
++// deliver: a GUILD_MEMBERS_CHUNK of the bridge's current session (weftEvent); chunks of no search are ignored.
++func (s *weftSearcher) deliver(c *discordgo.GuildMembersChunk) {
++	s.waitLock.Lock()
++	defer s.waitLock.Unlock()
++	if ch := s.waiting[c.Nonce]; ch != nil && c.Nonce != "" {
++		select {
++		case ch <- c:
++		default:
++		}
++	}
++}
++
++// search: the members of `guild` starting with `query`, from what was kept or by one `send` with a fresh nonce.
++func (s *weftSearcher) search(guild, query string, send func(nonce string) error) ([]*discordgo.Member, bool, error) {
++	s.Lock()
++	defer s.Unlock()
++	key := guild + "\x00" + strings.ToLower(query)
++	now := time.Now()
++	for k, v := range s.kept {
++		if now.Sub(v.at) > weftSearchKeep {
++			delete(s.kept, k)
++		}
++	}
++	if v, ok := s.kept[key]; ok {
++		return v.members, false, nil
++	}
++	if wait := weftSearchGap - now.Sub(s.last); wait > 0 {
++		time.Sleep(wait)
++	}
++	buf := make([]byte, 8)
++	_, _ = rand.Read(buf)
++	nonce := hex.EncodeToString(buf)
++	ch := make(chan *discordgo.GuildMembersChunk, 4)
++	s.waitLock.Lock()
++	s.waiting[nonce] = ch
++	s.waitLock.Unlock()
++	defer func() {
++		s.waitLock.Lock()
++		delete(s.waiting, nonce)
++		s.waitLock.Unlock()
++	}()
++	s.last = time.Now()
++	if err := send(nonce); err != nil {
++		return nil, false, err
++	}
++	var members []*discordgo.Member
++	timer := time.NewTimer(weftSearchWait)
++	defer timer.Stop()
++	for {
++		select {
++		case c := <-ch:
++			if c.GuildID == guild {
++				members = append(members, c.Members...)
++			}
++			if c.ChunkIndex >= c.ChunkCount-1 {
++				s.kept[key] = weftKept{at: time.Now(), members: members}
++				return members, false, nil
++			}
++		case <-timer.C:
++			return members, true, nil
++		}
++	}
++}
++
++type weftMember struct {
++	ID        string `json:"id"`
++	Name      string `json:"name"`
++	Username  string `json:"username"`
++	Nick      string `json:"nick,omitempty"`
++	AvatarURL string `json:"avatar_url,omitempty"`
++	Bot       bool   `json:"bot,omitempty"`
++}
++
++func weftMemberList(members []*discordgo.Member, account string, limit int) []weftMember {
++	out := []weftMember{}
++	seen := map[string]bool{}
++	for _, m := range members {
++		if m == nil || m.User == nil || m.User.ID == account || seen[m.User.ID] {
++			continue
++		}
++		seen[m.User.ID] = true
++		x := weftMember{ID: m.User.ID, Username: m.User.Username, Nick: m.Nick, Bot: m.User.Bot, Name: m.Nick}
++		if x.Name == "" {
++			x.Name = m.User.GlobalName
++		}
++		if x.Name == "" {
++			x.Name = m.User.Username
++		}
++		if m.User.Avatar != "" {
++			x.AvatarURL = m.User.AvatarURL("")
++		}
++		if out = append(out, x); len(out) == limit {
++			break
++		}
++	}
++	return out
++}
++
++func (p *ProvisioningAPI) weftMembers(w http.ResponseWriter, r *http.Request) {
++	user := r.Context().Value("user").(*User)
++	if !p.bridge.Config.Bridge.Weft.MemberSearch {
++		jsonResponse(w, http.StatusOK, map[string]any{"enabled": false, "members": []weftMember{}})
++		return
++	}
++	guild := mux.Vars(r)["guildID"]
++	query := strings.TrimSpace(r.URL.Query().Get("query"))
++	if !weftChannelID.MatchString(guild) || query == "" || len([]rune(query)) > 32 {
++		jsonResponse(w, http.StatusBadRequest, Error{Error: "A server ID and a name prefix are needed", ErrCode: "M_INVALID_PARAM"})
++		return
++	}
++	limit := weftSearchLimit
++	if l, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && l >= 1 && l < limit {
++		limit = l
++	}
++	account, _, _, _, ok := user.weftNow()
++	if !ok {
++		jsonResponse(w, http.StatusServiceUnavailable, Error{Error: "Not connected to Discord yet", ErrCode: "FI.MAU.DISCORD.NOT_READY"})
++		return
++	}
++	if !user.IsInPortal(guild) {
++		jsonResponse(w, http.StatusNotFound, Error{Error: "Not one of your servers", ErrCode: "M_NOT_FOUND"})
++		return
++	}
++	user.Lock()
++	session := user.Session
++	user.Unlock()
++	members, timeout, err := user.weftSearch().search(guild, query, func(nonce string) error {
++		if session == nil {
++			return errUserNotLoggedIn
++		}
++		return weftRequestMembers(session, guild, query, nonce)
++	})
++	if err != nil {
++		p.log.Warnfln("Weft: member search in %s failed: %v", guild, err)
++		jsonResponse(w, http.StatusBadGateway, Error{Error: "Discord did not take the search", ErrCode: "SK.KARCHI.WEFT.DISCORD"})
++		return
++	}
++	jsonResponse(w, http.StatusOK, map[string]any{"enabled": true, "members": weftMemberList(members, account, limit), "timeout": timeout})
++}
+diff --git a/weft_members_test.go b/weft_members_test.go
+new file mode 100644
+index 0000000..7f982b6
+--- /dev/null
++++ b/weft_members_test.go
+@@ -0,0 +1,77 @@
++package main
++
++import (
++	"net/http"
++	"testing"
++	"time"
++
++	"github.com/bwmarrin/discordgo"
++
++	"go.mau.fi/mautrix-discord/database"
++)
++
++func TestWeftMembers(t *testing.T) {
++	members := func(p *ProvisioningAPI) http.HandlerFunc { return p.weftMembers }
++	route := "/v1/guilds/{guildID}/members"
++	f := newWeftFake(t)
++	f.ready()
++	f.user.MarkInPortal(database.UserPortal{DiscordID: "1", Type: database.UserPortalTypeGuild, Timestamp: time.Now()})
++	var sent []string
++	request, gap, wait := weftRequestMembers, weftSearchGap, weftSearchWait
++	t.Cleanup(func() { weftRequestMembers, weftSearchGap, weftSearchWait = request, gap, wait })
++	answer := func(nonce string) *discordgo.GuildMembersChunk {
++		var list []*discordgo.Member
++		for _, u := range []*discordgo.User{{ID: "me", Username: "karchi"}, {ID: "2", Username: "jana", GlobalName: "Jana"}, {ID: "3", Username: "janko"}} {
++			list = append(list, &discordgo.Member{User: u})
++		}
++		list = append(list, &discordgo.Member{User: &discordgo.User{ID: "4", Username: "jano"}, Nick: "Janíček"})
++		return &discordgo.GuildMembersChunk{GuildID: "1", Members: list, ChunkCount: 1, Nonce: nonce}
++	}
++	weftRequestMembers = func(session *discordgo.Session, guild, query, nonce string) error {
++		sent = append(sent, guild+" "+query)
++		f.user.weftEvent(session, &discordgo.GuildMembersChunk{GuildID: "1", Nonce: "someone else's", ChunkCount: 1})
++		if query != "silent" {
++			f.user.weftEvent(session, answer(nonce))
++		}
++		return nil
++	}
++	weftSearchGap, weftSearchWait = 50*time.Millisecond, 20*time.Millisecond
++
++	// Off (the default): a plain answer, no request.
++	if code, body := f.serve(t, "GET", "/v1/guilds/1/members?query=ja", route, members); code != 200 || body["enabled"] != false || len(sent) != 0 {
++		t.Fatalf("off: %d %v %v", code, body, sent)
++	}
++	f.br.Config.Bridge.Weft.MemberSearch = true
++	for _, path := range []string{"/v1/guilds/1/members", "/v1/guilds/1/members?query=%20", "/v1/guilds/x/members?query=ja"} {
++		if code, _ := f.serve(t, "GET", path, route, members); code != http.StatusBadRequest {
++			t.Errorf("%s: %d", path, code)
++		}
++	}
++	if code, _ := f.serve(t, "GET", "/v1/guilds/7/members?query=ja", route, members); code != http.StatusNotFound {
++		t.Errorf("a server he is not on: %d", code)
++	}
++	code, body := f.serve(t, "GET", "/v1/guilds/1/members?query=ja&limit=50", route, members)
++	list, _ := body["members"].([]any)
++	if code != 200 || body["enabled"] != true || body["timeout"] != false || len(list) != 3 {
++		t.Fatalf("search: %d %v", code, body)
++	}
++	if first := list[0].(map[string]any); first["id"] != "2" || first["name"] != "Jana" {
++		t.Errorf("first: %v", first)
++	}
++	if last := list[2].(map[string]any); last["name"] != "Janíček" || last["username"] != "jano" {
++		t.Errorf("a nickname is the name: %v", last)
++	}
++	// The same prefix again (any case) comes from what was kept; the limit cuts.
++	if _, body = f.serve(t, "GET", "/v1/guilds/1/members?query=JA&limit=1", route, members); len(body["members"].([]any)) != 1 || len(sent) != 1 {
++		t.Errorf("kept: %v %v", body, sent)
++	}
++	// A new prefix waits for the gap; one that gets no answer says so and is not kept.
++	start := time.Now()
++	f.serve(t, "GET", "/v1/guilds/1/members?query=silent", route, members)
++	if _, body = f.serve(t, "GET", "/v1/guilds/1/members?query=silent", route, members); body["timeout"] != true || len(sent) != 3 {
++		t.Errorf("timeout: %v %v", body, sent)
++	}
++	if time.Since(start) < weftSearchGap {
++		t.Errorf("two searches closer than the gap")
++	}
++}
+diff --git a/weft_open.go b/weft_open.go
+new file mode 100644
+index 0000000..9794752
+--- /dev/null
++++ b/weft_open.go
+@@ -0,0 +1,103 @@
++package main
++
++// POST /v1/channels/{channelID}/open: one of Karchi's existing Discord DMs or groups as a live room, what
++// `create-portal` does (commands.go) without a command in the bot's room (DISCORD-PLAN.md, point 1, step 2).
++//
++//	200 {"state": "joined", "room_id": …}      Karchi is in the room (a room the bridge had already: no request
++//	                                           to Discord; a new one: the channel's GET and the usual backfill)
++//	200 {"state": "invited", "room_id": …}     invited only (double puppeting did not join): Weft joins itself
++//	200 {"state": "not_joined", "room_id": …}  the room exists, Karchi is neither in it nor invited
++//	404 not one of Karchi's channels, 409 a group while another account is logged in, 503 not connected yet,
++//	502 Discord did not answer
++//
++// Only Karchi's own channels, known to the bridge already: a DM whose receiver is his Discord account, or a group
++// he is in (user_portal), and a group only while he is the bridge's one logged-in user (CreateMatrixRoom invites
++// every logged-in member). One opening at a time.
++
++import (
++	"net/http"
++	"regexp"
++	"sync"
++
++	"github.com/bwmarrin/discordgo"
++	"github.com/gorilla/mux"
++
++	"go.mau.fi/mautrix-discord/database"
++)
++
++var (
++	weftOpenLock  sync.Mutex
++	weftChannelID = regexp.MustCompile(`^[0-9]{1,20}$`)
++)
++
++// weftOwnChannel: the bridge's row of `channel` when it is Karchi's (account: his Discord id), else an HTTP status.
++func weftOwnChannel(db *database.Database, user *User, account, channel string) (*database.Portal, int) {
++	row := db.Portal.GetByID(database.NewPortalKey(channel, account))
++	switch {
++	case row == nil:
++		return nil, http.StatusNotFound
++	case row.Type == discordgo.ChannelTypeDM && row.Key.Receiver == account:
++		return row, 0
++	case row.Type == discordgo.ChannelTypeGroupDM && row.Key.Receiver == "" && user.IsInPortal(channel):
++		if len(db.User.GetAllWithToken()) != 1 {
++			return nil, http.StatusConflict
++		}
++		return row, 0
++	}
++	return nil, http.StatusNotFound
++}
++
++func (p *ProvisioningAPI) weftOpen(w http.ResponseWriter, r *http.Request) {
++	user := r.Context().Value("user").(*User)
++	channel := mux.Vars(r)["channelID"]
++	if !weftChannelID.MatchString(channel) {
++		jsonResponse(w, http.StatusBadRequest, Error{Error: "Not a channel ID", ErrCode: "M_INVALID_PARAM"})
++		return
++	}
++	account, _, _, _, ok := user.weftNow()
++	if !ok {
++		jsonResponse(w, http.StatusServiceUnavailable, Error{Error: "Not connected to Discord yet", ErrCode: "FI.MAU.DISCORD.NOT_READY"})
++		return
++	}
++	weftOpenLock.Lock()
++	defer weftOpenLock.Unlock()
++	row, status := weftOwnChannel(p.bridge.DB, user, account, channel)
++	if status == http.StatusConflict {
++		jsonResponse(w, status, Error{Error: "The bridge has another logged-in account", ErrCode: "SK.KARCHI.WEFT.OTHER_ACCOUNTS"})
++		return
++	} else if row == nil {
++		jsonResponse(w, http.StatusNotFound, Error{Error: "Not one of your Discord chats", ErrCode: "M_NOT_FOUND"})
++		return
++	}
++	portal := p.bridge.GetExistingPortalByID(row.Key)
++	store := p.bridge.AS.StateStore
++	if portal.MXID != "" && !store.IsInRoom(portal.MXID, user.MXID) {
++		portal.ensureUserInvited(user, true) // Matrix only, as CreateMatrixRoom does for a room it has
++	} else if portal.MXID == "" {
++		user.Lock()
++		session := user.Session
++		user.Unlock()
++		if session == nil {
++			jsonResponse(w, http.StatusServiceUnavailable, Error{Error: "Not connected to Discord", ErrCode: "FI.MAU.DISCORD.NOT_READY"})
++			return
++		}
++		meta, err := session.Channel(channel)
++		if err != nil || meta == nil || meta.ID != channel {
++			p.log.Warnfln("Weft: failed to get channel %s: %v", channel, err)
++			jsonResponse(w, http.StatusBadGateway, Error{Error: "Discord did not give the channel", ErrCode: "SK.KARCHI.WEFT.DISCORD"})
++			return
++		}
++		if err = portal.CreateMatrixRoom(user, meta); err != nil {
++			p.log.Warnfln("Weft: failed to create room for %s: %v", channel, err)
++			jsonResponse(w, http.StatusInternalServerError, Error{Error: "The room was not created", ErrCode: "M_UNKNOWN"})
++			return
++		}
++	}
++	state := "not_joined"
++	if store.IsInRoom(portal.MXID, user.MXID) {
++		state = "joined"
++	} else if store.IsInvited(portal.MXID, user.MXID) {
++		state = "invited"
++	}
++	jsonResponse(w, http.StatusOK, map[string]any{"state": state, "room_id": portal.MXID})
++}
+diff --git a/weft_open_test.go b/weft_open_test.go
+new file mode 100644
+index 0000000..b794abb
+--- /dev/null
++++ b/weft_open_test.go
+@@ -0,0 +1,116 @@
++package main
++
++import (
++	"context"
++	"encoding/json"
++	"net/http"
++	"net/http/httptest"
++	"testing"
++	"time"
++
++	"github.com/bwmarrin/discordgo"
++	"github.com/gorilla/mux"
++	"maunium.net/go/maulogger/v2"
++	"maunium.net/go/mautrix/event"
++	"maunium.net/go/mautrix/id"
++
++	"go.mau.fi/mautrix-discord/database"
++)
++
++// ready: the fake user's session got READY for Discord account "me".
++func (f *weftFake) ready() {
++	f.user.DiscordToken = "token"
++	f.user.Insert()
++	f.user.weftUse(f.user.Session)
++	f.user.weftEvent(f.user.Session, &discordgo.Ready{User: &discordgo.User{ID: "me"}})
++}
++
++func (f *weftFake) portalRow(channel, receiver string, kind discordgo.ChannelType, room id.RoomID) {
++	row := f.br.DB.Portal.New()
++	row.Key, row.Type, row.MXID = database.NewPortalKey(channel, receiver), kind, room
++	if kind == discordgo.ChannelTypeGuildText {
++		row.GuildID = "1"
++	}
++	row.Insert()
++}
++
++// serve: one provisioning request as Karchi; the status and the decoded body.
++func (f *weftFake) serve(t *testing.T, method, path string, route string, handler func(*ProvisioningAPI) http.HandlerFunc) (int, map[string]any) {
++	t.Helper()
++	p := &ProvisioningAPI{bridge: f.br, log: maulogger.Create()}
++	r := mux.NewRouter()
++	r.HandleFunc(route, handler(p)).Methods(method)
++	req := httptest.NewRequest(method, path, nil)
++	req = req.WithContext(context.WithValue(req.Context(), "user", f.user))
++	rec := httptest.NewRecorder()
++	r.ServeHTTP(rec, req)
++	body := map[string]any{}
++	_ = json.Unmarshal(rec.Body.Bytes(), &body)
++	return rec.Code, body
++}
++
++func TestWeftOwnChannel(t *testing.T) {
++	f := newWeftFake(t)
++	f.ready()
++	f.portalRow("10", "me", discordgo.ChannelTypeDM, "")
++	f.portalRow("11", "someone", discordgo.ChannelTypeDM, "")
++	f.portalRow("12", "", discordgo.ChannelTypeGroupDM, "")
++	f.portalRow("13", "", discordgo.ChannelTypeGroupDM, "")
++	f.portalRow("14", "", discordgo.ChannelTypeGuildText, "")
++	f.user.MarkInPortal(database.UserPortal{DiscordID: "12", Type: database.UserPortalTypeDM, Timestamp: time.Now()})
++	db := f.br.DB
++	for channel, want := range map[string]int{"10": 0, "11": http.StatusNotFound, "12": 0, "13": http.StatusNotFound, "14": http.StatusNotFound, "99": http.StatusNotFound} {
++		if row, got := weftOwnChannel(db, f.user, "me", channel); got != want || (want == 0) != (row != nil) {
++			t.Errorf("channel %s: %d %v, want %d", channel, got, row, want)
++		}
++	}
++	other := db.User.New()
++	other.MXID, other.DiscordID, other.DiscordToken = "@other:example", "them", "token2"
++	other.Insert()
++	if _, got := weftOwnChannel(db, f.user, "me", "12"); got != http.StatusConflict {
++		t.Errorf("a group while another account is logged in: %d", got)
++	}
++	if _, got := weftOwnChannel(db, f.user, "me", "10"); got != 0 {
++		t.Errorf("a DM is still his with another account logged in: %d", got)
++	}
++}
++
++func TestWeftOpen(t *testing.T) {
++	open := func(p *ProvisioningAPI) http.HandlerFunc { return p.weftOpen }
++	route := "/v1/channels/{channelID}/open"
++	f := newWeftFake(t)
++	if code, _ := f.serve(t, "POST", "/v1/channels/10/open", route, open); code != http.StatusServiceUnavailable {
++		t.Fatalf("before READY: %d", code)
++	}
++	f.ready()
++	f.portalRow("10", "me", discordgo.ChannelTypeDM, "!joined")
++	f.portalRow("11", "me", discordgo.ChannelTypeDM, "!left")
++	f.portalRow("12", "someone", discordgo.ChannelTypeDM, "")
++	f.br.AS.StateStore.SetMembership("!joined", f.user.MXID, event.MembershipJoin)
++
++	if code, body := f.serve(t, "POST", "/v1/channels/10/open", route, open); code != 200 || body["state"] != "joined" || body["room_id"] != "!joined" {
++		t.Errorf("a room he is in: %d %v", code, body)
++	}
++	// A room he is not in: invited again on Matrix (the fake homeserver takes it), nothing asked of Discord.
++	if code, body := f.serve(t, "POST", "/v1/channels/11/open", route, open); code != 200 || body["state"] != "invited" || body["room_id"] != "!left" {
++		t.Errorf("a room he left: %d %v", code, body)
++	}
++	if code, _ := f.serve(t, "POST", "/v1/channels/12/open", route, open); code != http.StatusNotFound {
++		t.Errorf("someone else's DM: %d", code)
++	}
++	if code, _ := f.serve(t, "POST", "/v1/channels/x/open", route, open); code != http.StatusBadRequest {
++		t.Errorf("not an id: %d", code)
++	}
++	if got := f.requests(); len(got) != 0 {
++		t.Errorf("Discord was asked: %v", got)
++	}
++	// A channel without a room: its one GET; Discord refusing it ends there, without a room.
++	f.portalRow("13", "me", discordgo.ChannelTypeDM, "")
++	f.reply = func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusForbidden) }
++	if code, _ := f.serve(t, "POST", "/v1/channels/13/open", route, open); code != http.StatusBadGateway {
++		t.Errorf("Discord refusing the channel: %d", code)
++	}
++	if got := f.requests(); len(got) != 1 || got[0] != "GET /api/v9/channels/13" {
++		t.Errorf("want only the channel's GET: %v", got)
++	}
++}
+diff --git a/weft_reply.go b/weft_reply.go
+new file mode 100644
+index 0000000..b74c43c
+--- /dev/null
++++ b/weft_reply.go
+@@ -0,0 +1,50 @@
++package main
++
++// Weft's reply guard (DISCORD-PLAN.md, point 1, step 4). The stock bridge sends a reply whose target it cannot
++// reference (an unknown message, or one in another Discord thread) as a plain message to the whole channel, and a
++// message for a thread it failed to start into the parent channel. Every Matrix message passes handleMatrixMessage
++// (portal.go), which asks weftReplyCheck before it uploads or sends anything; a refused message goes nowhere and
++// Matrix gets the bridge's usual "⚠ Your message was not bridged: …" notice with one of the texts below (Weft
++// reads them in app.js failReason).
++
++import (
++	"errors"
++
++	"maunium.net/go/mautrix/event"
++	"maunium.net/go/mautrix/id"
++
++	"go.mau.fi/mautrix-discord/database"
++)
++
++var (
++	errWeftReplyUnknown = errors.New("the message you replied to is not on Discord, so the reply was not sent")
++	errWeftReplyThread  = errors.New("the message you replied to is in a Discord thread; answer it in the Discord app")
++	errWeftThreadFailed = errors.New("Discord did not start the thread, so the message was not sent")
++)
++
++// weftRefusal: the guard's own text for a refused message, "" for any other error.
++func weftRefusal(err error) string {
++	for _, e := range []error{errWeftReplyUnknown, errWeftReplyThread, errWeftThreadFailed} {
++		if errors.Is(err, e) {
++			return e.Error()
++		}
++	}
++	return ""
++}
++
++// weftReplyCheck: nil when the message may go to Discord in thread `threadID` ("" for the channel itself) as far as
++// its reply goes; `target` is the bridge's row of the replied-to event (nil: unknown).
++func weftReplyCheck(content *event.MessageEventContent, target func(id.EventID) *database.Message, threadID string) error {
++	replyTo := content.RelatesTo.GetNonFallbackReplyTo()
++	if replyTo == "" {
++		return nil
++	}
++	msg := target(replyTo)
++	if msg == nil {
++		return errWeftReplyUnknown
++	}
++	if msg.ThreadID != threadID {
++		return errWeftReplyThread
++	}
++	return nil
++}
+diff --git a/weft_reply_test.go b/weft_reply_test.go
+new file mode 100644
+index 0000000..bf36974
+--- /dev/null
++++ b/weft_reply_test.go
+@@ -0,0 +1,200 @@
++package main
++
++import (
++	"encoding/json"
++	"fmt"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"net/url"
++	"strings"
++	"sync"
++	"testing"
++
++	"github.com/bwmarrin/discordgo"
++	"github.com/rs/zerolog"
++	"go.mau.fi/util/dbutil"
++	"maunium.net/go/maulogger/v2"
++	"maunium.net/go/mautrix/appservice"
++	"maunium.net/go/mautrix/bridge"
++	"maunium.net/go/mautrix/bridge/bridgeconfig"
++	"maunium.net/go/mautrix/event"
++	"maunium.net/go/mautrix/id"
++
++	"go.mau.fi/mautrix-discord/config"
++	"go.mau.fi/mautrix-discord/database"
++)
++
++// weftFake is a bridge with a real database (SQLite in memory), a fake homeserver and a fake Discord: every request
++// the bridge makes to Discord lands in `discord`, nothing leaves the machine.
++type weftFake struct {
++	br      *DiscordBridge
++	user    *User
++	mu      sync.Mutex
++	discord []string // "METHOD /path" of each request to Discord
++	reply   func(w http.ResponseWriter, r *http.Request)
++}
++
++func (f *weftFake) requests() []string {
++	f.mu.Lock()
++	defer f.mu.Unlock()
++	return append([]string(nil), f.discord...)
++}
++
++func newWeftFake(t *testing.T) *weftFake {
++	t.Helper()
++	f := &weftFake{}
++	dc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		f.mu.Lock()
++		f.discord = append(f.discord, r.Method+" "+r.URL.Path)
++		reply := f.reply
++		f.mu.Unlock()
++		if reply != nil {
++			reply(w, r)
++			return
++		}
++		w.Header().Set("Content-Type", "application/json")
++		_, _ = io.WriteString(w, `{"id":"9000","channel_id":"100","content":"x"}`)
++	}))
++	t.Cleanup(dc.Close)
++	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		w.Header().Set("Content-Type", "application/json")
++		if strings.Contains(r.URL.Path, "/event/") { // a thread root, read before a thread is started
++			_, _ = io.WriteString(w, `{"type":"m.room.message","event_id":"$root","room_id":"!room","sender":"@x:example","content":{"msgtype":"m.text","body":"root"}}`)
++			return
++		}
++		_, _ = io.WriteString(w, `{}`)
++	}))
++	t.Cleanup(hs.Close)
++
++	base, err := dbutil.NewWithDialect(fmt.Sprintf("file:%s?mode=memory&cache=shared&_txlock=immediate", strings.ReplaceAll(t.Name(), "/", "_")), "sqlite3")
++	if err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() { _ = base.Close() })
++	db := database.New(base, maulogger.Create())
++	if err = db.Upgrade(); err != nil {
++		t.Fatal(err)
++	}
++	nop := zerolog.Nop()
++	as := appservice.Create()
++	as.HomeserverDomain = "example"
++	as.Registration = &appservice.Registration{AppToken: "as", SenderLocalpart: "discordbot", ServerToken: "hs"}
++	if err = as.SetHomeserverURL(hs.URL); err != nil {
++		t.Fatal(err)
++	}
++	baseCfg := &bridgeconfig.BaseConfig{}
++	baseCfg.Homeserver.Domain = "example"
++	f.br = &DiscordBridge{
++		Bridge:                      bridge.Bridge{AS: as, Bot: as.BotIntent(), Config: *baseCfg, ZLog: &nop, Log: maulogger.Create()},
++		Config:                      &config.Config{BaseConfig: baseCfg},
++		DB:                          db,
++		usersByMXID:                 map[id.UserID]*User{},
++		usersByID:                   map[string]*User{},
++		portalsByMXID:               map[id.RoomID]*Portal{},
++		portalsByID:                 map[database.PortalKey]*Portal{},
++		threadsByID:                 map[string]*Thread{},
++		threadsByRootMXID:           map[id.EventID]*Thread{},
++		threadsByCreationNoticeMXID: map[id.EventID]*Thread{},
++		guildsByID:                  map[string]*Guild{},
++		guildsByMXID:                map[id.RoomID]*Guild{},
++		puppets:                     map[string]*Puppet{},
++		puppetsByCustomMXID:         map[id.UserID]*Puppet{},
++	}
++	to, _ := url.Parse(dc.URL)
++	session, _ := discordgo.New("fake-token")
++	session.IsUser = true
++	session.Client = &http.Client{Transport: redirect{to}}
++	dbUser := db.User.New()
++	dbUser.MXID, dbUser.DiscordID = "@karchi:example", "me"
++	f.user = &User{User: dbUser, bridge: f.br, Session: session, log: nop}
++	return f
++}
++
++// guildPortal: a bridged text channel 100 of server 1, with message $known (Discord 500) in the channel and $inThread
++// (Discord 501) in its thread 600.
++func (f *weftFake) guildPortal(t *testing.T) *Portal {
++	t.Helper()
++	dbPortal := f.br.DB.Portal.New()
++	dbPortal.Key = database.NewPortalKey("100", "")
++	dbPortal.Type, dbPortal.GuildID, dbPortal.MXID = discordgo.ChannelTypeGuildText, "1", "!room"
++	dbPortal.Insert()
++	for _, m := range []struct{ mxid, dcid, thread string }{{"$known", "500", ""}, {"$inThread", "501", "600"}, {"$root", "502", ""}} {
++		msg := f.br.DB.Message.New()
++		msg.Channel, msg.DiscordID, msg.MXID, msg.ThreadID, msg.SenderID = dbPortal.Key, m.dcid, id.EventID(m.mxid), m.thread, "other"
++		msg.Insert()
++	}
++	return f.br.GetExistingPortalByID(dbPortal.Key)
++}
++
++func weftEvt(t *testing.T, relates map[string]any) *event.Event {
++	t.Helper()
++	raw := map[string]any{"msgtype": "m.text", "body": "hi"}
++	if relates != nil {
++		raw["m.relates_to"] = relates
++	}
++	data, _ := json.Marshal(raw)
++	evt := &event.Event{Type: event.EventMessage, ID: "$new", RoomID: "!room", Sender: "@karchi:example", Content: event.Content{VeryRaw: data}}
++	if err := evt.Content.ParseRaw(evt.Type); err != nil {
++		t.Fatal(err)
++	}
++	return evt
++}
++
++func TestWeftReplyGuardSendsNothing(t *testing.T) {
++	inReplyTo := func(to string) map[string]any { return map[string]any{"m.in_reply_to": map[string]any{"event_id": to}} }
++	for name, relates := range map[string]map[string]any{
++		"unknown target":            inReplyTo("$nobody"),
++		"target in another thread":  inReplyTo("$inThread"),
++		"in a thread, target not":   {"rel_type": "m.thread", "event_id": "$inThread", "is_falling_back": false, "m.in_reply_to": map[string]any{"event_id": "$known"}},
++		"thread that did not start": {"rel_type": "m.thread", "event_id": "$root", "is_falling_back": true, "m.in_reply_to": map[string]any{"event_id": "$root"}},
++	} {
++		t.Run(name, func(t *testing.T) {
++			f := newWeftFake(t)
++			portal := f.guildPortal(t)
++			if name == "in a thread, target not" {
++				// thread 600 is known to the bridge, rooted at $inThread
++				th := f.br.DB.Thread.New()
++				th.ID, th.ParentID, th.RootDiscordID, th.RootMXID = "600", "100", "501", "$inThread"
++				th.Insert()
++			}
++			if name == "thread that did not start" {
++				f.reply = func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusForbidden) }
++			}
++			portal.handleMatrixMessage(f.user, weftEvt(t, relates))
++			for _, req := range f.requests() {
++				if strings.HasSuffix(req, "/messages") {
++					t.Fatalf("a refused message reached Discord: %v", f.requests())
++				}
++			}
++			if name != "thread that did not start" && len(f.requests()) != 0 {
++				t.Fatalf("no request at all expected: %v", f.requests())
++			}
++		})
++	}
++}
++
++func TestWeftReplyGuardLetsOneThrough(t *testing.T) {
++	for name, relates := range map[string]map[string]any{
++		"no reply":             {},
++		"reply in the channel": {"m.in_reply_to": map[string]any{"event_id": "$known"}},
++	} {
++		t.Run(name, func(t *testing.T) {
++			f := newWeftFake(t)
++			portal := f.guildPortal(t)
++			portal.handleMatrixMessage(f.user, weftEvt(t, relates))
++			if got := f.requests(); len(got) != 1 || got[0] != "POST /api/v9/channels/100/messages" {
++				t.Fatalf("want exactly one message to the channel, got %v", got)
++			}
++		})
++	}
++}
++
++func TestWeftRefusalNotice(t *testing.T) {
++	for _, err := range []error{errWeftReplyUnknown, errWeftReplyThread, fmt.Errorf("%w: error starting thread: 403", errWeftThreadFailed)} {
++		_, status, certain, notice, human, _ := errorToStatusReason(err)
++		if status != event.MessageStatusFail || !certain || !notice || human == "" || strings.Contains(human, "403") {
++			t.Errorf("%v: %v %v %v %q", err, status, certain, notice, human)
++		}
 +	}
 +}
 diff --git a/weft_test.go b/weft_test.go

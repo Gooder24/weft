@@ -26,10 +26,10 @@ diff --git a/provisioning.go b/provisioning.go
 index b594c9e..b64bdc2 100644
 --- a/provisioning.go
 +++ b/provisioning.go
-@@ -75,6 +75,7 @@ func newProvisioningAPI(br *DiscordBridge) *ProvisioningAPI {
- 	// Weft (weft.go): read-only.
- 	r.HandleFunc("/v1/account", p.weftAccount).Methods(http.MethodGet)
+@@ -77,6 +77,7 @@ func newProvisioningAPI(br *DiscordBridge) *ProvisioningAPI {
  	r.HandleFunc("/v1/contacts", p.weftContacts).Methods(http.MethodGet)
+ 	r.HandleFunc("/v1/channels/{channelID}/open", p.weftOpen).Methods(http.MethodPost)
+ 	r.HandleFunc("/v1/guilds/{guildID}/members", p.weftMembers).Methods(http.MethodGet)
 +	r.HandleFunc("/v1/weft/profile/{userID}", p.weftProfile).Methods(http.MethodGet)
  
  	if p.bridge.Config.Bridge.Provisioning.DebugEndpoints {
