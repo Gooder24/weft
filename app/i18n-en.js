@@ -1314,4 +1314,6 @@ export default {
   "Hotovo: pribudlo {} správ. Beeper môžeš nechať tak, Weft ho už nepotrebuje.": "Done: {} messages came. You can leave Beeper as it is, Weft no longer needs it.",
   "Prejsť z Beeperu": "Move from Beeper",
   "Prenesie históriu chatov z Beeper Desktopu do Weftu. Najprv ukáže, čo pribudne; v Beeperi nič nezmení. Siete pripoj vo Wefte vyššie, prihlásenia sa z Beeperu neprenášajú.": "Moves your chat history from Beeper Desktop into Weft. It first shows what will come and changes nothing in Beeper. Connect the networks in Weft above; sign-ins are not taken over from Beeper.",
+  "Ešte dobieha predchádzajúce počítanie. Skús to o chvíľu znova.": "The previous count is still finishing. Try again in a moment.",
+  "Serveru na tento Beeper nestačila pamäť.": "The server ran out of memory for this Beeper.",
 };

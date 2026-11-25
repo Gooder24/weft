@@ -13726,7 +13726,9 @@ async function beeperCall(path, body, query) {
     method: 'POST', body, headers: { Authorization: `Bearer ${S.token}`, 'Content-Type': query ? 'application/octet-stream' : 'application/json' },
   });
   const out = await res.json().catch(() => ({}));
-  if (!res.ok) throw Object.assign(new Error(out.error === "not Beeper's index.db" ? T('Toto nie je index.db z Beeperu.') : out.error || T`archív odpovedal ${res.status}`), { status: res.status, out });
+  const said = { "not Beeper's index.db": T('Toto nie je index.db z Beeperu.'), 'another count or import is running': T('Ešte dobieha predchádzajúce počítanie. Skús to o chvíľu znova.'),
+    'the import ran out of memory': T('Serveru na tento Beeper nestačila pamäť.') }[out.error]; // i18n-ignore: the archive's error keys
+  if (!res.ok) throw Object.assign(new Error(said || out.error || T`archív odpovedal ${res.status}`), { status: res.status, out });
   return out;
 }
 

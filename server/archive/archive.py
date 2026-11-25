@@ -1300,12 +1300,15 @@ def beeper_scope():
     """systemd-run's prefix that gives the importer its own scope and memory limit, outside this service's cgroup
     (MemoryMax=384M with OOMPolicy=stop: an importer running out of memory inside it would stop the archive). Empty
     where no user systemd answers."""
-    if not _scope:
-        prefix = ["systemd-run", "--user", "--scope", "--quiet", "--collect", "-p", f"MemoryMax={BEEPER_MEMORY}"]
-        try: ok = subprocess.run(prefix + ["true"], capture_output=True, timeout=30).returncode == 0
-        except (OSError, subprocess.SubprocessError): ok = False
-        _scope.append(prefix if ok else [])
-    return _scope[0]
+    if _scope: return _scope[0]
+    prefix = ["systemd-run", "--user", "--scope", "--quiet", "--collect", "-p", f"MemoryMax={BEEPER_MEMORY}"]
+    try: ok = subprocess.run(prefix + ["true"], capture_output=True, timeout=30).returncode == 0
+    except (OSError, subprocess.SubprocessError): ok = False
+    if not ok:  # asked again next time: user systemd may answer later
+        print("archive: no systemd scope for the Beeper import, it runs inside this service's memory limit", flush=True)
+        return []
+    _scope.append(prefix)
+    return prefix
 
 
 def beeper_run(folder, dry_run):
