@@ -30,6 +30,8 @@ async function main() {
   const results = [];
   const check = (id, ok, evidence) => results.push({ id, ok: !!ok, evidence });
   try {
+    // A device that chose its language before opens on the login form (the welcome screen is axe.cjs's).
+    await app.page.evaluateOnNewDocument(() => localStorage.setItem('ep_lang', 'sk'));
     await app.page.goto(app.base + '/', { waitUntil: 'networkidle0' });
     await app.page.waitForSelector(PASSWORD);
     const page = app.page;
