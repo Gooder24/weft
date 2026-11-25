@@ -16,8 +16,8 @@ konci. Čo vieme len z cudzích článkov, je pri tom napísané.
   ale nevie nič poslať. Všetko, čo agent navrhne, čaká vo Wefte na Karchiho v jednom zozname „Na schválenie“.
 - Ako prvý sa postaví zoznam na schválenie a jeho prvý používateľ bude Hermes. Netreba naň žiadnu verejnú adresu
   ani predplatné.
-- Všetky AI budú v jednom pohľade „AI“ s miestnosťou „Pre AI“ na súbory pre agentov. Weft ich spozná sám: miestny
-  účet agenta (Hermes, OpenClaw) a značka bota, ktorú zapisujú naše mosty. Beeperove AI mosty použiť nejde.
+- Všetky AI budú v jednom pohľade „AI“. Weft ich spozná sám: miestny účet agenta (Hermes, OpenClaw) a značka bota,
+  ktorú zapisujú naše mosty. Beeperove AI mosty použiť nejde.
 
 ## Čo má Weft a Beeper nie
 
@@ -166,20 +166,16 @@ Chat je AI, keď platí niečo z tohto:
   Inboxu odídu doň, tlačidlo pohľadu ukazuje počet neprečítaných a Ctrl+K ich nájde ako vždy.
 - Chat s AI z mosta (Meta AI v Messengeri) ostane chatom svojej siete, len dostane značku AI. Miestni agenti
   dostanú spoločnú appku „AI“ s obrázkom agenta namiesto appky „Hermes“.
-- Na vrchu pohľadu je miestnosť „Pre AI“: súkromná miestnosť bez ďalších členov, kam Karchi hodí súbor alebo text
-  (Ctrl+V, potiahnutie, `weft put`). Agent na hocijakom stroji si ho vezme cez `weft take`, ktorý vypíše miestne
-  cesty, takže sa nevyberá žiadne zariadenie. Súbory ostanú v miestnosti, kým ich Karchi nezmaže. `put` a `take`
-  siahajú len na túto miestnosť a odmietnu, keď je v nej ktokoľvek ďalší.
+- Súbory a text medzi vlastnými zariadeniami sem nepatria. Majú vlastný návrh bez AI, [nástenku](../2026-11-nastenka/README.md).
 - Agent, ktorý píše Karchimu (`post_to_owner` vyššie), píše do vlastnej miestnosti, a tá je tiež v tomto pohľade.
 
 ### Poradie
 
 | # | Krok | Kontrola |
 |---|---|---|
-| 1 | Rozpoznanie podľa pravidiel 1, 3 a 4, pohľad „AI“, miestnosť „Pre AI“, `weft put` a `weft take` | UI na falošnom homeserveri: miestny agent, duch so značkou aj ručná oprava padnú do „AI“; `put` do miestnosti s ďalším členom odmietne |
+| 1 | Rozpoznanie podľa pravidiel 1, 3 a 4 a pohľad „AI“ | UI na falošnom homeserveri: miestny agent, duch so značkou aj ručná oprava padnú do „AI“ |
 | 2 | Značka z mostov: `ghost_extra_profile_info` v Messengeri, Instagrame a WhatsAppe, Discord podľa toho, čo prijme Tuwunel | po reštarte má Meta AI v profile značku a jeho chat je v „AI“; most nespustil žiadne sťahovanie |
 | 3 | OpenClaw, keď ho Karchi bude chcieť: vlastný účet na Tuwuneli, `@openclaw/matrix` s povoleným súkromným homeserverom | jeho chat sa sám objaví v „AI“ |
-| 4 | Zdieľanie z mobilu do „Pre AI“: na Androide `share_target` v manifeste, na iPhone prijímač LocalSend na asuse | na emulátore Androidu skončí zdieľaný súbor v „Pre AI“ |
 
 Muse, Dots a Duet sa sem dostanú, až keď budú v EÚ. Muse vo WhatsAppe potom príde krokom 2 bez ďalšej práce.
 
