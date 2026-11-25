@@ -2,9 +2,11 @@
 """Weft's "send later": sends Karchi's scheduled messages when they come due, whether Weft is open or not.
 
 Weft keeps them in his account data under sk.karchi.sendlater as {"items": [{id, room, at, seq, content}]},
-`at` in ms. This waits on /sync for changes to that list (or until the next one is due), sends each due item
-with its id as the transaction id, so a retry after a crash cannot send it twice, and marks it sent (or failed,
-with the server's error). Weft shows what is still waiting and can cancel it or move it to now.
+`at` in ms. An item with `gap` (ms, Rozoslať) is paced: its batch goes only `gap` after the last paced batch of the
+same network (`net`, else its room) went, so a list due all at once after an outage still goes out one by one.
+This waits on /sync for changes to that list (or until the next one is due), sends each due item with its id
+as the transaction id, so a retry after a crash cannot send it twice, and marks it sent (or failed, with the
+server's error). Weft shows what is still waiting and can cancel it or move it to now.
 Its own device logs in once with a token from mint-login-token.py; the token stays in ./token (0600)."""
 import json, os, stat, subprocess, sys, time, urllib.error, urllib.parse, urllib.request
 
@@ -125,6 +127,26 @@ def orphan(it, every):
         x is not it and x["room"] == it["room"] and not x.get("batch") and not x.get("seq") for x in every)
 
 
+def paced_last(every, it, results):
+    """When the last paced batch of `it`'s network went (ms), from the list and this round's results."""
+    net = lambda x: x.get("net") or x["room"]
+    went = [x.get("sent") or results.get(x["id"], {}).get("sent") for x in every if x.get("gap") and net(x) == net(it)]
+    return max([w for w in went if w] or [0])
+
+
+def paced(every, it, results, now):
+    """None when a paced item may go now, "wait" while a part of its batch before it has not gone or (its first
+    part) another batch of its network went less than `gap` ago, else why it must not go at all."""
+    if not it.get("gap"): return None
+    done = lambda x, k: x.get(k) or results.get(x["id"], {}).get(k)
+    mates = [x for x in every if x is not it and it.get("batch") and x.get("batch") == it["batch"]]
+    earlier = [x for x in mates if x.get("seq", 0) < it.get("seq", 0)]
+    if any(done(x, "failed") and not done(x, "sent") for x in earlier): return "the message before it did not go"
+    if earlier: return "wait" if any(not done(x, "sent") for x in earlier) else None
+    if any(done(x, "sent") for x in mates): return None
+    return "wait" if now - paced_last(every, it, results) < it["gap"] else None
+
+
 def send_due(token, user, now):
     every = items(token, user)
     due = sorted((it for it in every if not it.get("sent") and not it.get("failed") and it.get("at", 0) <= now),
@@ -139,8 +161,10 @@ def send_due(token, user, now):
     queue, waited = list(due), set()
     while queue:
         it = queue.pop(0)
+        pace = paced(every, it, results, now)
+        if pace == "wait": continue  # next_due says when
         try:
-            why = (held.get(group(it)) if it.get("batch") or it.get("seq") else None) or held_reply(token, it)
+            why = pace or (held.get(group(it)) if it.get("batch") or it.get("seq") else None) or held_reply(token, it)
             content = it["content"]
             if not why:
                 # A part after the reply goes only once its reply went: never alone to the channel.
@@ -159,16 +183,16 @@ def send_due(token, user, now):
                     why = "its first part was cancelled, and it may belong to a Discord reply; send it again from Weft"
             if why:
                 held[group(it)] = why
-                results[it["id"]] = {"failed": int(time.time() * 1000), "error": why}
+                results[it["id"]] = {"failed": now, "error": why}
                 print(f"held {it['id']}: {why}", flush=True)
                 continue
             r = call("PUT", f"/_matrix/client/v3/rooms/{q(it['room'])}/send/m.room.message/{q(it['id'])}", content, token=token)
-            results[it["id"]] = {"sent": int(time.time() * 1000), "event_id": r.get("event_id")}
+            results[it["id"]] = {"sent": now, "event_id": r.get("event_id")}
             print(f"sent {it['id']}", flush=True)
         except HttpError as e:
             if e.status == 429 or e.status >= 500:
                 break  # the server is busy: the same item goes out on the next round
-            results[it["id"]] = {"failed": int(time.time() * 1000), "error": e.body.get("error") or str(e)}
+            results[it["id"]] = {"failed": now, "error": e.body.get("error") or str(e)}
             print(f"failed {it['id']}: {e}", flush=True)
     if results:
         mark(token, user, results, now)
@@ -178,7 +202,13 @@ def next_due(token, user):
     every = items(token, user)
     open_ = [it for it in every if not it.get("sent") and not it.get("failed")]
     # A part waiting for its reply is due when that reply is.
-    when = lambda it: max([it["at"]] + [c["at"] for c in carriers(it, every) if not c.get("sent") and not c.get("failed")])
+    def when(it):
+        at = max([it["at"]] + [c["at"] for c in carriers(it, every) if not c.get("sent") and not c.get("failed")])
+        if not it.get("gap"): return at
+        # A paced batch's first part is due `gap` after its network's last one, its later parts with it.
+        earlier = [x for x in every if x is not it and it.get("batch") and x.get("batch") == it["batch"] and x.get("seq", 0) < it.get("seq", 0)]
+        if earlier: return max([at] + [when(x) for x in earlier if not x.get("sent") and not x.get("failed")])
+        return max(at, paced_last(every, it, {}) + it["gap"])
     waiting = [when(it) for it in open_]
     return min(waiting) if waiting else None
 
