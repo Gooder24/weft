@@ -166,7 +166,7 @@ const account = (title, n, of, h1, note) => [
     <p>Poslali sme odkaz na <span class="link">ema@example.com</span>. Otvor mail a klikni na „Overiť“.</p>
     ${k ? '<p class="ok">E-mail je overený. E-mail a heslo odteraz stačia na prihlásenie v každom zariadení.</p>' : '<p class="warn">Čakám na overenie… Táto stránka pokračuje sama.</p>'}
     <div class="row"><button class="ghost" data-id="resend">Poslať znova</button><button class="ghost" data-id="wrongmail">Iný e-mail</button></div>
-    ${foot('Pokračovať')}</div>`, hold: k ? 1800 : 2400, click: k ? 'next' : null })),
+    ${foot('Pokračovať')}</div>`, hold: k ? 1800 : 2400, click: k ? 'next' : null, wait: k ? '' : 'Najprv klikni na odkaz v maili. Kým nie je e-mail overený, ďalej to nepustí.' })),
 ];
 const newDevice = sel => ({ html: `${bar_top('Prihlásenie', 2, 4)}<div class="body"><h1>Nové zariadenie</h1>
   <p class="muted">Tvoje správy sú šifrované. Toto zariadenie ešte nemá kľúče, preto ho over jedným z týchto spôsobov:</p>
@@ -201,7 +201,7 @@ const PATHS = {
       <p class="muted">V druhom zariadení Weft ukazuje toto. Ak je to rovnaké, klikni tam „Áno, sedí“.</p>
       <span class="code">pes · kľúč · strom · raketa · srdce · klobúk · tučniak</span>
       ${k ? '<p class="ok">Overené. Toto zariadenie dostalo kľúče k tvojim správam.</p>' : '<p class="warn">Čakám na druhé zariadenie…</p>'}
-      ${foot('Pokračovať')}</div>`, hold: k ? 1800 : 2600, click: k ? 'next' : null })),
+      ${foot('Pokračovať')}</div>`, hold: k ? 1800 : 2600, click: k ? 'next' : null, wait: k ? '' : 'Najprv potvrď v druhom zariadení.' })),
     { html: `${bar_top('Prihlásenie', 4, 4)}<div class="body"><h1>Hotovo</h1>
       <p class="ok">Účet je prihlásený aj v tomto zariadení.</p>
       <table><tr><td>Tu uvidíš</td><td>nové správy a posledných 30 dní</td></tr>
@@ -243,12 +243,12 @@ cd weft &amp;&amp; ./install.sh</span>
     { ...where(''), hold: 1200 },
     { ...where(''), click: 'hosted' },
     { ...where('hosted'), click: 'next', hold: 700 },
-    ...[0, 4, 9, 14].map((n, i) => ({ html: `${bar_top('Pozvánka', 2, 5)}<div class="body"><h1>Kód pozvánky</h1>
+    ...[0, 4, 9, 14].map((n, i) => ({ html: `${bar_top('Pozvánka', 2, 6)}<div class="body"><h1>Kód pozvánky</h1>
       <div class="field"><span class="muted">Kód z pozvánky</span>${typed('WEFT-7Q4K-M2XD', n)}</div>
-      ${i === 3 ? '<p class="ok">Server weft.example · pozvánka platí pre 1 účet · zostáva 3 z 5 miest</p>' : '<p class="muted">Dostal si ho od toho, kto server prevádzkuje.</p>'}
+      ${i === 3 ? '<p class="ok">Server weft.example · pozvánka platí pre 1 účet · zostáva 3 z 5 miest</p>' : '<p class="muted">Kód ti dá ten, kto server prevádzkuje.</p>'}
       ${foot('Pokračovať')}</div>`, hold: i === 3 ? 1400 : 350, click: i === 3 ? 'next' : null })),
-    ...account('Pozvánka', 2, 5, 'Tvoj účet', 'Na tento e-mail ti server pošle odkaz na overenie a neskôr aj na obnovenie hesla.'),
-    { html: `${bar_top('Pozvánka', 3, 5)}<div class="body"><h1>Čo bude na serveri a čo nie</h1>
+    ...account('Pozvánka', 3, 6, 'Tvoj účet', 'Na tento e-mail ti server pošle odkaz na overenie a neskôr aj na obnovenie hesla.'),
+    { html: `${bar_top('Pozvánka', 4, 6)}<div class="body"><h1>Čo bude na serveri a čo nie</h1>
       <table>
       <tr><td>Prihlásenia do sietí</td><td>na serveri, inak by nechodili nové správy</td></tr>
       <tr><td>Posledných 30 dní správ</td><td>na serveri, šifrované pre tvoje zariadenia. Server ich bez nich neotvorí.</td></tr>
@@ -256,21 +256,21 @@ cd weft &amp;&amp; ./install.sh</span>
       <tr><td>Kto server prevádzkuje</td><td>technicky vidí správu vo chvíli, keď prechádza mostom. Ak mu nedôveruješ, zvoľ vlastný server.</td></tr>
       </table>
       <div class="check on" data-id="ok"><b></b><span>Rozumiem</span></div>${foot('Pokračovať')}</div>`, hold: 3400, click: 'next' },
-    { html: `${bar_top('Pozvánka', 4, 5)}<div class="body"><h1>Kľúč na obnovenie</h1>
+    { html: `${bar_top('Pozvánka', 5, 6)}<div class="body"><h1>Kľúč na obnovenie</h1>
       <p class="muted">Tvoje správy sa šifrujú kľúčom, ktorý server nemá. Keď stratíš všetky zariadenia, otvorí ich len tento kľúč.</p>
       <span class="code">EsTc 8KXp Qm2r Vw7d  Lh4N bZ9s Ty3F uJ6e
 Ra1G kP5w Nx8v Dc2Q  mH7j Yt4L sB9f Wq3K</span>
       <div class="row"><button class="ghost" data-id="save">Uložiť do súboru</button><button class="ghost">Skopírovať</button></div>
       <div class="note">Ulož ho mimo Weftu, napríklad do správcu hesiel. Weft ho neukáže druhýkrát.</div>
       ${foot('Mám ho uložený')}</div>`, hold: 2600, click: 'save' },
-    { html: `${bar_top('Pozvánka', 5, 5)}<div class="body"><h1>Kde bude celá história?</h1>
+    { html: `${bar_top('Pozvánka', 6, 6)}<div class="body"><h1>Kde bude celá história?</h1>
       <p class="muted">Server drží len posledných 30 dní. Všetko staršie bude tu:</p>
       <div class="opts">
       ${opt('pc', 'V tomto počítači', 'Desktopová appka · voľné 212 GB', true, 'odporúčané')}
       ${opt('phone', 'V telefóne', 'Appka v telefóne · voľné 18 GB · veľké exporty radšej v počítači', false)}
       ${opt('none', 'Nikde, stačí mi 30 dní', 'Staršie správy sa nebudú sťahovať vôbec.', false)}
       </div>${foot('Pokračovať')}</div>`, hold: 2400, click: 'next' },
-    { html: `${bar_top('Pozvánka', 5, 5)}<div class="body"><h1>Pripoj siete</h1>
+    { html: `${bar_top('Pozvánka', 6, 6)}<div class="body"><h1>Pripoj siete</h1>
       <p class="muted">Pri každej sa Weft spýta na históriu a povie, koľko zaberie v tomto počítači.</p>
       ${tiles([])}${foot('Do schránky')}</div>`, hold: 2400 },
   ] },
@@ -466,6 +466,8 @@ function live() {
     if (!el) return;
     const id = el.dataset.id, f = PATHS[path].frames[i];
     if (id === 'back') { back(); return; }
+    // A frame that waits for something outside Weft (the mail, the other device) cannot be skipped.
+    if (f.wait && !NOTE[id]) { note = f.wait; menu(); return; }
     // What the ring marks goes on in this path; another choice or network jumps to its own path.
     if (id === f.click) { next(); return; }
     // On a frame that waits by itself, a click on what the next ring will mark does that click at once.
