@@ -87,11 +87,18 @@ td:first-child { color: var(--muted); width: 36%; }
 #cursor { position: absolute; pointer-events: none; display: none; width: 0; height: 0;
   border-left: 7px solid transparent; border-right: 7px solid transparent; border-bottom: 16px solid var(--text);
   transform: rotate(-28deg); transform-origin: top left; }
-#index { padding: 20px; display: flex; flex-direction: column; gap: 8px; }
+body.live { display: flex; gap: 24px; padding: 24px; min-height: 100vh; }
+body.live #stage { flex: none; border: var(--bw) solid var(--line); border-radius: var(--radius-l); }
+body.live [data-id] { cursor: pointer; }
+#nav { display: none; width: 230px; flex-direction: column; gap: 8px; }
+body.live #nav { display: flex; }
+#nav button { text-align: left; }
+#nav button.on { border-color: var(--accent); }
+#nav .help { color: var(--muted); }
 </style>
 </head>
 <body>
-<div id="stage"></div>
+<div id="nav"></div><div id="stage"></div>
 <div id="ring"></div><div id="cursor"></div>
 <script>
 const IMG = '../../../../app/';
@@ -173,7 +180,7 @@ cd weft &amp;&amp; ./install.sh</span>
       <div class="opts">
       ${opt('srv', 'Na mojom serveri', 'Vidia ju všetky tvoje zariadenia, vyhľadávanie aj agenti.', true, 'odporúčané')}
       ${opt('both', 'Na serveri aj v tomto počítači', 'Desktopová appka si drží celú kópiu. Funguje aj bez spojenia so serverom.', false)}
-      </div><p class="muted">Ďalej: Koľko histórie? (ukážka „Export z Mety“)</p>${foot('Pokračovať')}</div>`, hold: 2400 },
+      </div><p class="muted">Ďalej: Koľko histórie? (ukážka „Export z Mety“)</p>${foot('Pokračovať')}</div>`, hold: 2400, then: ['export', 0] },
   ] },
 
   hostovany: { title: 'Pozvánka na cudzí server', frames: [
@@ -273,7 +280,7 @@ Ra1G kP5w Nx8v Dc2Q  mH7j Yt4L sB9f Wq3K</span>
       <div class="acct"><div class="row"><img src="${IMG}messenger.ico" alt=""><span>Messenger · ema.novakova</span>
       <span class="warn" style="margin-left:auto">zastavené</span></div>
       <span class="warn">Meta chce overiť, že si to ty. Doťahovanie stojí a samo sa nespustí.</span>${bar(71)}
-      <div class="row"><button class="ghost">Otvoriť overenie</button><button class="ghost">Radšej export z Mety</button></div></div>
+      <div class="row"><button class="ghost">Otvoriť overenie</button><button class="ghost" data-id="export">Radšej export z Mety</button></div></div>
       <p class="muted">Takto vyzerá, keď Meta zasiahne: nič sa neskúša znova, ty rozhodneš.</p></div>`, hold: 3200 },
   ] },
 
@@ -336,8 +343,8 @@ function draw(path, i) {
   const el = f.click && document.querySelector(`[data-id="${f.click}"]`);
   if (el) {
     const r = el.getBoundingClientRect();
-    Object.assign(ring.style, { display: 'block', left: `${r.left - 4}px`, top: `${r.top - 4}px`, width: `${r.width + 8}px`, height: `${r.height + 8}px` });
-    Object.assign(cursor.style, { display: 'block', left: `${r.left + Math.min(r.width - 10, 40)}px`, top: `${r.top + r.height / 2}px` });
+    Object.assign(ring.style, { display: 'block', left: `${r.left + scrollX - 4}px`, top: `${r.top + scrollY - 4}px`, width: `${r.width + 8}px`, height: `${r.height + 8}px` });
+    if (!document.body.classList.contains('live')) Object.assign(cursor.style, { display: 'block', left: `${r.left + Math.min(r.width - 10, 40)}px`, top: `${r.top + r.height / 2}px` });
   }
   return { hold: f.hold || (f.click ? 600 : 1000), count: PATHS[path].frames.length };
 }
@@ -345,19 +352,57 @@ window.PATHS = PATHS; window.draw = draw;
 
 const q = new URLSearchParams(location.search);
 if (q.get('path')) draw(q.get('path'), Number(q.get('frame') || 0));
-else {
-  let path = null, i = 0;
-  const stage = document.getElementById('stage');
-  const index = () => { stage.innerHTML = `<div id="index"><h1>Ukážky prvého spustenia</h1><p class="muted">Klikni na cestu, šípky ← → listujú, Esc späť.</p>
-    ${Object.entries(PATHS).map(([k, p]) => `<a class="link" href="#" data-path="${k}">${p.title}</a>`).join('')}</div>`; };
-  index();
-  document.addEventListener('click', e => { const a = e.target.closest('[data-path]'); if (a) { e.preventDefault(); path = a.dataset.path; i = 0; draw(path, i); } });
-  document.addEventListener('keydown', e => {
-    if (!path) return;
-    if (e.key === 'Escape') { path = null; document.getElementById('ring').style.display = document.getElementById('cursor').style.display = 'none'; index(); }
-    if (e.key === 'ArrowRight') { i = Math.min(i + 1, PATHS[path].frames.length - 1); draw(path, i); }
-    if (e.key === 'ArrowLeft') { i = Math.max(i - 1, 0); draw(path, i); }
+else live();
+
+// The clickable page: the yellow ring shows what to click, choices branch into their path, fields fill themselves.
+function live() {
+  document.body.classList.add('live');
+  // A choice or a network opens its own path: [path, frame].
+  const BRANCH = {
+    self: ['vlastny', 2], hosted: ['hostovany', 2], export: ['export', 2], pull: ['dotahovanie', 2],
+    messenger: ['export', 0], instagram: ['export', 0], whatsapp: ['whatsapp', 0], gmail: ['gmail', 0], outlook: ['gmail', 0],
+  };
+  const nav = document.getElementById('nav');
+  let path = 'vlastny', i = 0, timer = 0;
+  const menu = () => {
+    nav.innerHTML = `<h1>Ukážky</h1><p class="help">Klikaj na to, čo má žltý rámik, alebo vyber inú možnosť. Polia sa vyplnia samy. ← → listujú.</p>
+      <button class="ghost" data-go="start">Od začiatku</button>
+      ${Object.entries(PATHS).map(([k, p]) => `<button class="ghost${k === path ? ' on' : ''}" data-go="${k}">${p.title}</button>`).join('')}`;
+  };
+  const go = (p, k) => {
+    clearTimeout(timer);
+    path = p; i = Math.max(0, Math.min(k, PATHS[p].frames.length - 1));
+    const { hold } = draw(path, i);
+    menu();
+    const f = PATHS[path].frames[i];
+    // Frames nobody clicks in (typing, progress, waiting) move on by themselves.
+    if (!f.click && i < PATHS[path].frames.length - 1) timer = setTimeout(() => go(path, i + 1), hold);
+  };
+  const next = () => {
+    const f = PATHS[path].frames[i];
+    if (i < PATHS[path].frames.length - 1) go(path, i + 1);
+    else if (f.then) go(...f.then);
+    else go('vlastny', 0);
+  };
+  nav.addEventListener('click', e => {
+    const b = e.target.closest('[data-go]');
+    if (b) b.dataset.go === 'start' ? go('vlastny', 0) : go(b.dataset.go, 0);
   });
+  document.getElementById('stage').addEventListener('click', e => {
+    const el = e.target.closest('[data-id]');
+    if (!el) return;
+    const id = el.dataset.id, f = PATHS[path].frames[i];
+    if (id === 'back') { go(path, i - 1); return; }
+    // What the ring marks goes on in this path; another choice or network jumps to its own path.
+    if (id === f.click) { next(); return; }
+    if (BRANCH[id]) { go(...BRANCH[id]); return; }
+    if (id === 'next') next();
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'ArrowRight') next();
+    if (e.key === 'ArrowLeft') go(path, i - 1);
+  });
+  go('vlastny', 0);
 }
 </script>
 </body>
