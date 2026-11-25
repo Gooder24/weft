@@ -940,7 +940,8 @@ a.rnote.rlink { color: var(--link); text-decoration: none; }
 .caledit input[name=title] { font-size: 16px; font-weight: 600; }
 .calwhen { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 input.hm { width: 9ch; text-align: center; font-variant-numeric: tabular-nums; }
-input.hm[aria-invalid=true] { border-color: var(--error); }
+input.day { width: 13ch; text-align: center; font-variant-numeric: tabular-nums; }
+input.hm[aria-invalid=true], input.day[aria-invalid=true] { border-color: var(--error); }
 .calwhen .bcheck { display: flex; align-items: center; gap: 4px; font-size: 14px; }
 .calnotes { white-space: pre-wrap; font-size: 14px; }
 .calbtns { display: flex; gap: 8px; align-items: center; }

@@ -645,6 +645,8 @@ export default {
   "Uložiť": "Save",
   "Názov": "Title",
   "Začiatok": "Start",
+  "d.m.rrrr": "d.m.yyyy",
+  "Deň napíš ako 25.11.2026 alebo 25.11.": "Write the day as 25.11.2026 or 25.11.",
   "Čas": "Time",
   "Čas začiatku": "Start time",
   "Koniec": "End",

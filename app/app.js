@@ -3231,6 +3231,7 @@ function laterView(o) {
   const files = (S.attach.get(r.id) || []).length;
   const choices = remindChoices();
   const own = () => {
+    if (hmStop('__overlay-laterday')) return alert(T('Deň napíš ako 25.11.2026 alebo 25.11.'));
     if (hmStop('__overlay-latertime')) return alert(T('Čas napíš ako 7:30 alebo 1930.'));
     const ts = new Date(o.custom || '').getTime();
     if (ts) scheduleChat(r, ts); else document.querySelector('.laterat')?.focus();
@@ -3253,8 +3254,8 @@ function laterView(o) {
       h('kbd', { class: 'num' }, String(choices.length + 1)),
       h('div', { class: 'rmeta' }, h('b', {}, T('Vlastný čas'))),
       // Day and time apart (the time always 24 h); a day cleared for a moment keeps the time.
-      h('input', { class: 'laterat', type: 'date', value: o.custom.split('T')[0], min: localInput(Date.now()).slice(0, 10), 'aria-label': T('Deň'), 'data-root': '__overlay-laterday', oninput: (e) => { o.custom = `${e.target.value}T${o.custom.split('T')[1]}`; } }),
-      hmInput({ class: 'laterat hm', root: '__overlay-latertime', get: () => o.custom.split('T')[1], put: (t) => { o.custom = `${o.custom.split('T')[0]}T${t}`; }, 'aria-label': T('Čas') }),
+      dayInput({ class: 'laterat', root: '__overlay-laterday', get: () => o.custom.split('T')[0], put: (d) => { o.custom = `${d}T${o.custom.split('T')[1]}`; }, 'aria-label': T('Deň') }),
+      hmInput({ class: 'laterat', root: '__overlay-latertime', get: () => o.custom.split('T')[1], put: (t) => { o.custom = `${o.custom.split('T')[0]}T${t}`; }, 'aria-label': T('Čas') }),
       h('button', { class: 'primary', 'data-root': '__overlay-laterplan', onclick: own }, T('Naplánovať')))),
   ];
 }
@@ -5550,10 +5551,11 @@ function mainView() {
     opaque(S.panel === 'grades' ? panel(gradesView()) : null),
     opaque(S.panel === 'settings' ? panel(settingsView()) : null),
     opaque(S.panel === 'people' ? panel(peopleView(), 'wide') : null),
-    opaque(S.panel === 'calendar' ? panel(calendarView(), 'wide') : null),
+    // The calendar is patched like the one at home, never drawn whole: a press on Uložiť or a field stays under a redraw.
+    S.panel === 'calendar' ? panel(calendarView(), 'wide') : null,
     opaque(S.panel === 'link' ? panel(linkView()) : null),
     opaque(S.panel === 'profile' ? panel(profileView()) : null),
-    opaque(overlayView()),
+    S.overlay?.kind === 'later' ? overlayView() : opaque(overlayView()), // „Odoslať neskôr“ is patched: its clicks stay
     codeView(),
     ringView(),
   ];
@@ -11445,49 +11447,79 @@ function parseTime(typed) {
   return `${m[1].padStart(2, '0')}:${m[2] || '00'}`;
 }
 
-/** Half-typed times by data-root: a redraw (a sync, or a panel drawn whole) brings the field back with what was typed. */
+/** A day typed as text, always day.month.year: `<input type="date">` follows the system (x270 speaks en_US, mm/dd/yyyy).
+ *  "25.11.2026", "25. 11. 26", "25.11." (that day nearest to `was`, else to today) or "2026-11-25" -> "2026-11-25";
+ *  "" clears; else null. */
+function parseDay(typed, was = '') {
+  const s = typed.trim();
+  if (!s) return '';
+  const iso = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  const m = iso ? [, iso[3], iso[2], iso[1]] : s.match(/^(\d{1,2})\s*[./-]\s*(\d{1,2})\s*(?:[./-]\s*(\d{2}|\d{4})?\s*)?$/);
+  if (!m) return null;
+  const near = /^\d{4}-\d\d-\d\d$/.test(was) ? calDate(was) : Cal.startOfDay(Date.now());
+  const y = m[3] ? (m[3].length === 2 ? 2000 + Number(m[3]) : Number(m[3]))
+    : [-1, 0, 1].map((k) => near.getFullYear() + k).filter((y) => new Date(y, m[2] - 1, m[1]).getDate() === Number(m[1])).sort((a, b) => Math.abs(new Date(a, m[2] - 1, m[1]) - near) - Math.abs(new Date(b, m[2] - 1, m[1]) - near))[0];
+  const d = new Date(y, m[2] - 1, m[1]);
+  if (d.getFullYear() !== y || d.getMonth() !== m[2] - 1 || d.getDate() !== Number(m[1])) return null; // 31.2. is no day
+  return `${y}-${pad(m[2])}-${pad(m[1])}`;
+}
+/** "2026-11-25" -> "25.11.2026". */
+const showDay = (iso) => { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || ''); return m ? `${+m[3]}.${+m[2]}.${m[1]}` : iso || ''; };
+
+/** Half-typed times and days by data-root: a redraw (a sync, or a panel drawn whole) brings the field back with what was typed. */
 const hmDrafts = new Map();
-/** Whether the field `root` holds a time that is not one: then nothing saves or schedules with it. */
-const hmWrong = (root) => hmDrafts.has(root) && !parseTime(hmDrafts.get(root));
-/** The first of `roots` holding a wrong time gets the keys; false when all are right. */
+/** What the field `root` is (HM or DAY), for hmWrong. */
+const hmKinds = new Map();
+/** Whether the field `root` holds a time or day that is not one: then nothing saves or schedules with it. */
+const hmWrong = (root) => hmDrafts.has(root) && !(hmKinds.get(root) || HM).parse(hmDrafts.get(root), '');
+/** The first of `roots` holding a wrong time or day gets the keys (its copy on top); false when all are right. */
 function hmStop(...roots) {
   const bad = roots.find(hmWrong);
   if (!bad) return false;
   [...document.querySelectorAll(`[data-root="${CSS.escape(bad)}"]`)].pop()?.focus();
   return true;
 }
-/** A time of day typed as text, always 24 h: `<input type="time">` follows the system's AM/PM (x270 speaks en_US).
- *  "8", "830", "8:30" all mean half past eight, ↑/↓ step a quarter; a wrong or empty one brings the old back, and its
- *  Enter does nothing else. `get` reads the kept time, `put` takes a new "HH:MM" and must not redraw: the change comes
- *  on blur, also under a mouse click or inside a redraw that takes the field away. `root` is the field's data-root. */
-function hmInput({ get, put, root, ...props }) {
+const HM = { parse: (v) => parseTime(v), show: (v) => v, cls: 'hm', placeholder: () => 'hh:mm', maxlength: 5,
+  step: (v, up) => { const [hh, mm] = v.split(':').map(Number); const m = (Math.round((hh * 60 + mm) / 15) * 15 + (up ? 15 : -15) + 1440) % 1440; return `${pad(Math.floor(m / 60))}:${pad(m % 60)}`; } };
+const DAY = { parse: parseDay, show: showDay, cls: 'day', placeholder: () => T('d.m.rrrr'), maxlength: 12,
+  step: (v, up) => calYmd(Cal.addDays(calDate(v), up ? 1 : -1)) };
+/** A time of day (hmInput) or a day (dayInput) typed as text, never the system's AM/PM or mm/dd/yyyy. A time: "8",
+ *  "830", "8:30" all mean half past eight, ↑/↓ step a quarter; a day: "25.11.2026" or "25.11.", ↑/↓ a day. A wrong
+ *  one stays, marked, and its Enter does nothing else. `get` reads the kept value ("HH:MM", "YYYY-MM-DD"), `put`
+ *  takes a new one: the change comes on blur, also under a mouse click or inside a redraw that takes the field away.
+ *  `root` is the field's data-root. */
+const hmInput = (o) => typedInput(HM, o);
+const dayInput = (o) => typedInput(DAY, o);
+function typedInput(kind, { get, put, root, ...props }) {
+  hmKinds.set(root, kind);
   const take = (el) => {
     const was = el.hasAttribute('aria-invalid');
-    const t = parseTime(el.value);
-    // A wrong or empty time stays, marked, and nothing saves or schedules with it (hmWrong) until it is right.
+    const t = kind.parse(el.value, get());
+    // A wrong or empty one stays, marked, and nothing saves or schedules with it (hmWrong) until it is right.
     if (!t) { hmDrafts.set(root, el.value); el.setAttribute('aria-invalid', 'true'); return false; }
     hmDrafts.delete(root);
     el.removeAttribute('aria-invalid');
-    el.value = t;
-    if (t !== get() || was) put(t); // the same time typed over a wrong one: the complaint about it goes
+    el.value = kind.show(t);
+    if (t !== get() || was) put(t); // the same one typed over a wrong one: the complaint about it goes
     return true;
   };
   return h('input', {
-    class: 'hm', value: hmDrafts.get(root) ?? get(), placeholder: 'hh:mm', inputmode: 'numeric', maxlength: 5, spellcheck: false, autocomplete: 'off',
-    'data-root': root, 'aria-invalid': hmWrong(root) ? 'true' : null, ...props,
+    value: hmDrafts.get(root) ?? kind.show(get()), placeholder: kind.placeholder(), inputmode: kind === HM ? 'numeric' : 'decimal', maxlength: kind.maxlength,
+    spellcheck: false, autocomplete: 'off', 'data-root': root, 'aria-invalid': hmWrong(root) ? 'true' : null, ...props,
+    class: [kind.cls, props.class].filter(Boolean).join(' '),
     oninput: (e) => { hmDrafts.set(root, e.currentTarget.value); },
     // Blur too: a field drawn anew holds the typed text as its value, so leaving it fires no change.
-    // Not while the window is away (Alt+Tab): the field still holds the keys and the rest of the digits comes later.
+    // Not while the window is away (Alt+Tab): the field still holds the keys and the rest comes later.
     onchange: (e) => { if (!patching && document.hasFocus()) take(e.currentTarget); },
     onblur: (e) => { if (!patching && document.hasFocus()) take(e.currentTarget); },
     onkeydown: (e) => {
-      // Taken before the form or the list acts on Enter; a wrong time saves or schedules nothing.
+      // Taken before the form or the list acts on Enter; a wrong one saves or schedules nothing.
       if (e.key === 'Enter' && !take(e.currentTarget)) { e.preventDefault(); e.stopPropagation(); }
       else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
         e.preventDefault();
-        const [hh, mm] = (parseTime(e.currentTarget.value) || get()).split(':').map(Number);
-        const m = (Math.round((hh * 60 + mm) / 15) * 15 + (e.key === 'ArrowUp' ? 15 : -15) + 1440) % 1440;
-        e.currentTarget.value = `${pad(Math.floor(m / 60))}:${pad(m % 60)}`;
+        const v = kind.parse(e.currentTarget.value, get()) || get();
+        if (!v) return;
+        e.currentTarget.value = kind.show(kind.step(v, e.key === 'ArrowUp'));
         take(e.currentTarget);
       }
     },
@@ -11504,13 +11536,15 @@ function calEditor() {
     if (redraw(k)) render();
   };
   // Moving the start drags the end along so the length stays, and a weekly series' days follow (as in Kalendarix).
-  const moveStart = (k) => (e) => {
+  const moveStart = (k) => (v) => {
     const before = calDate(ed.date, ed.allDay ? '00:00' : ed.time);
-    ed[k] = e.target.value;
+    ed[k] = v;
+    ed.error = '';
     const after = calDate(ed.date, ed.allDay ? '00:00' : ed.time);
-    if (Number.isNaN(after.getTime()) || Number.isNaN(before.getTime())) return;
+    if (Number.isNaN(after.getTime()) || Number.isNaN(before.getTime())) return render();
+    // The end moves from its kept day and time; a wrong one typed there gives way to the moved one, as with putStart.
     const end = new Date(calDate(ed.endDate, ed.allDay ? '00:00' : ed.endTime).getTime() + (after - before));
-    if (!Number.isNaN(end.getTime())) { ed.endDate = calYmd(end); if (!ed.allDay) ed.endTime = calHm(end); }
+    if (!Number.isNaN(end.getTime())) { ed.endDate = calYmd(end); if (!ed.allDay) ed.endTime = calHm(end); hmDrafts.delete('__calEndDate'); hmDrafts.delete('__calEndTime'); }
     const days = Cal.dayNumber(after) - Cal.dayNumber(before);
     if (days && !ed.daysTouched) ed.byday = ed.byday.map((i) => (((i + days) % 7) + 7) % 7);
     render();
@@ -11525,13 +11559,14 @@ function calEditor() {
     if (Number.isNaN(end.getTime())) return;
     ed.endDate = calYmd(end);
     ed.endTime = calHm(end);
+    hmDrafts.delete('__calEndDate');
     hmDrafts.delete('__calEndTime');
     calWhenShown();
   };
-  // Both copies of the editor (home, and the panel over it) show the times; a fixed time clears the old complaint.
-  // The complaint is only hidden, not taken out: the buttons under it must not move under a click already pressed.
+  // Both copies of the editor (home, and the panel over it) show the times; a fixed time clears the old complaint
+  // (hidden, not taken out: the buttons under it must not move under a click already pressed).
   const calWhenShown = () => {
-    for (const [root, v] of [['__calTime', ed.time], ['__calEndDate', ed.endDate], ['__calEndTime', ed.endTime]]) {
+    for (const [root, v] of [['__calTime', ed.time], ['__calEndDate', showDay(ed.endDate)], ['__calEndTime', ed.endTime]]) {
       for (const el of document.querySelectorAll(`[data-root="${root}"]`)) {
         if (el === document.activeElement) continue;
         const wrong = hmWrong(root);
@@ -11546,7 +11581,7 @@ function calEditor() {
   if (ed.managed) {
     const ev = cal.doc.calendars.find((c) => c.id === ed.from)?.events.find((x) => x.uid === ed.uid);
     return h('div', { class: 'caledit' }, h('h3', {}, ed.title),
-      h('p', {}, ed.allDay ? T`${ed.date} celý deň` : `${ed.date} ${ed.time} – ${ed.endTime}`),
+      h('p', {}, ed.allDay ? T`${showDay(ed.date)} celý deň` : `${showDay(ed.date)} ${ed.time} – ${ed.endTime}`),
       ev?.rrule?.FREQ ? h('p', {}, T`Opakuje sa ${calRepeatText(ev.rrule, Date.parse(ev.start))}`) : null,
       ed.location ? h('p', {}, ed.location) : null, ed.notes ? h('p', { class: 'calnotes' }, ed.notes) : null,
       h('p', { class: 'bline' }, T('Túto udalosť zapisuje synchronizácia (rozvrh), tu sa nemení.')),
@@ -11568,7 +11603,7 @@ function calEditor() {
     h('label', {}, 'koniec ', h('select', { 'aria-label': T('Koniec opakovania'), onchange: set('ending') },
       [['never', 'nikdy'], ['count', T('po počte')], ['until', T('dátumom')]].map(([v, l]) => h('option', { value: v, selected: ed.ending === v }, l)))),
     ed.ending === 'count' ? h('label', {}, h('input', { type: 'number', min: 1, max: 999, value: ed.count, 'aria-label': T('Počet opakovaní'), oninput: set('count'), onchange: () => render() }), T(' -krát')) : null,
-    ed.ending === 'until' ? h('input', { type: 'date', value: ed.until, 'aria-label': T('Opakuje sa do'), onchange: (e) => { set('until')(e); render(); } }) : null,
+    ed.ending === 'until' ? dayInput({ root: '__calUntil', get: () => ed.until, put: (d) => { ed.until = d; ed.ruleTouched = true; ed.error = ''; render(); }, 'aria-label': T('Opakuje sa do') }) : null,
     h('p', { class: 'bline calrule' }, repeatLine ? T`Opakuje sa ${repeatLine}.` : ''));
   const cats = Cal.categoryList(cal.doc);
   const more = !ed.more ? h('button', { class: 'ghost calmore', type: 'button', onclick: () => { ed.more = true; render(); } }, T('Kategória a druhá farba'))
@@ -11603,10 +11638,10 @@ function calEditor() {
   return h('form', { class: 'caledit', onsubmit: (e) => { e.preventDefault(); calSubmit(); } },
     h('input', { name: 'title', value: ed.title, placeholder: T('Názov'), required: true, oninput: set('title'), 'data-root': '__calTitle' }),
     h('div', { class: 'calwhen' },
-      h('input', { type: 'date', value: ed.date, required: true, 'aria-label': T('Začiatok'), 'data-root': '__calDate', onchange: moveStart('date') }),
+      dayInput({ root: '__calDate', get: () => ed.date, put: moveStart('date'), required: true, 'aria-label': T('Začiatok') }),
       ed.allDay ? null : hmInput({ root: '__calTime', get: () => ed.time, put: putStart, required: true, 'aria-label': T('Čas začiatku') }),
       '–',
-      h('input', { type: 'date', value: ed.endDate, required: true, 'aria-label': T('Koniec'), 'data-root': '__calEndDate', onchange: set('endDate') }),
+      dayInput({ root: '__calEndDate', get: () => ed.endDate, put: (d) => { ed.endDate = d; ed.error = ''; calWhenShown(); }, required: true, 'aria-label': T('Koniec') }),
       ed.allDay ? null : hmInput({ root: '__calEndTime', get: () => ed.endTime, put: (t) => { ed.endTime = t; ed.error = ''; calWhenShown(); }, required: true, 'aria-label': T('Čas konca') }),
       h('label', { class: 'bcheck' }, h('input', { type: 'checkbox', checked: ed.allDay, onchange: set('allDay') }), T('celý deň'))),
     h('select', { class: 'calrepeat-kind', 'aria-label': T('Opakovanie'), onchange: (e) => { set('repeat')(e); if (ed.repeat === 'WEEKLY' && !ed.byday.length) ed.byday = [weekdayIndex(ref)]; render(); } },
@@ -11620,7 +11655,8 @@ function calEditor() {
     h('input', { value: ed.location, placeholder: T('Miesto'), oninput: set('location') }),
     h('textarea', { value: ed.notes, placeholder: T('Poznámka'), rows: 3, oninput: set('notes') }),
     more,
-    ed.error ? h('div', { class: 'err' }, ed.error) : null,
+    // Once shown, the complaint keeps its place (hidden when fixed) while the editor is open: Uložiť never moves under a press.
+    ed.error || ed.errShown ? h('div', { class: 'err', style: ed.error ? null : { visibility: 'hidden' } }, ed.error || '\u00a0') : null,
     buttons);
 }
 
@@ -11647,8 +11683,9 @@ function calSubmit(scope = null) {
   const ed = cal.edit;
   const start = ed.allDay ? calDate(ed.date) : calDate(ed.date, ed.time);
   const end = ed.allDay ? Cal.addDays(calDate(ed.endDate), 1) : calDate(ed.endDate, ed.endTime);
-  const fail = (text) => { ed.error = text; ed.asking = null; render(); };
+  const fail = (text) => { ed.error = text; ed.errShown = true; ed.asking = null; render(); };
   if (!ed.title.trim()) return fail(T('Zadaj názov.'));
+  if (hmStop('__calDate', '__calEndDate') || (ed.repeat !== 'none' && ed.ending === 'until' && hmStop('__calUntil'))) return fail(T('Deň napíš ako 25.11.2026 alebo 25.11.'));
   if (!ed.allDay && hmStop('__calTime', '__calEndTime')) return fail(T('Čas napíš ako 7:30 alebo 1930.'));
   if ([start, end].some((d) => Number.isNaN(d.getTime()))) return fail(T('Doplň dátum a čas.'));
   if (end < start || (end - start === 0 && ed.allDay)) return fail(T('Koniec je pred začiatkom.'));
