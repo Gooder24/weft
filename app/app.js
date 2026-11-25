@@ -5202,8 +5202,9 @@ async function setPref(key, value) {
   await putAccount(PREFS, next).catch(() => alert(T('Nastavenie sa neuložilo.')));
 }
 
-// The first account of a new server: Matrix registration with the token install.sh made (m.login.registration_token).
-async function matrixRegister(username, password) {
+// A new account: Matrix registration with a token (m.login.registration_token), the one install.sh made for a new
+// server or an invitation code someone typed in.
+async function matrixRegister(username, password, code) {
   const body = { username, password, initial_device_display_name: 'Weft' };
   let auth;
   for (let round = 0; round < 4; round++) {
@@ -5217,7 +5218,7 @@ async function matrixRegister(username, password) {
       const next = flow.find((stage) => !(err.details.completed || []).includes(stage));
       // The server asks for the same stage again: it refused what was sent (a token that does not hold any more).
       if (auth?.type === next) throw Object.assign(new Error(T('Server účet nevytvoril.')), { errcode: 'WEFT_REFUSED', status: 401 });
-      if (next === 'm.login.registration_token') auth = { type: next, token: localStorage.getItem(SETUP_KEY) || '', session: err.details.session };
+      if (next === 'm.login.registration_token') auth = { type: next, token: code, session: err.details.session };
       else if (next === 'm.login.dummy') auth = { type: next, session: err.details.session };
       else throw err;
     }
@@ -15174,11 +15175,14 @@ function welcomeView() {
     h('div', { class: 'seg', role: 'radiogroup', 'aria-label': T('Jazyk') }, LANGS.map(([id, label]) =>
       h('button', { type: 'button', role: 'radio', lang: id, 'aria-checked': String(LANG === id), class: LANG === id ? 'on' : '',
         onclick: () => { setLang(id); if (id !== LANG) location.reload(); else render(); } }, label))),
+    // Without the installer's code a new account needs an invitation code (registerView asks for it).
     setup ? h('button', { class: 'primary', type: 'button', onclick: () => show('register') }, T('Vytvoriť účet')) : null,
-    h('button', { class: setup ? 'ghost' : 'primary', type: 'button', onclick: () => { setLang(LANG); show('login'); } }, T('Mám už účet')));
+    h('button', { class: setup ? 'ghost' : 'primary', type: 'button', onclick: () => { setLang(LANG); show('login'); } }, T('Mám už účet')),
+    setup ? null : h('button', { class: 'ghost', type: 'button', onclick: () => { setLang(LANG); show('register'); } }, T('Mám pozvánku')));
 }
 
 function registerView() {
+  const setup = localStorage.getItem(SETUP_KEY);
   return h('form', {
     class: 'form',
     onsubmit: async (e) => {
@@ -15189,7 +15193,7 @@ function registerView() {
       if (f.password.value !== f.password2.value) { S.error = T('Heslá sa nezhodujú.'); render(); return; }
       S.busy = true; S.error = ''; render();
       try {
-        await matrixRegister(f.user.value.trim().toLowerCase(), f.password.value);
+        await matrixRegister(f.user.value.trim().toLowerCase(), f.password.value, setup || f.code.value.trim());
         localStorage.removeItem(SETUP_KEY);
         setLang(LANG);
         S.busy = false;
@@ -15198,14 +15202,16 @@ function registerView() {
         S.busy = false;
         S.error = err.errcode === 'M_USER_IN_USE' ? T('Toto meno už niekto má.')
           : err.errcode === 'M_INVALID_USERNAME' ? T('Meno môže mať len malé písmená bez diakritiky, číslice a . _ -')
-          : err.status === 401 || err.errcode === 'M_FORBIDDEN' ? T('Kód na vytvorenie účtu neplatí. Spusti inštalátor znova, otvorí Weft s novým.')
+          : (err.status === 401 || err.errcode === 'M_FORBIDDEN') && setup ? T('Kód na vytvorenie účtu neplatí. Spusti inštalátor znova, otvorí Weft s novým.')
+          : err.status === 401 || err.errcode === 'M_FORBIDDEN' ? T('Kód pozvánky neplatí. Popýtaj nový od toho, kto ťa pozval.')
           : err.message;
         render();
       }
     },
   },
   h('h2', {}, T('Tvoj účet')),
-  h('p', {}, T('Účet je na tvojom serveri. Prvý účet ho aj spravuje.')),
+  h('p', {}, setup ? T('Účet je na tvojom serveri. Prvý účet ho aj spravuje.') : T('Kód pozvánky ti poslal ten, kto ťa pozval do Weftu.')),
+  setup ? null : h('label', {}, T('Kód pozvánky'), h('input', { name: 'code', required: true, autocomplete: 'off', autocapitalize: 'none', spellcheck: false })),
   h('label', {}, T('Meno'), h('input', { name: 'user', autocomplete: 'username', required: true, autocapitalize: 'none', spellcheck: false })),
   h('label', {}, T('Heslo'), h('input', { name: 'password', type: 'password', autocomplete: 'new-password', required: true, minLength: 8 })),
   h('label', {}, T('Heslo znova'), h('input', { name: 'password2', type: 'password', autocomplete: 'new-password', required: true })),

@@ -8,3 +8,4 @@ server/matrix/state/
 server/cli/token
 GOAL-*.md
 tests/demo/out/
+desktop/server.json
