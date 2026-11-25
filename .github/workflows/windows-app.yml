@@ -40,6 +40,11 @@ jobs:
 
       - run: npm run dist:win
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Weft-Setup
+          path: desktop/dist/Weft-Setup.exe
+
       - name: The app starts on Windows (hidden self-test of a login window against a page on this machine)
         shell: pwsh
         timeout-minutes: 6
@@ -61,11 +66,6 @@ jobs:
             }
             throw 'self-test failed'
           } finally { Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue }
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: Weft-Setup
-          path: desktop/dist/Weft-Setup.exe
 
       - name: Replace Weft.exe in the release "windows"
         if: github.event_name == 'push' && vars.WEFT_SERVER != ''
