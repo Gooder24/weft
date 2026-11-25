@@ -9,10 +9,12 @@ const days = Number(process.argv[3] ?? 30);
 const rows = archive.query<{ id: string; ts: number; sender: string; body: string }, [number]>(`SELECT m.id, m.ts, m.sender, m.body
   FROM messages m JOIN chats c ON c.id = m.chat WHERE c.network IN ('gmail', 'outlook') AND m.me = 0 AND m.ts > ? ORDER BY m.ts`).all(Date.now() - days * 86_400_000);
 for (const c of CONNECTORS) {
+  const rules = c.mail;
+  if (!rules) continue; // the phone's connectors have no mail rules
   const chats = new Map<string, string[]>();
   for (const row of rows) {
-    if (!c.mail.from(row.sender)) continue;
-    for (const item of c.mail.parse({ id: row.id, from: row.sender, ts: row.ts, ...flatten(row.body) })) {
+    if (!rules.from(row.sender)) continue;
+    for (const item of rules.parse({ id: row.id, from: row.sender, ts: row.ts, ...flatten(row.body) })) {
       const key = `${item.title}`;
       chats.set(key, [...(chats.get(key) ?? []), `${new Date(row.ts).toISOString().slice(5, 16)} ${item.from ?? c.name}: ${item.text}`]);
     }

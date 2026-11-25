@@ -1,10 +1,11 @@
-// The connector host: reads new mail from the archive (read-only), lets each switched-on connector make items of
-// it, and posts them into one Matrix room per thread through the appservice. Its own state (where each connector
+// The connector host: reads new mail from the archive (read-only) and takes what Karchi's phone sends, lets each
+// switched-on connector make items of it, and posts them into one Matrix room per thread through the appservice. Its own state (where each connector
 // is in the archive, rooms, ghosts, what was posted, the switches) is one SQLite file.
 import { Database } from 'bun:sqlite';
 import { flatten } from './mail.ts';
 import { Matrix, MatrixError } from './matrix.ts';
-import type { Connector, Item, Mail } from './types.ts';
+import { parse as phoneItem } from './connectors/phone.ts';
+import type { Connector, Item, Mail, PhoneItem } from './types.ts';
 
 const DAY = 86_400_000;
 export const BACK = 30 * DAY; // how far back a connector looks the first time (and after being off)
@@ -18,6 +19,7 @@ export class Host {
   readonly db: Database;
   readonly archive: Database;
   private busy: Promise<number> | null = null;
+  private line: Promise<unknown> = Promise.resolve(); // mail and the phone post one at a time: a new thread gets one room
 
   constructor(readonly opts: { archive: string; state: string; matrix: Matrix; connectors: Connector[]; now?: () => number }) {
     this.db = new Database(opts.state, { create: true, strict: true });
@@ -59,8 +61,31 @@ export class Host {
 
   /** One pass over new mail for every connector that is on; returns how many items it posted. Never two at once. */
   round() {
-    this.busy ??= this.pass().finally(() => { this.busy = null; });
+    this.busy ??= this.serial(() => this.pass()).finally(() => { this.busy = null; });
     return this.busy;
+  }
+
+  private serial<T>(work: () => Promise<T>) {
+    const run = this.line.then(work, work);
+    this.line = run.catch(() => {});
+    return run;
+  }
+
+  /** What a phone sent: each item once (by the phone's id), into its SMS or app chat; returns the ids taken, which the
+   *  phone may forget. An item a switched-off connector does not take is taken too, so the phone stops sending it. */
+  phone(device: string, items: PhoneItem[]) {
+    return this.serial(async () => {
+      const taken: string[] = [];
+      for (const p of items.toSorted((a, b) => a.ts - b.ts)) {
+        const made = phoneItem(p);
+        if (made && this.isOn(made[0].id) && this.now() - p.ts < BACK) {
+          await this.post(made[0], `phone:${device}:${p.id}`, p.ts, made[1], { phone: device });
+        }
+        taken.push(p.id);
+      }
+      await this.markSeen();
+      return taken;
+    });
   }
 
   /** Each connector on its own: one that fails (the homeserver down, a mail its rules choke on) keeps its place in the
@@ -69,7 +94,7 @@ export class Host {
     let posted = 0;
     const failed: unknown[] = [];
     for (const c of this.opts.connectors) {
-      if (!this.isOn(c.id)) continue;
+      if (!c.mail || !this.isOn(c.id)) continue;
       try {
         posted += await this.read(c);
       } catch (err) {
@@ -86,6 +111,8 @@ export class Host {
   }
 
   private async read(c: Connector) {
+    const rules = c.mail;
+    if (!rules) return 0;
     let posted = 0;
     const cursor = this.db.query<{ rowid: number }, [string]>('SELECT rowid FROM cursors WHERE connector = ?').get(c.id)?.rowid ?? 0;
     const rows = this.archive.query<Row, [number, number]>(`SELECT m.rowid AS rowid, m.id AS id, m.ts AS ts, m.sender AS sender, m.body AS body
@@ -94,9 +121,9 @@ export class Host {
     // The archive takes old mail newest first: a batch goes in by time, so a chat reads in order. The cursor moves
     // only past a whole batch; a failure retries it, and what was posted is not posted again.
     for (const row of rows.toSorted((a, b) => a.ts - b.ts)) {
-      if (!c.mail.from(row.sender)) continue;
+      if (!rules.from(row.sender)) continue;
       const mail: Mail = { id: row.id, from: row.sender, ts: row.ts, ...flatten(row.body) };
-      for (const [i, item] of c.mail.parse(mail).entries()) if (await this.post(c, mail, i, item)) posted++;
+      for (const [i, item] of rules.parse(mail).entries()) if (await this.post(c, `${c.id}:${mail.id}:${i}`, mail.ts, item, { mail: mail.id })) posted++;
     }
     const last = rows.at(-1);
     if (last) this.db.query('INSERT INTO cursors VALUES (?, ?) ON CONFLICT (connector) DO UPDATE SET rowid = excluded.rowid').run(c.id, last.rowid);
@@ -125,19 +152,19 @@ export class Host {
     for (const { room, ts } of rows) done.run(room, ts);
   }
 
-  private async post(c: Connector, mail: Mail, i: number, item: Item) {
-    const key = `${c.id}:${mail.id}:${i}`;
+  /** `key` makes it once; `origin` says in the event where it came from (a mail's archive id, a phone). */
+  private async post(c: Connector, key: string, ts: number, item: Item, origin: Record<string, string>) {
     if (this.db.query('SELECT 1 FROM posted WHERE key = ?').get(key)) return false;
     const room = await this.room(c, item);
-    const sender = await this.ghost(c, item.from);
+    const sender = item.mine ? this.opts.matrix.admin : await this.ghost(c, item.from); // his own SMS as himself, joined with the room
     await this.join(room, sender);
     const txn = `cx-${new Bun.CryptoHasher('sha256').update(key).digest('hex').slice(0, 32)}`;
-    const content = { msgtype: 'm.text', body: item.text, [MARK]: { connector: c.id, mail: mail.id } };
-    const sent = await this.opts.matrix.call('PUT', `/rooms/${q(room)}/send/m.room.message/${txn}`, content, { user: sender, query: { ts: mail.ts } });
+    const content = { msgtype: 'm.text', body: item.text, [MARK]: { connector: c.id, ...origin } };
+    const sent = await this.opts.matrix.call('PUT', `/rooms/${q(room)}/send/m.room.message/${txn}`, content, { user: sender, query: { ts } });
     const event = String(sent.event_id);
-    this.db.query('INSERT INTO posted VALUES (?, ?, ?, ?, ?)').run(key, c.id, room, event, mail.ts);
-    if (this.now() - mail.ts > SEEN) {
-      this.db.query('INSERT INTO unseen VALUES (?, ?) ON CONFLICT (room) DO UPDATE SET ts = MAX(ts, excluded.ts)').run(room, mail.ts);
+    this.db.query('INSERT INTO posted VALUES (?, ?, ?, ?, ?)').run(key, c.id, room, event, ts);
+    if (!item.mine && this.now() - ts > SEEN) {
+      this.db.query('INSERT INTO unseen VALUES (?, ?) ON CONFLICT (room) DO UPDATE SET ts = MAX(ts, excluded.ts)').run(room, ts);
       await this.opts.matrix.call('POST', `/rooms/${q(room)}/receipt/m.read/${q(event)}`, {}, { user: this.opts.matrix.admin });
     }
     return true;
@@ -169,7 +196,7 @@ export class Host {
     const m = this.opts.matrix;
     const bridge = {
       bridgebot: m.bot, creator: m.bot,
-      protocol: { id: c.id, displayname: c.name, external_url: c.link },
+      protocol: { id: c.id, displayname: c.name, ...(c.link ? { external_url: c.link } : {}) },
       channel: { id: item.thread, displayname: item.title },
     };
     const made = await m.call('POST', '/createRoom', {

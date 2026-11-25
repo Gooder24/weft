@@ -8,7 +8,10 @@ import { join } from 'node:path';
 import { parse as packeta, place } from './connectors/packeta.ts';
 import { parse as vinted, vinted as vintedConnector } from './connectors/vinted.ts';
 import { packeta as packetaConnector } from './connectors/packeta.ts';
+import { number } from './connectors/phone.ts';
+import { CONNECTORS } from './connectors/index.ts';
 import { Host } from './host.ts';
+import { items, Phones } from './phone.ts';
 import { flatten } from './mail.ts';
 import { Matrix } from './matrix.ts';
 
@@ -52,10 +55,10 @@ describe('vinted', () => {
     expect(vinted(mail('Leave feedback for the seller', 'Hi'))).toEqual([{ thread: 'vinted', title: 'Vinted', text: 'Leave feedback for the seller' }]);
   });
   test('Packeta\'s mails forwarded by Vinted are not Vinted\'s', () => {
-    expect(vintedConnector.mail.from('Vinted <no-reply@vinted.sk>')).toBe(true);
-    expect(vintedConnector.mail.from('Packeta Slovakia via Vinted <shipping@relay.vinted.com>')).toBe(false);
-    expect(packetaConnector.mail.from('Packeta Slovakia via Vinted <shipping@relay.vinted.com>')).toBe(true);
-    expect(vintedConnector.mail.from('Someone <someone@example.com>')).toBe(false);
+    expect(vintedConnector.mail?.from('Vinted <no-reply@vinted.sk>')).toBe(true);
+    expect(vintedConnector.mail?.from('Packeta Slovakia via Vinted <shipping@relay.vinted.com>')).toBe(false);
+    expect(packetaConnector.mail?.from('Packeta Slovakia via Vinted <shipping@relay.vinted.com>')).toBe(true);
+    expect(vintedConnector.mail?.from('Someone <someone@example.com>')).toBe(false);
   });
 });
 
@@ -124,7 +127,7 @@ function setup(seen?: Record<string, unknown> | null) {
     archive.query('INSERT OR REPLACE INTO messages VALUES (?, ?, ?, ?, 0, ?)').run(id, chat, ts, sender, body);
   const hs = fakeHomeserver(seen);
   const matrix = new Matrix(hs.url, 'as', 'puppet', '@karchi:test', '@connectbot:test');
-  const host = new Host({ archive: join(dir, 'archive.db'), state: join(dir, 'connect.db'), matrix, connectors: [vintedConnector, packetaConnector], now: () => NOW });
+  const host = new Host({ archive: join(dir, 'archive.db'), state: join(dir, 'connect.db'), matrix, connectors: CONNECTORS, now: () => NOW });
   return { add, hs, host };
 }
 const V = 'Vinted <no-reply@vinted.sk>';
@@ -179,7 +182,7 @@ describe('host', () => {
 
   test('a connector that fails does not stop the others', async () => {
     const { add, hs, host } = setup();
-    const broken = { ...vintedConnector, mail: { ...vintedConnector.mail, parse: () => { throw new Error('rules choked'); } } };
+    const broken = { ...vintedConnector, mail: { from: () => true, parse: () => { throw new Error('rules choked'); } } };
     const both = new Host({ ...host.opts, connectors: [broken, packetaConnector] });
     add('v', V, 'Order update for Hrnček\n Hi, Shipped.');
     add('p', 'Packeta Slovakia <noreply@packeta.sk>', 'Zásielka bola prevzatá\n Číslo zásielky Z 111 2222 333');
@@ -223,5 +226,80 @@ describe('order', () => {
   test('a pick-up point\'s street comes once', () => {
     const [item] = vinted(mail('Order update for Hrnček', 'Hi, Your parcel is waiting for you at Z-BOX Horná Dolná, Hlavná 1, Hlavná 1, 000 00 Horná Dolná. Please pick it up. Go to conversation'));
     expect(item?.text).toBe('Čaká na vyzdvihnutie: Z-BOX Horná Dolná, Hlavná 1, 000 00 Horná Dolná.');
+  });
+});
+
+describe('phone', () => {
+  const sms = (id: string, address: string, text: string, ts = NOW - 60_000, name?: string) => ({ id, kind: 'sms' as const, ts, address, text, name });
+
+  test('a code pairs one phone once, within ten minutes; the token is its own and forgetting it ends it', () => {
+    let now = NOW;
+    const { host } = setup();
+    const phones = new Phones(host.db, () => now);
+    const { code } = phones.code();
+    expect(code).toMatch(/^[A-Z2-9]{4}-[A-Z2-9]{4}$/);
+    const got = phones.claim(code.toLowerCase().replace('-', ' '), 'Starý telefón');
+    expect(got?.token).toMatch(/^wp_/);
+    expect(phones.claim(code, 'druhý')).toBeNull();
+    expect(phones.auth(`Bearer ${got?.token}`)).toBe(got?.id ?? 'x');
+    expect(phones.list()).toEqual([{ id: got?.id ?? 'x', name: 'Starý telefón', created: NOW, seen: NOW, items: 0 }]);
+    expect(phones.auth('Bearer wp_guess')).toBeNull();
+    const late = phones.code();
+    now += 11 * 60_000;
+    expect(phones.claim(late.code, 'x')).toBeNull();
+    phones.remove(got?.id ?? 'x');
+    expect(phones.auth(`Bearer ${got?.token}`)).toBeNull();
+  });
+
+  test('five wrong codes void the pending one', () => {
+    const { host } = setup();
+    const phones = new Phones(host.db, () => NOW);
+    const { code } = phones.code();
+    for (let i = 0; i < 5; i++) expect(phones.claim('AAAA-AAAA', 'x')).toBeNull();
+    expect(phones.claim(code, 'x')).toBeNull();
+  });
+
+  test('SMS go into one chat per number however it is written, each once; notifications into one per app', async () => {
+    const { hs, host } = setup();
+    const taken = await host.phone('p1', [
+      sms('1', '+421 900 123 456', 'Ahoj', NOW - 120_000, 'Mama'),
+      sms('2', '0900123456', 'Kde si?', NOW - 60_000, 'Mama'),
+      { id: 'n1', kind: 'notification', ts: NOW - 30_000, app: 'com.example.shop', appName: 'Obchod', title: 'Obchod', text: 'Zľava 20 %' },
+    ]);
+    expect(taken).toEqual(['1', '2', 'n1']);
+    expect(hs.calls.filter((c) => c.path === '/createRoom').map((c) => c.body.name)).toEqual(['Mama', 'Obchod']);
+    expect(sends(hs.calls).map((c) => c.body.body)).toEqual(['Ahoj', 'Kde si?', 'Zľava 20 %']);
+    expect(await host.phone('p1', [sms('1', '+421900123456', 'Ahoj', NOW - 120_000, 'Mama')])).toEqual(['1']);
+    expect(sends(hs.calls)).toHaveLength(3);
+    expect(number('00421 900 123 456')).toBe('+421900123456');
+    expect(number('Packeta')).toBe('packeta');
+  });
+
+  test('a switched-off SMS connector takes the item without posting it; empty texts are dropped', async () => {
+    const { hs, host } = setup();
+    host.setOn('sms', false);
+    expect(await host.phone('p1', [sms('1', '0900123456', 'Ahoj'), { id: 'n', kind: 'notification', ts: NOW, app: 'a', text: '  ' }])).toEqual(['1', 'n']);
+    expect(sends(hs.calls)).toHaveLength(0);
+  });
+
+  test('old SMS come read, as old mail does', async () => {
+    const { hs, host } = setup();
+    await host.phone('p1', [sms('1', '0900123456', 'Včera', NOW - 2 * 86_400_000)]);
+    expect(hs.calls.some((c) => c.path.includes('/receipt/m.read/'))).toBe(true);
+  });
+
+  test('an SMS Karchi sent is his own message in the chat, through his own account', async () => {
+    const { hs, host } = setup();
+    await host.phone('p1', [sms('1', '0900123456', 'Ahoj', NOW - 120_000, 'Mama'), { ...sms('2', '0900123456', 'Čau', NOW - 60_000, 'Mama'), out: true }]);
+    expect(sends(hs.calls).map((c) => c.user)).toEqual([expect.stringMatching(/^@cx_sms_/), '@karchi:test']);
+    expect(hs.calls.filter((c) => c.path === '/createRoom')).toHaveLength(1);
+  });
+
+  test('only what the phone sends is taken', () => {
+    expect(items({ items: [{ id: '1', kind: 'sms', ts: 1, text: 'a', address: '1' }] })).toHaveLength(1);
+    expect(items({ items: [{ id: '1', kind: 'call', ts: 1, text: 'a' }] })).toBeNull();
+    expect(items({ items: [{ id: '1', kind: 'sms', ts: 'x', text: 'a' }] })).toBeNull();
+    expect(items({ items: Array.from({ length: 501 }, (_, i) => ({ id: String(i), kind: 'sms', ts: 1, text: 'a' })) })).toBeNull();
+    expect(items(null)).toBeNull();
   });
 });

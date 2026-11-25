@@ -62,7 +62,7 @@ const BATCHES = 'sk.karchi.batches';
 // every feed answer.
 const WINDOW = 'sk.karchi.window';
 /** m.bridge protocol id -> app. */
-const NETWORKS = { facebookgo: 'messenger', facebook: 'messenger', instagramgo: 'instagram', instagram: 'instagram', discordgo: 'discord', discord: 'discord', whatsapp: 'whatsapp', teams: 'teams', matrix: 'matrix', vinted: 'vinted', packeta: 'packeta' };
+const NETWORKS = { facebookgo: 'messenger', facebook: 'messenger', instagramgo: 'instagram', instagram: 'instagram', discordgo: 'discord', discord: 'discord', whatsapp: 'whatsapp', teams: 'teams', matrix: 'matrix', vinted: 'vinted', packeta: 'packeta', sms: 'sms', phone: 'phone' };
 /** Matrix localpart of an agent bot -> app; its plain (unbridged) chat with Karchi shows in the inbox. */
 const AGENTS = { '@hermes': 'hermes' };
 const isBot = (id) => /^@(messenger|instagram|discord|edupage|whatsapp|teams|matrix)bot:/.test(id);
@@ -5653,11 +5653,13 @@ const EDU_MAX_FILE = 25 * 1024 * 1024;
 // ------------------------------------------------------------------ inbox, panels, shortcuts
 
 /** Apps that can feed the inbox; each chat belongs to one. */
-/** Connectors (server/connect): chats made from the mails a platform sends, read-only. The host on asus has the rules;
- *  here are their name, icon, page and what Settings → Účty says about them. */
+/** Connectors (server/connect): chats made from the mails a platform sends or from Karchi's phone (`phone`), read-only.
+ *  The host on asus has the rules; here are their name, icon, page and what Settings → Účty says about them. */
 const CONNECTORS = [
   { id: 'vinted', name: 'Vinted', icon: '/vinted.png', link: 'https://www.vinted.sk/inbox', about: T('Nákupy, ponuky a nové správy, chat ku každej veci.') },
   { id: 'packeta', name: 'Packeta', icon: '/packeta.png', link: 'https://tracking.packeta.com/', about: T('Zásielky: kde sú, do kedy a kód na Z-BOX.') },
+  { id: 'sms', name: 'SMS', icon: '/sms.svg', phone: true, about: T('SMS z telefónu, chat ku každému číslu.') },
+  { id: 'phone', name: T('Telefón'), icon: '/phone.svg', phone: true, about: T('Notifikácie appiek, ktoré si v telefóne vybral, chat ku každej appke.') },
 ];
 const isConnector = (r) => !!r && CONNECTORS.some((c) => c.id === r.app);
 const APPS = [
@@ -5695,7 +5697,7 @@ function togglePanel(name, tab) {
   S.panel = S.panel === name && !tab ? null : name; // a section asked for opens, never closes
   S.menu = false;
   S.overlay = null;
-  if (S.panel === 'settings') { calNewCal.asking = null; refreshLinks(); loadConnectors(); if (S.links.discord?.length) loadDiscordServers(); }
+  if (S.panel === 'settings') { calNewCal.asking = null; refreshLinks(); loadConnectors(); loadPhones(); if (S.links.discord?.length) loadDiscordServers(); }
   render();
   // With a mouse the cursor waits in the search; on a phone that would pop the keyboard over the map.
   if (S.panel === 'people' && matchMedia('(pointer: fine)').matches) pm.input?.focus();
@@ -8747,6 +8749,7 @@ async function reachArchived(r) {
 /** A connector's chat takes no message: it says where it comes from and opens the platform. */
 function connectorCompose(r) {
   const c = CONNECTORS.find((x) => x.id === r.app);
+  if (c.phone) return h('div', { class: 'cnote' }, T('Z tvojho telefónu · iba na čítanie, odpíšeš v ňom'));
   return h('div', { class: 'cnote' }, T`Z mailov, ktoré ti posiela ${c.name} · iba na čítanie `,
     h('button', { class: 'primary', type: 'button', onclick: () => window.open(c.link, '_blank', 'noopener') }, T`Otvoriť ${c.name}`));
 }
@@ -14160,6 +14163,7 @@ function accountSettings() {
         logins === null ? null : h('button', { class: 'primary', onclick: () => startLink(app) }, T('Pripojiť')));
     }),
     connectorSettings(),
+    phoneSettings(),
     callSettings(),
     beeperSettings(),
   ];
@@ -14187,15 +14191,62 @@ function connectorSettings() {
   return [
     h('h3', {}, T('Z mailov')),
     h('p', { class: 'hint' }, T('Weft číta len maily, ktoré ti tieto služby už posielajú, a robí z nich chaty. Nikam sa neprihlasuje ani nič neposiela, takže ti účet nemôžu zablokovať.')),
-    CONNECTORS.map((c) => {
-      const st = state?.find((x) => x.id === c.id);
-      const what = state === undefined ? T('zisťujem…') : !st ? T('služba neodpovedá')
-        : st.on ? T`${c.about} Chatov: ${st.chats}, správ: ${st.items}.` : T('Vypnuté: nové maily nečíta, chaty ostávajú.');
-      return h('label', { class: 'toggle', 'data-key': `connector:${c.id}` },
-        h('img', { class: 'appicon', src: c.icon, alt: '' }),
-        h('span', {}, c.name, h('small', {}, what)),
-        h('input', { type: 'checkbox', checked: !!st?.on, disabled: !st, onchange: (e) => loadConnectors({ id: c.id, on: e.currentTarget.checked }) }));
-    }),
+    CONNECTORS.filter((c) => !c.phone).map(connectorRow),
+  ];
+}
+function connectorRow(c) {
+  const state = S.connectors;
+  const st = state?.find((x) => x.id === c.id);
+  const what = state === undefined ? T('zisťujem…') : !st ? T('služba neodpovedá')
+    : st.on ? T`${c.about} Chatov: ${st.chats}, správ: ${st.items}.` : c.phone ? T('Vypnuté: čo telefón pošle, zahodí, chaty ostávajú.') : T('Vypnuté: nové maily nečíta, chaty ostávajú.');
+  return h('label', { class: 'toggle', 'data-key': `connector:${c.id}` },
+    h('img', { class: 'appicon', src: c.icon, alt: '' }),
+    h('span', {}, c.name, h('small', {}, what)),
+    h('input', { type: 'checkbox', checked: !!st?.on, disabled: !st, onchange: (e) => loadConnectors({ id: c.id, on: e.currentTarget.checked }) }));
+}
+
+/* Settings → Účty → „Telefón“: Karchi's phones with Weft Telefón (android/), which send SMS and the notifications of
+ * the apps picked there (server/connect/phone.ts). „Pridať telefón“ shows a code for ten minutes; „Odpojiť“ ends that
+ * phone's token at once. S.phones: undefined loading, null no answer; S.phoneCode the code being shown. */
+async function loadPhones(action) {
+  try {
+    const path = action?.remove ? `/_connect/phones/${q(action.remove)}` : action?.code ? '/_connect/phones/code' : '/_connect/phones';
+    const res = await fetch(path, { method: action?.remove ? 'DELETE' : action?.code ? 'POST' : 'GET', cache: 'no-store', headers: { Authorization: `Bearer ${S.token}` } });
+    if (!res.ok) throw new Error(res.status);
+    const body = await res.json();
+    if (action?.code) S.phoneCode = { ...body, since: S.phones?.length ?? 0 };
+    else S.phones = body.phones;
+    // A phone that claimed the code shows up in the list: the code goes away.
+    if (S.phoneCode && !action?.code && (S.phones.length > S.phoneCode.since || S.phoneCode.expires < Date.now())) S.phoneCode = null;
+  } catch {
+    if (action) alert(T('Nepodarilo sa. Skús to znova.'));
+    S.phones ??= null;
+  }
+  render();
+  // While a code is shown, look every 5 s whether the phone came.
+  clearTimeout(loadPhones.wait);
+  if (S.phoneCode) loadPhones.wait = setTimeout(() => { if (S.panel === 'settings' && S.phoneCode) loadPhones(); }, 5000);
+}
+function phoneSettings() {
+  const phones = S.phones;
+  const code = S.phoneCode && S.phoneCode.expires > Date.now() ? S.phoneCode : null;
+  const when = (ts) => ts ? seenLabel(ts) : T('ešte nič');
+  return [
+    h('h3', {}, T('Telefón')),
+    h('p', { class: 'hint' }, T('Appka Weft Telefón (Android 8 a novší, s Tailscale) posiela SMS a notifikácie appiek, ktoré si v nej vyberieš. Číta len to, čo už máš v telefóne, takže ti žiadny účet nezablokujú.')),
+    phones === undefined ? h('p', { class: 'hint' }, T('zisťujem…')) : phones === null ? h('p', { class: 'hint' }, T('služba neodpovedá'))
+      : phones.map((p) => h('div', { class: 'acct', 'data-key': `phone:${p.id}` },
+        h('img', { class: 'appicon', src: '/phone.svg', alt: '' }),
+        h('span', {}, p.name, h('small', {}, T`Naposledy: ${when(p.seen)} · správ: ${p.items}`)),
+        h('button', { class: 'ghost danger', type: 'button', onclick: () => { if (confirm(T`Odpojiť ${p.name}? Prestane posielať; chaty ostanú.`)) loadPhones({ remove: p.id }); } }, T('Odpojiť')))),
+    code ? h('div', { class: 'phonecode', 'data-key': 'phone:code' },
+      h('p', {}, T('V appke Weft Telefón zadaj:')),
+      h('p', {}, T('Adresa'), ' ', h('code', {}, location.origin)),
+      h('p', {}, T('Kód'), ' ', h('code', { class: 'big' }, code.code)),
+      h('small', {}, T`Platí do ${timeLabel(code.expires)}, len pre jeden telefón. Keď sa telefón spojí, objaví sa tu.`),
+      h('p', {}, T('Appku si stiahneš v telefóne z tejto adresy:'), ' ', h('code', {}, `${location.origin}/_connect/phone/weft-telefon.apk`))) : null,
+    phones === null ? null : h('button', { class: 'primary', type: 'button', 'data-key': 'phone:add', onclick: () => loadPhones({ code: true }) }, code ? T('Nový kód') : T('Pridať telefón')),
+    CONNECTORS.filter((c) => c.phone).map(connectorRow),
   ];
 }
 

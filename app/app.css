@@ -216,6 +216,9 @@ kbd { margin-left: auto; font-family: inherit; font-size: var(--fs); color: var(
 .callpop .hint { margin: 0; color: var(--muted); }
 .codepop-code { font-size: var(--fs-2); line-height: 1.2; letter-spacing: 2px; color: var(--link); user-select: all; overflow-wrap: anywhere; }
 .acctopts { display: flex; flex-direction: column; gap: 4px; padding: 0 0 8px 34px; border-bottom: 1px solid var(--line); }
+.phonecode { padding: 4px 0 8px 34px; border-bottom: 1px solid var(--line); }
+.phonecode p { margin: 4px 0; overflow-wrap: anywhere; }
+.phonecode code.big { letter-spacing: 0.15em; }
 .acctopts .ghost { align-self: flex-start; }
 .acctopts .ghost.danger { align-self: flex-start; padding: 6px 0 0; }
 .acctopts h4 { margin: 4px 0 0; font-size: var(--fs); color: var(--muted); font-weight: normal; }

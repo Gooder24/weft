@@ -5,9 +5,16 @@
 //   /_matrix/app/v1/…           the homeserver's appservice calls (hs_token); nothing comes back from Weft's side
 //   GET /_connect/connectors     Karchi's token: each connector, whether it is on, its chats and items
 //   PUT /_connect/connectors/<id> {"on": bool}
+//   POST /_connect/phones/code      Karchi's token: a pairing code for a phone (10 minutes, once)
+//   GET /_connect/phones, DELETE /_connect/phones/<id>
+//   POST /_connect/phone/claim {code, name}   the phone: its id and token for a valid code
+//   POST /_connect/phone/items {items}        the phone's token: SMS and notifications, answers the ids it took
+//   POST /_connect/phone/forget               the phone's token: the phone unpaired itself, the token ends
+//   GET /_connect/phone/ca.crt, /_connect/phone/weft-telefon.apk   for setting a phone up (nothing secret)
 import { CONNECTORS } from './connectors/index.ts';
 import { Host } from './host.ts';
 import { Matrix, registrationToken } from './matrix.ts';
+import { items, Phones } from './phone.ts';
 
 const env = (key: string, fallback?: string) => {
   const v = process.env[key] ?? fallback;
@@ -26,6 +33,12 @@ const host = new Host({
   state: env('CONNECT_STATE', `${home}/matrix-spike/connect/state/connect.db`),
   matrix, connectors: CONNECTORS,
 });
+
+const phones = new Phones(host.db, () => host.now());
+const files: Record<string, [string, string]> = {
+  '/_connect/phone/ca.crt': [env('CADDY_CA', `${home}/.local/share/caddy/pki/authorities/spike/root.crt`), 'application/x-x509-ca-cert'],
+  '/_connect/phone/weft-telefon.apk': [env('PHONE_APK', `${home}/matrix-spike/connect/state/weft-telefon.apk`), 'application/vnd.android.package-archive'],
+};
 
 const owners = new Map<string, number>(); // token → when whoami said it is Karchi's
 async function isOwner(req: Request) {
@@ -52,6 +65,7 @@ async function round(why: string) {
 Bun.serve({
   hostname: '127.0.0.1',
   port: Number(env('CONNECT_PORT', '29335')),
+  maxRequestBodySize: 4 * 1024 * 1024, // a phone sends at most 500 items at once
   async fetch(req) {
     const url = new URL(req.url);
     if (url.pathname.startsWith('/_matrix/app/')) {
@@ -61,8 +75,17 @@ Bun.serve({
       if (url.pathname === '/_matrix/app/v1/ping') return json({});
       return json({ errcode: 'M_NOT_FOUND' }, 404); // ghosts and rooms exist only when the host makes them
     }
-    if (!url.pathname.startsWith('/_connect/connectors')) return json({ errcode: 'M_NOT_FOUND' }, 404);
+    if (url.pathname.startsWith('/_connect/phone/')) return phone(req, url);
+    if (!/^\/_connect\/(connectors|phones)(\/|$)/.test(url.pathname)) return json({ errcode: 'M_NOT_FOUND' }, 404);
     if (!(await isOwner(req))) return json({ errcode: 'M_FORBIDDEN' }, 403);
+    if (req.method === 'GET' && url.pathname === '/_connect/phones') return json({ phones: phones.list() });
+    if (req.method === 'POST' && url.pathname === '/_connect/phones/code') return json(phones.code());
+    const phoneId = url.pathname.match(/^\/_connect\/phones\/([0-9a-f]+)$/)?.[1];
+    if (req.method === 'DELETE' && phoneId) {
+      if (!phones.remove(phoneId)) return json({ errcode: 'M_NOT_FOUND' }, 404);
+      console.log(`phone ${phoneId} removed`);
+      return json({ phones: phones.list() });
+    }
     if (req.method === 'GET' && url.pathname === '/_connect/connectors') return json({ connectors: host.status() });
     const id = url.pathname.match(/^\/_connect\/connectors\/([a-z0-9-]+)$/)?.[1];
     if (req.method === 'PUT' && id) {
@@ -75,6 +98,44 @@ Bun.serve({
     return json({ errcode: 'M_NOT_FOUND' }, 404);
   },
 });
+
+async function phone(req: Request, url: URL) {
+  const file = req.method === 'GET' ? files[url.pathname] : undefined;
+  if (file) {
+    const f = Bun.file(file[0]);
+    return (await f.exists()) ? new Response(f, { headers: { 'Content-Type': file[1] } }) : json({ errcode: 'M_NOT_FOUND' }, 404);
+  }
+  if (req.method !== 'POST') return json({ errcode: 'M_NOT_FOUND' }, 404);
+  const body: unknown = await req.json().catch(() => null);
+  if (url.pathname === '/_connect/phone/claim') {
+    const { code, name } = (body ?? {}) as { code?: unknown; name?: unknown };
+    const got = typeof code === 'string' ? phones.claim(code, typeof name === 'string' ? name : '') : null;
+    if (!got) return json({ errcode: 'M_FORBIDDEN', error: 'wrong or expired code' }, 403);
+    console.log(`phone ${got.id} paired`);
+    return json({ device: got.id, token: got.token });
+  }
+  if (url.pathname === '/_connect/phone/forget') {
+    const device = phones.auth(req.headers.get('Authorization'));
+    if (!device) return json({ errcode: 'M_UNKNOWN_TOKEN' }, 401);
+    phones.remove(device);
+    console.log(`phone ${device} unpaired itself`);
+    return json({});
+  }
+  if (url.pathname === '/_connect/phone/items') {
+    const device = phones.auth(req.headers.get('Authorization'));
+    if (!device) return json({ errcode: 'M_UNKNOWN_TOKEN' }, 401);
+    const list = items(body);
+    if (!list) return json({ errcode: 'M_BAD_JSON' }, 400);
+    try {
+      const taken = await host.phone(device, list);
+      return json({ taken });
+    } catch (err) {
+      console.log(`phone ${device}: ${err instanceof Error ? err.message : err}`); // the phone keeps them and sends again
+      return json({ errcode: 'M_UNKNOWN', error: 'try again later' }, 503);
+    }
+  }
+  return json({ errcode: 'M_NOT_FOUND' }, 404);
+}
 
 await round('start');
 setInterval(() => void round('mail'), 60_000);

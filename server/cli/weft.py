@@ -81,8 +81,8 @@ RELAY_STATUS = {"waiting": "čaká na odpoveď", "captured": "odpoveď je v konc
                 "failed": "nepodarilo sa"}
 NETWORKS = {"facebookgo": "messenger", "facebook": "messenger", "instagramgo": "instagram", "instagram": "instagram",
             "discordgo": "discord", "discord": "discord", "whatsapp": "whatsapp", "teams": "teams",
-            "vinted": "vinted", "packeta": "packeta"}
-READ_ONLY = {"vinted", "packeta"}  # connectors (server/connect): chats made from mail, nothing goes back
+            "vinted": "vinted", "packeta": "packeta", "sms": "sms", "phone": "phone"}
+READ_ONLY = {"vinted", "packeta", "sms", "phone"}  # connectors (server/connect): chats made from mail or the phone, nothing goes back
 BOT = re.compile(r"^@(messenger|instagram|discord|edupage|whatsapp|gmail|telegram|teams)bot:")
 EDU_FILES = "sk.karchi.edupage.files"          # files of an EduPage message, as Weft sends them
 EDU_TO = "sk.karchi.edupage.to"                # the teacher's name a new EduPage message shows
@@ -1118,7 +1118,7 @@ def main(argv=None):
         text, files = text_arg(a.text) if a.text else "", files_arg(a.file)
         if not text and not files: raise Fail("prázdny text")
         net = rooms.data["rooms"].get(rid, {}).get("net") or "matrix"
-        if net in READ_ONLY: raise Fail(f"{net} je len na čítanie (z mailov): odpíš priamo v ňom")
+        if net in READ_ONLY: raise Fail(f"{net} je len na čítanie ({'z telefónu' if net in ('sms', 'phone') else 'z mailov'}): odpíš priamo v ňom")
         where = f"{rooms.name(rid)} ({net}, {rid})"
         edu = net == "edupage"
         lines = []
