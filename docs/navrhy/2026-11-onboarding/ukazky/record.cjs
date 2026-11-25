@@ -9,7 +9,8 @@ const os = require('os');
 const path = require('path');
 
 const here = __dirname;
-const page_url = `file://${path.join(here, 'onboarding.html')}`;
+// ?path= keeps the page out of its clickable mode, which would add a border and timers of its own.
+const page_url = `file://${path.join(here, 'onboarding.html')}?path=vlastny&frame=0`;
 
 (async () => {
   const browser = await puppeteer.launch({ executablePath: '/usr/bin/chromium', headless: true, args: ['--allow-file-access-from-files'] });
