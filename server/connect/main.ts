@@ -36,7 +36,7 @@ const host = new Host({
 
 const phones = new Phones(host.db, () => host.now());
 const files: Record<string, [string, string]> = {
-  '/_connect/phone/ca.crt': [env('CADDY_CA', `${home}/.local/share/caddy/pki/authorities/spike/root.crt`), 'application/x-x509-ca-cert'],
+  '/_connect/phone/ca.crt': [env('CADDY_CA', `${home}/matrix-spike/web/pki/root.crt`), 'application/x-x509-ca-cert'],
   '/_connect/phone/weft-telefon.apk': [env('PHONE_APK', `${home}/matrix-spike/connect/state/weft-telefon.apk`), 'application/vnd.android.package-archive'],
 };
 
