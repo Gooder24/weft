@@ -3049,32 +3049,34 @@ function serverPeople(r, word) {
   let hit = dc.people.get(key);
   const current = () => S.mention?.room === r.id && !S.mention.off && dc.people.get(`${r.serverId}|${norm(S.mention.word)}`) === hit;
   if (!hit) {
-    hit = { ids: [], archive: [], members: [], asked: false };
+    hit = { ids: [], archive: [], members: [], done: false, busy: false, again: 0 };
     dc.people.set(key, hit);
     archiveGet(`/_archive/discord/people?guild=${q(r.serverId)}&q=${q(norm(word))}`).then((body) => {
       hit.archive = ghosts((body.people || []).map((p) => ({ id: p.user, name: p.name })));
       found(hit, current);
     }).catch(() => setTimeout(() => dc.people.delete(key), 60e3)); // nobody for a minute, then ask again
   }
-  if (!hit.asked && Date.now() >= dc.searchOff) {
-    hit.asked = true;
-    if (dc.wait) { clearTimeout(dc.wait.timer); dc.wait.hit.asked = false; } // a newer word: the rest starts again
-    const wait = { hit, timer: 0 };
-    dc.wait = wait;
-    wait.timer = setTimeout(() => {
-      dc.wait = null;
-      if (!current()) { hit.asked = false; return; } // another chat, closed list: asked when the word comes back
+  // The rest belongs to one typed state (each input makes a new S.mention): a newer one starts it again, and
+  // renders without typing never ask (a silent Discord or a refusal is asked again only on later typing).
+  const m = S.mention;
+  const now = Date.now();
+  if (!hit.done && !hit.busy && now >= hit.again && now >= dc.searchOff && dc.wait?.mention !== m) {
+    clearTimeout(dc.wait?.timer);
+    dc.wait = { mention: m, timer: setTimeout(() => {
+      if (S.mention !== m || m.off || !current()) return; // typed on, another chat, closed list
+      hit.busy = true;
       call('GET', `/guilds/${q(r.serverId)}/members?query=${q(word.normalize('NFKC'))}&limit=10`, undefined, LINKS.find((a) => a.id === 'discord').legacy).then((body) => {
+        hit.busy = false;
         if (!body.enabled) { dc.searchOff = Date.now() + 10 * 60e3; return; }
         hit.members = ghosts(body.members || []);
-        if (body.timeout) setTimeout(() => { hit.asked = false; }, 60e3); // Discord was silent: again on later typing
+        if (body.timeout) hit.again = Date.now() + 60e3; else hit.done = true;
         found(hit, current);
       }).catch((err) => {
-        if (err.errcode === 'M_NOT_FOUND') return; // not one of his servers: this word stays without members
-        hit.asked = false;
+        hit.busy = false;
+        if (err.errcode === 'M_NOT_FOUND') { hit.done = true; return; } // not one of his servers
         dc.searchOff = Date.now() + (err.status === 503 ? 60e3 : 10 * 60e3); // connecting; an older bridge or none
       });
-    }, 400);
+    }, 400) };
   }
   return hit.ids;
 }
