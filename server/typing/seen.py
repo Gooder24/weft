@@ -62,7 +62,8 @@ class Reports:
         """The bridge's answer to typing that started at `started` (monotonic), or None after WAIT."""
         def answer():
             x = self.last.get(room)
-            if x and x["at"] >= started - FRESH and (x["error"] or x["typing"]):
+            # A failure before this request was an earlier stop's; Weft asks before it sends the start.
+            if x and (x["typing"] and x["at"] >= started - FRESH or x["error"] and x["at"] >= started):
                 return x
             return None
         with self.cond:

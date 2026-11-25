@@ -2435,12 +2435,13 @@ const TYPING = 'sk.karchi.typing';
 const TYPING_APPS = new Set(['messenger', 'instagram', 'whatsapp', 'discord']);
 const typingOn = () => S.account[TYPING]?.send !== false;
 let typingOut = null; // { room, app, at, shown }: the chat the homeserver last heard Karchi typing in, and when
-let typingIdle = 0; // a pause ends „píše…“ as Messenger's own app does, before the homeserver's 20 s run out
+let typingIdle = 0; // a pause ends „píše…“ as Messenger's own app does
 function typingSay(room, typing) {
   // keepalive: a stop sent as the window closes still arrives.
   fetch(`/_matrix/client/v3/rooms/${q(room)}/typing/${q(S.userId)}`, {
     method: 'PUT', keepalive: true, headers: { Authorization: `Bearer ${S.token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(typing ? { typing: true, timeout: 20000 } : { typing: false }),
+    // 30 s outlast the 10 s between repeats plus the 15 s pause that ends it, so it never lapses while Weft shows it.
+    body: JSON.stringify(typing ? { typing: true, timeout: 30000 } : { typing: false }),
   }).catch(() => {});
 }
 /** The message box of `r` now holds `text`. A command (/gif…) or an edit of an old message is no typing. */
