@@ -15,7 +15,7 @@
     "appId": "app.weft.desktop",
     "productName": "Weft",
     "extraMetadata": { "name": "weft" },
-    "files": ["main.js", "preload.js", "server.json"],
+    "files": ["*.js", "server.json"],
     "win": { "target": "nsis", "icon": "build/icon.png" },
     "nsis": {
       "oneClick": true,
