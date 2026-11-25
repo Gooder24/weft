@@ -3060,10 +3060,12 @@ function serverPeople(r, word) {
   // renders without typing never ask (a silent Discord or a refusal is asked again only on later typing).
   const m = S.mention;
   const now = Date.now();
-  if (!hit.done && !hit.busy && now >= hit.again && now >= dc.searchOff && dc.wait?.mention !== m) {
+  if (dc.wait?.mention !== m) {
     clearTimeout(dc.wait?.timer);
-    dc.wait = { mention: m, timer: setTimeout(() => {
-      if (S.mention !== m || m.off || !current()) return; // typed on, another chat, closed list
+    dc.wait = { mention: m, timer: 0 }; // this typed state is seen, asked or not
+    if (!hit.done && !hit.busy && now >= hit.again && now >= dc.searchOff) dc.wait.timer = setTimeout(() => {
+      // typed on, another chat, closed list, or a search refused meanwhile
+      if (S.mention !== m || m.off || !current() || hit.busy || Date.now() < dc.searchOff) return;
       hit.busy = true;
       call('GET', `/guilds/${q(r.serverId)}/members?query=${q(word.normalize('NFKC'))}&limit=10`, undefined, LINKS.find((a) => a.id === 'discord').legacy).then((body) => {
         hit.busy = false;
@@ -3076,7 +3078,7 @@ function serverPeople(r, word) {
         if (err.errcode === 'M_NOT_FOUND') { hit.done = true; return; } // not one of his servers
         dc.searchOff = Date.now() + (err.status === 503 ? 60e3 : 10 * 60e3); // connecting; an older bridge or none
       });
-    }, 400) };
+    }, 400);
   }
   return hit.ids;
 }
