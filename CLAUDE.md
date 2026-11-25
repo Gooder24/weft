@@ -71,7 +71,7 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
 - `server/microsoft/bridge.py` is Outlook and Teams (asus `~/matrix-spike/microsoft/`, unit `matrix-spike-microsoft`,
   127.0.0.1:29330 behind Caddy's `/_bridges/outlook/` and `/_bridges/teams/`). Any number of Microsoft accounts of
   each, signed in on Microsoft's page through Microsoft Graph Command Line Tools (no own app needed; an Entra app in
-  `microsoft/state/microsoft-client.json` replaces it; he pastes the `http://localhost` address it redirects to). Outlook works like Gmail: all mail read-only into the
+  `microsoft/state/microsoft-client.json` replaces it; he pastes the `http://localhost` address it redirects to). A work sign-in asks for every Outlook and Teams feature's permissions at once; where users may not consent, an admin grants all of it for the whole organization with one link (`weft ms-consent`, `GET /consent`, also in the refusal), and the next sign-in asks only for mail and chats. Outlook works like Gmail: all mail read-only into the
   archive (`archive:outlook:…`, „Odpovedať mailom“), Nový mail and `weft mail` send through Graph (20 MB of files).
   Teams one-to-one, group and meeting chats are real rooms through the appservice `appservices/teams.yaml`
   (ghosts `@teams_<Entra id>`, polled every 20 s): text, mentions, photos, files, replies, edits, deletions and
