@@ -1033,10 +1033,19 @@ const beeperRunning = (dir) => {
 };
 let beeperCopy = null; // { dir, files: { 'index.db': bytes, 'index.db-wal'?: bytes } }
 const forgetBeeper = () => { if (beeperCopy) fs.rmSync(beeperCopy.dir, { recursive: true, force: true }); beeperCopy = null; };
+/** Copies an earlier run left behind (it crashed or was killed): they hold decrypted chats. One Weft runs at a time. */
+const sweepBeeper = () => {
+  for (const name of fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('weft-beeper-'))) {
+    const dir = path.join(os.tmpdir(), name);
+    if (dir !== beeperCopy?.dir) fs.rmSync(dir, { recursive: true, force: true });
+  }
+};
 app.on('will-quit', forgetBeeper);
+app.whenReady().then(() => { try { sweepBeeper(); } catch {} });
 ipcMain.handle('beeper-find', async (event) => {
   if (!fromApp(event)) throw new Error('Not allowed');
   forgetBeeper();
+  try { sweepBeeper(); } catch {}
   const dir = beeperDir();
   if (!fs.existsSync(path.join(dir, 'index.db'))) return { found: false };
   if (beeperRunning(dir)) return { found: true, running: true };

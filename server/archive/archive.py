@@ -1292,14 +1292,31 @@ def beeper_piece(upload, name, offset, stream, length):
     return upload, have + length
 
 
+BEEPER_MEMORY = os.environ.get("ARCHIVE_BEEPER_MEMORY", "2G")
+_scope = []
+
+
+def beeper_scope():
+    """systemd-run's prefix that gives the importer its own scope and memory limit, outside this service's cgroup
+    (MemoryMax=384M with OOMPolicy=stop: an importer running out of memory inside it would stop the archive). Empty
+    where no user systemd answers."""
+    if not _scope:
+        prefix = ["systemd-run", "--user", "--scope", "--quiet", "--collect", "-p", f"MemoryMax={BEEPER_MEMORY}"]
+        try: ok = subprocess.run(prefix + ["true"], capture_output=True, timeout=30).returncode == 0
+        except (OSError, subprocess.SubprocessError): ok = False
+        _scope.append(prefix if ok else [])
+    return _scope[0]
+
+
 def beeper_run(folder, dry_run):
-    """import_beeper.py in its own process: a big index.db is read whole, and running out of memory there must not
-    end the archive service."""
-    cmd = [sys.executable, os.path.join(HERE, "import_beeper.py"), folder, "--db", DB, "--spike", SPIKE]
+    """import_beeper.py in its own process and memory limit: it reads the whole archive and index.db, and running out
+    of memory there must not end the archive service."""
+    cmd = beeper_scope() + [sys.executable, os.path.join(HERE, "import_beeper.py"), folder, "--db", DB, "--spike", SPIKE]
     out = subprocess.run(cmd + (["--dry-run"] if dry_run else []), capture_output=True, text=True, timeout=3600)
     if out.returncode:
         last = (out.stderr.strip().splitlines() or ["the import stopped"])[-1]
         print("archive: beeper import failed:", last[:300], flush=True)
+        if out.returncode in (-9, 137): raise RuntimeError("the import ran out of memory")  # its scope's MemoryMax
         raise RuntimeError("not Beeper's index.db" if "no such table" in last or "not a database" in last else "the import stopped")
     return json.loads(out.stdout)
 

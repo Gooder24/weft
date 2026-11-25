@@ -13696,26 +13696,29 @@ function callSettings() {
  * imports on „Preniesť“. The desktop app finds Beeper's folder itself (desktop/main.js beeper-find); a browser picks
  * the file. Nothing in Beeper changes, and sign-ins are not taken over: networks are connected in Weft as usual. */
 const BEEPER_PIECE = 16 << 20;
-const bp = { phase: 'idle', progress: 0, report: null, upload: null, error: '', cancel: false };
+// run: each find, pick and cancel starts a new one; a flow whose run is gone stops at its next step (and forgets its upload).
+const bp = { phase: 'idle', progress: 0, report: null, upload: null, error: '', run: 0 };
 const bpSet = (patch) => { Object.assign(bp, patch); render(); };
 const bpCount = (n) => (n || 0).toLocaleString(LOCALE);
 
 /** Each file as { name, size, read(offset, length) } from the desktop app's copy or from picked files. */
 async function beeperFind() {
+  const run = ++bp.run;
   bpSet({ phase: 'finding', error: '' });
   try {
     const got = await window.desktop.beeperFind();
+    if (run !== bp.run) return;
     if (!got.found) return bpSet({ phase: 'notfound' });
     if (got.running) return bpSet({ phase: 'running' });
-    beeperSend(Object.entries(got.files).map(([name, size]) => ({ name, size, read: (o, n) => window.desktop.beeperPiece(name, o, n) })));
-  } catch (e) { bpSet({ phase: 'error', error: e.message }); }
+    beeperSend(run, Object.entries(got.files).map(([name, size]) => ({ name, size, read: (o, n) => window.desktop.beeperPiece(name, o, n) })));
+  } catch (e) { if (run === bp.run) bpSet({ phase: 'error', error: e.message }); }
 }
 function beeperPick(list) {
   const files = [...list];
   const index = files.find((f) => !f.name.endsWith('-wal'));
   const wal = files.find((f) => f.name.endsWith('-wal'));
   if (!index) return bpSet({ phase: 'error', error: T('Vyber súbor index.db.') });
-  beeperSend([index, wal].filter(Boolean).map((f, i) => ({ name: i ? 'index.db-wal' : 'index.db', size: f.size, read: (o, n) => f.slice(o, o + n) })));
+  beeperSend(++bp.run, [index, wal].filter(Boolean).map((f, i) => ({ name: i ? 'index.db-wal' : 'index.db', size: f.size, read: (o, n) => f.slice(o, o + n) })));
 }
 
 async function beeperCall(path, body, query) {
@@ -13727,18 +13730,23 @@ async function beeperCall(path, body, query) {
   return out;
 }
 
-async function beeperSend(files) {
+const beeperForget = (upload) => { if (upload) beeperCall('forget', JSON.stringify({ upload })).catch(() => {}); };
+
+async function beeperSend(run, files) {
   const total = files.reduce((n, f) => n + f.size, 0) || 1;
-  bpSet({ phase: 'sending', progress: 0, cancel: false, report: null, upload: null });
-  let sent = 0;
+  bpSet({ phase: 'sending', progress: 0, report: null, upload: null });
+  let sent = 0, upload = null;
   try {
     for (const f of files) {
       for (let offset = 0; offset < f.size;) {
-        if (bp.cancel) return;
-        const query = new URLSearchParams({ file: f.name, offset: String(offset), ...(bp.upload ? { upload: bp.upload } : {}) });
+        const query = new URLSearchParams({ file: f.name, offset: String(offset), ...(upload ? { upload } : {}) });
         const piece = await f.read(offset, Math.min(BEEPER_PIECE, f.size - offset));
+        if (run !== bp.run) return beeperForget(upload);
         const got = await beeperCall('upload', piece, query);
-        bp.upload = got.upload;
+        upload = got.upload;
+        // Cancelled while this piece was on its way: its upload exists only now, so forget it here.
+        if (run !== bp.run) return beeperForget(upload);
+        bp.upload = upload;
         sent += got.size - offset;
         offset = got.size;
         bpSet({ progress: sent / total });
@@ -13746,27 +13754,31 @@ async function beeperSend(files) {
     }
     window.desktop?.beeperDone?.();
     bpSet({ phase: 'counting' });
-    bpSet({ phase: 'ready', report: await beeperCall('plan', JSON.stringify({ upload: bp.upload })) });
+    const report = await beeperCall('plan', JSON.stringify({ upload }));
+    if (run === bp.run) bpSet({ phase: 'ready', report });
   } catch (e) {
     window.desktop?.beeperDone?.();
-    if (!bp.cancel) bpSet({ phase: 'error', error: e.message });
+    if (run === bp.run) bpSet({ phase: 'error', error: e.message }); // cancelled: beeperCancel forgot the upload
   }
 }
 
 async function beeperImport() {
+  const run = ++bp.run;
   bpSet({ phase: 'importing' });
   try {
     const report = await beeperCall('import', JSON.stringify({ upload: bp.upload }));
+    if (run !== bp.run) return;
     bpSet({ phase: 'done', report, upload: null });
     refreshArchiveChats(true); // the list of old conversations has Beeper's own chats now
-  } catch (e) { bpSet({ phase: 'error', error: e.message }); }
+  } catch (e) { if (run === bp.run) bpSet({ phase: 'error', error: e.message }); }
 }
 
 function beeperCancel() {
   const upload = bp.upload;
+  bp.run++;
   window.desktop?.beeperDone?.();
-  bpSet({ phase: 'idle', cancel: true, upload: null, report: null, progress: 0, error: '' });
-  if (upload) beeperCall('forget', JSON.stringify({ upload })).catch(() => {});
+  bpSet({ phase: 'idle', upload: null, report: null, progress: 0, error: '' });
+  beeperForget(upload);
 }
 
 const BEEPER_NETS = { messenger: 'Messenger', instagram: 'Instagram', whatsapp: 'WhatsApp', discord: 'Discord', beeper: 'Beeper', sms: 'SMS', imessage: 'iMessage', linkedin: 'LinkedIn' };

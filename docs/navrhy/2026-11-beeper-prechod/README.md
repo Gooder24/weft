@@ -92,7 +92,7 @@ Kontrola na vymyslených dátach (pokrýva všetky pravidlá vyššie, opakovan�
 
 Fotky a súbory sa zatiaľ neposielajú: pri správe ostane, čo tam bolo, a CLI `import_beeper.py --media` ich vie
 doplniť zo skopírovaného priečinka. Archív na to má cesty `POST /_archive/beeper/{upload,plan,import,forget}`
-(`server/archive/archive.py`). Importér beží vo vlastnom procese, aby veľký `index.db` neohrozil službu archívu.
+(`server/archive/archive.py`). Importér beží vo vlastnom procese s vlastným limitom pamäte (`systemd-run --scope`, 2 GB, `ARCHIVE_BEEPER_MEMORY`), mimo limitu služby archívu (384 MB): keď mu pamäť nestačí, skončí len on.
 Kontroly sú `overenie/beeper-move/route.py` (cesty archívu cez skutočný socket) a `overenie/beeper-move/run.sh`
 (obrazovka v prehliadači aj ako desktopová appka).
 
