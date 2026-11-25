@@ -281,31 +281,31 @@ Ra1G kP5w Nx8v Dc2Q  mH7j Yt4L sB9f Wq3K</span>
   ] },
 
   siete: { title: 'Pripoj siete', frames: [
-    { html: netsScreen([]), hold: 2600, click: 'messenger' },
+    { html: netsScreen([]), skip: ['exporty', 0], hold: 2600, click: 'messenger' },
     { html: signin('Messenger', 'Okno Mety · messenger.com', 'Weft otvorí prihlásenie Mety v desktopovej appke. Potom chodia nové správy.', 'Prihlásiť sa'), hold: 2000, click: 'signin' },
-    { html: netsScreen(['messenger']), hold: 1600, click: 'instagram' },
+    { html: netsScreen(['messenger']), skip: ['exporty', 0], hold: 1600, click: 'instagram' },
     { html: signin('Instagram', 'Okno Mety · instagram.com', 'To isté okno ako pri Messengeri.', 'Prihlásiť sa'), hold: 1600, click: 'signin' },
-    { html: netsScreen(['messenger', 'instagram']), hold: 1600, click: 'whatsapp' },
+    { html: netsScreen(['messenger', 'instagram']), skip: ['exporty', 0], hold: 1600, click: 'whatsapp' },
     { html: `${bar_top('WhatsApp', 1, 2)}<div class="body"><h1>Naskenuj kód telefónom</h1>
       <div class="cols"><div>${qr()}</div><div class="opts">
       <p>1. Otvor WhatsApp v telefóne</p><p>2. Nastavenia › Prepojené zariadenia</p><p>3. Prepojiť zariadenie a namier na kód</p>
       <p class="muted">Odteraz chodia nové správy. Staré chaty pridáš v ďalšom kroku exportom. Bez kamery: Prepojiť číslom telefónu.</p></div></div>
       ${foot('Prepojiť číslom', 'Späť')}</div>`, hold: 2800 },
-    { html: netsScreen(['messenger', 'instagram', 'whatsapp']), hold: 1600, click: 'gmail' },
+    { html: netsScreen(['messenger', 'instagram', 'whatsapp']), skip: ['exporty', 0], hold: 1600, click: 'gmail' },
     { html: signin('Gmail', 'accounts.google.com', 'Weft otvorí stránku Googlu v prehliadači. Pošta sa bude čítať a posielať cez tvoj účet.', 'Povoliť'), hold: 2000, click: 'signin' },
-    { html: netsScreen(['messenger', 'instagram', 'whatsapp', 'gmail']), hold: 2200, click: 'next', then: ['exporty', 0] },
+    { html: netsScreen(['messenger', 'instagram', 'whatsapp', 'gmail']), skip: ['exporty', 0], hold: 2200, click: 'next', then: ['exporty', 0] },
   ] },
 
   exporty: { title: 'Stará história: exporty', frames: [
     { html: `${bar_top('Stará história', 2, 2)}<div class="body"><h1>Odkiaľ chceš aj starú históriu?</h1>
-      <p class="muted">Siete posielajú len nové správy. Staré prinesú oficiálne exporty. Vyžiadaš ich teraz všetky naraz a kým ich
+      <p class="muted">Siete poslali posledné správy v chatoch a odteraz posielajú nové. Celú starú históriu prinesú oficiálne exporty. Vyžiadaš ich teraz všetky naraz a kým ich
       služby pripravia, Weft normálne funguje.</p>
       <div class="picks">
       ${pick('meta', 'Messenger a Instagram', 'Jeden export z Mety pre oba účty · pripraví ho do pár hodín, niekedy do 2 dní')}
       ${pick('wa', 'WhatsApp', 'Export chatov v telefóne · hneď, chat po chate, len tie, ktoré chceš')}
       ${pick('gm', 'Gmail · ema@example.com', 'Google Takeout, len Pošta · do pár hodín, pri veľkej schránke aj dni')}
       </div>
-      <p class="muted">EduPage prinesie celý školský rok sám. Weft bez exportov nič staré nesťahuje, takže účet tým neriskuješ.</p>
+      <p class="muted">EduPage prinesie celý školský rok sám. Hromadne Weft zo sietí nič nesťahuje, takže účet tým neriskuješ.</p>
       ${foot('Vyžiadať exporty', 'Späť', '<button class="ghost" data-id="new">Stačia nové správy</button>')}</div>`, hold: 3600, click: 'next' },
     { ...tut(1, 'Meta: oba účty naraz', `<p class="muted">Weft otvorí stránku Mety v prehliadači. Prihlasuješ sa tam ty, Weft heslo nevidí.</p>
       <div class="fake"><span class="crumb">Accounts Center › Tvoje informácie a povolenia › Stiahnuť tvoje informácie ›</span>
@@ -427,6 +427,8 @@ function live() {
     if (!el) return;
     const id = el.dataset.id, f = PATHS[path].frames[i];
     if (id === 'back') { back(); return; }
+    // „Ďalej“ on the networks leaves them at once, however many are connected.
+    if (id === 'next' && f.skip) { step(...f.skip); return; }
     // A frame that waits for something outside Weft (the mail, the other device) cannot be skipped.
     if (f.wait && !NOTE[id]) { note = f.wait; menu(); return; }
     // What the ring marks goes on in this path; another choice or network jumps to its own path.

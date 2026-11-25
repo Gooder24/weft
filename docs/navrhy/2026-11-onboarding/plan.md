@@ -7,8 +7,9 @@ v [ukazky/](ukazky/). Ostatné je plán.
 
 ## Odpovede krátko
 
-1. **Doťahovanie v pozadí: nebude.** Rozhodnuté 25. 11.: pripojená sieť prinesie len nové správy a stará história
-   príde len oficiálnymi exportmi. Rozšírenie prehliadača by bol druhý klient Mety vedľa mostu, často z inej IP, a
+1. **Doťahovanie v pozadí: nebude.** Rozhodnuté 25. 11.: pripojená sieť prinesie len to, čo most pošle sám (Meta
+   posledných 50 správ v chate, WhatsApp podľa dnešného `days_limit`), a potom nové správy. Celá stará história príde
+   len oficiálnymi exportmi. Posúvanie nahor v jednom otvorenom chate (patch `archivefetch`) ostáva, ako je dnes. Rozšírenie prehliadača by bol druhý klient Mety vedľa mostu, často z inej IP, a
    šifrované chaty na webe Messengera bez PIN nevidí. Ani doťahovanie cez most (patch `archivefetch`, strana 50
    správ, pri jednej strane za minútu asi deň na 38 000 správ) nie je bez rizika overenia od Mety. Exporty to riziko
    nemajú.
@@ -73,7 +74,8 @@ história (počítač, telefón, nikde) → siete.
 ### 3. Pripoj siete: len nové správy
 
 Dlaždice, žiadna sieť nie je povinná. Messenger a Instagram cez okno Mety, WhatsApp cez QR kód, Gmail cez stránku
-Googlu. Po pripojení chodia nové správy, nič staré sa nesťahuje.
+Googlu. Po pripojení prídu posledné správy, ktoré sieť pošle sama (ako dnes), a potom nové. Hromadne sa nič staré
+nesťahuje.
 
 ![Pripoj siete](ukazky/siete.gif)
 
@@ -98,7 +100,7 @@ agenta s overením, bez čakania na rozhodnutia.
 | 1 | Sprievodca a nepovinná EduPage | `app.js`: obrazovky z ukážok, siete ako dlaždice, EduPage s tlačidlom Pripojiť ako ostatné, odstrániť predvyplnené `karchi` a text „na x270“. Mosty sa nemenia: čo pošlú pri pripojení samy (Meta posledných 50 správ v chate, WhatsApp podľa dnešného `days_limit`), ostáva, lebo zmena by bola zásahom do backfillu. Gmail pre cudzích ľudí: prihlásenie cez Google potrebuje overenie appky u Googlu (prístup k pošte je obmedzený rozsah), dovtedy heslo aplikácie, ktoré most už vie | nič | 2 dni |
 | 2 | Medzikrok a exporty spolu | medzikrok so zoznamom pripojených účtov a ich exportom, návody Mety, Takeoutu a WhatsAppu, obrazovka čakania so stavom každého exportu a pripomienkou, jedno okno na všetky súbory. Každý súbor spozná podľa obsahu, nie podľa mena, a ukáže, čo v ňom je a koľko zaberie (`estimate.py`, pribudne MBOX a WhatsApp) | 1 | 3 dni |
 | 3 | Nové importéry | Gmail z Takeoutu (MBOX, ďalej rovnako ako `import_mail.py` do archívu, bez dvojitých mailov podľa Message-ID). `import_mail.py` pri novom účte začne až od pripojenia, nie celou schránkou ako dnes. WhatsApp z exportu chatu: text, ktorého formát sa mení podľa jazyka a telefónu, médiá zo ZIP a priradenie k chatu mosta podľa mena alebo čísla | 2 | 4 dni |
-| 4 | História v počítači | desktopová appka si drží vlastný `archive.db` (rovnaká schéma ako na serveri, `node:sqlite` v Electrone) a médiá. Weft z neho číta staré správy, vyhľadávanie, galériu a štatistiky, keď ich server nemá. Ten istý kód číta exporty v počítači (importéry z častí 2 a 3 preložené do JS appky) | 1 | 5 dní |
+| 4 | História v počítači | desktopová appka si drží vlastný `archive.db` (rovnaká schéma ako na serveri, `node:sqlite` v Electrone) a médiá. Weft z neho číta staré správy, vyhľadávanie, galériu a štatistiky, keď ich server nemá. Ten istý kód číta exporty v počítači (importéry z častí 2 a 3 preložené do JS appky) | 1, 2, 3 | 5 dní |
 | 5 | Pozvánky a 30 dní na serveri | kódy pozvánok (registrácia s tokenom v Tuwuneli), účet „hostovaný“: `archive.py mirror` ho preskočí, mailové importéry dávajú staršie ako 30 dní len do počítača, denné mazanie starších udalostí. Či to Tuwunel vie (purge histórie miestnosti), je neoverené; ak nie, nové miestnosti po 30 dňoch a staré opustiť. Limit ľudí a `MemoryMax` na každého | 4 | 5 dní |
 | 6 | Šifrovanie | Weft sa naučí Matrix E2EE: `matrix-sdk-crypto-wasm` (vodozemac, to isté, čo používa Element), kľúč na obnovenie a záloha kľúčov na serveri len zašifrovaná. Mosty na Go (Meta, WhatsApp, Discord) majú `encryption.default/require`. Vlastné mosty v Pythone (EduPage, Gmail, Microsoft) by šifrovali cez libolm ako most Matrix, čo je zastarané (známe CVE), preto pri nich najprv len 30 dní na serveri bez šifrovania (staršia pošta len v počítači) a šifrovanie až s mostom na vodozemac. Obrazovka pozvánky to musí povedať pri pošte zvlášť. Serverové veci, ktoré čítajú text (vyhľadávanie, štatistiky, Feed, rozpoznávanie času, `weft` pre agentov), pri hostovanom účte prejdú do zariadenia alebo nebudú | 5 | 2 až 3 týždne |
 | 7 | Inštalátor vlastného servera | `install.sh` z PR #4: homeserver, mosty, Caddy, Tailscale, automatické aktualizácie. Stránka sprievodcu ho nájde cez `/release.json` | nič, beží súbežne | 3 až 5 dní |
@@ -121,8 +123,8 @@ každej idú dvaja nezávislí overovatelia (`tools/verify-on-asus`).
   logy, journal) nesmie reťazec nájsť. V `archive.db` počítača musí byť. Pri šifrovaní to isté s čerstvou správou:
   v databáze homeservera nesmie byť jej text. Druhé zariadenie bez kľúča ju neotvorí, kľúč na obnovenie áno.
 - **Žiadny ban:** testovací server zlyhá na každú požiadavku na domény Mety, WhatsAppu alebo Googlu mimo falošných.
-  Test pripojí každú sieť a overí, že potom neodíde žiadna požiadavka na staršiu históriu (`archivefetch`, backfill,
-  IMAP `FETCH` starší ako pripojenie).
+  Test pripojí každú sieť a overí, že potom neodíde žiadna požiadavka na staršiu históriu nad to, čo most robí pri
+  pripojení dnes (`archivefetch` bez posúvania, IMAP `FETCH` starší ako pripojenie).
 - **E-maily:** Tuwunel posiela na falošný SMTP server v teste, nie skutočným ľuďom. Test prejde registráciu s
   pozvánkou a overením, prihlásenie e-mailom a zabudnuté heslo na skúšobnom Tuwuneli. Neoverené je zatiaľ, či Tuwunel
   prihlási e-mailom (`m.id.thirdparty`), či posiela odkaz alebo kód a koľko pozvánok naraz vie.
