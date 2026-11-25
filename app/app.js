@@ -10,6 +10,7 @@ import * as Files from './kalendarix-files.js';
 import { findWhen } from './when.js';
 import { icon, typingDots } from './icons.js';
 import { STASH, GONE_MS, applyStash, stashHas, stashOf } from './stash.js';
+import { BROADCAST, NAMES, BC_APPS, BC_DAY, guessGreeting, personalText, batchOf, laterItemsOf, addOnce, dayCounts, guessRsvp } from './broadcast.js';
 
 import { createFeed } from './feed.js';
 import { createUpdates } from './updates.js';
@@ -641,6 +642,7 @@ function checkStash() {
   if (keep.length !== ops.length) saveStashOps(keep);
   adoptAgentDrafts();
   checkStashSends();
+  bcRecord();
   if (S.stashError && Date.now() - S.stashError.at < 60000) return;
   if (stashOps().some((op) => !stashHas(server, op))) flushStash();
 }
@@ -3197,7 +3199,12 @@ function saveLater(change) {
     const now = await call('GET', `/user/${q(S.userId)}/account_data/${LATER}`).catch((err) => (err.status === 404 ? {} : Promise.reject(err)));
     const base = now.items || [];
     const next = { items: change(base) };
-    if (next.items === base) return; // nothing to change: a write would only put back what was read, maybe stale
+    if (next.items === base) {
+      // Nothing to change (another device wrote it already): a write would only put back what was read, maybe stale.
+      // The window still takes what it read, so callers find their items.
+      if (S.account[LATER] === seen) { S.account[LATER] = now; render(); }
+      return;
+    }
     await call('PUT', `/user/${q(S.userId)}/account_data/${LATER}`, next);
     if (S.account[LATER] === seen) S.account[LATER] = next;
     else {
@@ -3302,6 +3309,456 @@ function laterBubbles(r, m) {
         h('button', { onclick: () => saveLater((list) => list.map((x) => (x.id === it.id ? { ...x, at: Date.now(), failed: undefined, error: undefined } : x))) }, it.failed ? T('Skúsiť znova') : T('Poslať teraz')),
         h('button', { onclick: () => saveLater((list) => list.filter((x) => x.id !== it.id)) }, T('Zrušiť'))));
   });
+}
+
+// ------------------------------------------------------------------ Rozoslať (beta): one message, each in their own chat
+
+// Four steps in one overlay, as docs/navrhy/2026-11-rozoslat/ukazka.html: Komu (people and saved lists), Správa (one
+// template, files uploaded once), Náhľad (every message whole, greetings, a network, an extra sentence) and Rozoslané
+// (what went, who answered and how). Confirming hands every message to the send-later service (broadcast.js), which
+// paces them; Settings → Správy switches the beta on for every device, and until then Rozoslať shows nowhere.
+const bcData = () => S.account[BROADCAST] || {};
+const bcBeta = () => !!bcData().beta;
+const bcNames = () => S.account[NAMES] || {};
+let bcSaving = Promise.resolve();
+/** Changes sk.karchi.broadcast as it is on the server now (another device may have changed it meanwhile). */
+function saveBroadcast(change) {
+  bcSaving = bcSaving.then(async () => {
+    const now = await call('GET', `/user/${q(S.userId)}/account_data/${BROADCAST}`).catch((err) => (err.status === 404 ? {} : Promise.reject(err)));
+    const next = change(now);
+    if (next !== now) await putAccount(BROADCAST, next);
+    render();
+  }).catch(() => alert(T('Rozoslanie sa neuložilo.')));
+  return bcSaving;
+}
+/** `item` in the list in place of the one with its id; a broadcast already sent stays as it is (another device). */
+const bcUpsert = (items = [], item) => {
+  const was = items.find((x) => x.id === item.id);
+  if (was?.state === 'sent') return items;
+  // The newest 30 are kept: older ones have nothing left to show (send-later forgets after a week).
+  return [item, ...items.filter((x) => x.id !== item.id)].sort((a, b) => b.at - a.at).slice(0, 30);
+};
+
+/** Everyone Rozoslať can write to: a one-to-one chat on its networks, a merged chat as one person with those of its
+ *  chats, the latest first. */
+function bcPeople() {
+  const out = [];
+  for (const e of entries()) {
+    if (e.kind !== 'room') continue;
+    const rooms = (e.rooms || [e.room]).filter((r) => liveChat(r) && BC_APPS.includes(r.app) && dmPartner(r) && isDirect(r));
+    if (rooms.length) out.push({ key: e.merged ? e.key : dmPartner(rooms[0])[0], name: e.title, rooms, last: e.last || 0 });
+  }
+  return out.sort((a, b) => b.last - a.last);
+}
+const bcRoomOf = (p) => (p.rooms.length > 1 ? viaRoom(groupOf(p.rooms[0].id), p.rooms) || p.rooms[0] : p.rooms[0]);
+/** The key of an inbox entry's person, when Rozoslať can write to them. */
+function bcKeyOf(e) {
+  if (e?.kind !== 'room') return null;
+  const room = (e.rooms || [e.room]).find((r) => liveChat(r) && BC_APPS.includes(r.app) && dmPartner(r) && isDirect(r));
+  return room ? (e.merged ? e.key : dmPartner(room)[0]) : null;
+}
+const bcTitle = (text) => (String(text).split('\n').map((l) => l.replace(/\{oslovenie\}|\{meno\}/g, '').trim()).find(Boolean) || '').slice(0, 48) || T('bez textu');
+
+const bcFresh = () => ({ kind: 'broadcast', step: 1, id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), picked: [], names: {}, tpl: '{oslovenie}\n\n', files: [], to: [], psel: 0 });
+let bcOpen = null; // this window's unsent broadcast: closing the overlay keeps it for the next „Rozoslať…“
+/** Ctrl+J „Rozoslať…“ or the chat menu (`key`: that chat's person comes picked). */
+function openBroadcast(key = null) {
+  if (!bcBeta()) return;
+  openOverlay('broadcast', bcOpen && !bcOpen.sent ? bcOpen : bcFresh());
+  const o = (bcOpen = S.overlay);
+  o.people = null;
+  if (key && !o.picked.includes(key)) o.picked.push(key);
+  if (o.step === 1 && key) o.index = Math.max(0, bcRows(o).findIndex((p) => p.key === key));
+  render();
+}
+/** A broadcast from the list: a draft opens on its preview, a sent one on what became of it. */
+function openBroadcastItem(id) {
+  const it = (bcData().items || []).find((x) => x.id === id);
+  if (!it || !bcBeta()) return;
+  const names = bcNames();
+  const to = it.to.map((t) => ({ ...t, guessed: !names[t.key] && t.greeting === guessGreeting(t.name) }));
+  openOverlay('broadcast', { ...bcFresh(), id: it.id, step: it.state === 'sent' ? 4 : 3, sent: it.state === 'sent', picked: to.map((t) => t.key),
+    names: Object.fromEntries(to.map((t) => [t.key, t.name])), tpl: it.text, files: it.files || [], to });
+  if (!S.overlay.sent) bcOpen = S.overlay;
+}
+
+/** Step 1's rows: the people found by the words typed (the latest 80), then those picked beyond them, also ones
+ *  without a chat any more (a saved list remembers them), which are left out. */
+function bcRows(o) {
+  o.people ||= bcPeople();
+  const words = norm(o.query).split(/\s+/).filter(Boolean);
+  const fits = (name) => words.every((w) => norm(name).includes(w));
+  const rows = o.people.filter((p) => fits(p.name)).slice(0, 80);
+  const shown = new Set(rows.map((p) => p.key));
+  for (const k of o.picked) {
+    if (shown.has(k)) continue;
+    const p = o.people.find((x) => x.key === k) || { key: k, name: o.names[k] || k, rooms: [], gone: true };
+    if (fits(p.name)) rows.push(p);
+  }
+  return rows;
+}
+/** The picked people who have a chat: who will get the message. */
+const bcReach = (o) => { o.people ||= bcPeople(); return o.picked.map((k) => o.people.find((p) => p.key === k)).filter(Boolean); };
+function bcToggle(o, p) {
+  if (!p) return;
+  const i = o.picked.indexOf(p.key);
+  if (i >= 0) o.picked.splice(i, 1); else { o.picked.push(p.key); o.names[p.key] = p.name; }
+}
+/** A saved list's chip: picks all its people, or with all of them picked takes them away again. */
+function bcList(o, l) {
+  const all = l.people.every((p) => o.picked.includes(p.key));
+  for (const p of l.people) {
+    const i = o.picked.indexOf(p.key);
+    if (all) { if (i >= 0) o.picked.splice(i, 1); }
+    else if (i < 0) { o.picked.push(p.key); o.names[p.key] = p.name; }
+  }
+  render();
+}
+function bcSaveList(o) {
+  if (!o.picked.length) return;
+  const name = prompt(T('Názov zoznamu'), '')?.trim();
+  if (!name) return;
+  const people = o.picked.map((k) => ({ key: k, name: o.names[k] || o.people?.find((p) => p.key === k)?.name || k }));
+  saveBroadcast((d) => ({ ...d, lists: [...(d.lists || []).filter((l) => l.name !== name), { id: Date.now().toString(36), name, people }] }));
+}
+const bcDropList = (id) => saveBroadcast((d) => ({ ...d, lists: (d.lists || []).filter((l) => l.id !== id) }));
+
+/** Moves to step `n`. The preview first uploads new files (once, for everyone) and keeps the draft in account data,
+ *  so another device can finish it; confirming sends. */
+async function bcGo(o, n) {
+  if (o.busy || n === o.step) return;
+  if (o.sent) return; // a sent broadcast is only what became of it
+  if (n === 4 || (n >= 2 && !bcReach(o).length)) return; // step 4 comes by confirming (bcSend)
+  if (n === 3) {
+    if (o.files.some((f) => f instanceof File)) {
+      o.busy = T('Nahrávam prílohy…');
+      render();
+      try { o.files = await Promise.all(o.files.map((f) => (f instanceof File ? fileContent(f) : f))); }
+      catch { alert(T('Prílohu sa nepodarilo nahrať.')); return; }
+      finally { o.busy = null; render(); }
+    }
+    bcBuild(o);
+    saveBroadcast((d) => ({ ...d, items: bcUpsert(d.items, bcItem(o, 'draft')) }));
+  }
+  o.step = n;
+  render();
+}
+/** The preview's messages: one per picked person with a chat; what was changed for someone stays. */
+function bcBuild(o) {
+  const keep = new Map(o.to.map((t) => [t.key, t]));
+  const names = bcNames();
+  o.to = bcReach(o).map((p) => {
+    if (keep.has(p.key)) return keep.get(p.key);
+    const r = bcRoomOf(p);
+    return { key: p.key, name: p.name, room: r.id, net: r.app, greeting: names[p.key] || guessGreeting(p.name), guessed: !names[p.key] };
+  });
+  o.psel = Math.max(0, Math.min(o.psel, o.to.length - 1));
+}
+const bcItem = (o, state) => ({ id: o.id, title: bcTitle(o.tpl), text: o.tpl, files: o.files.filter((f) => !(f instanceof File)), state, at: Date.now(),
+  to: o.to.map(({ guessed, ...t }) => t) });
+/** Why the preview refuses to send: more than BC_DAY people on one network today. */
+function bcRefusal(o) {
+  const over = Object.entries(dayCounts({ id: o.id, to: o.to }, laterItems())).filter(([, n]) => n > BC_DAY);
+  return over.map(([net, n]) => T`${appOf(net)?.name || net}: dnes by to bolo ${n} ľudí, najviac je ${BC_DAY}. Vyhoď ${n - BC_DAY} (Delete) alebo zvyšok rozošli zajtra.`).join(' ');
+}
+/** Confirming: the messages go to send-later first, then the broadcast is noted as sent. */
+async function bcSend(o) {
+  if (o.busy || o.sent || !o.to.length || bcRefusal(o)) return;
+  o.busy = T('Odovzdávam správy…');
+  render();
+  try {
+    const item = bcItem(o, 'sent');
+    const { items, at } = laterItemsOf(item, Date.now() + 3e3);
+    await saveLater((list) => addOnce(list, items));
+    if (!items.every((x) => laterItems().some((y) => y.id === x.id))) return;
+    item.to = item.to.map((t) => ({ ...t, at: at[t.key] }));
+    await saveBroadcast((d) => ({ ...d, items: bcUpsert(d.items, item) }));
+    Object.assign(o, { sent: true, step: 4, psel: 0 });
+    bcOpen = null;
+  } finally {
+    o.busy = null;
+    render();
+  }
+}
+
+/** What became of one person's message: { state: 'sent' | 'wait' | 'failed' | 'stopped', at, error?, answer?, rsvp? }.
+ *  send-later's items say it while it keeps them (a week); what they said is copied into the broadcast (bcRecord). */
+function bcStatus(it, t) {
+  const batch = batchOf(it, t);
+  const parts = laterItems().filter((x) => x.batch === batch);
+  const first = parts.find((x) => !x.seq) || parts[0];
+  const bad = parts.find((x) => x.failed && !x.sent);
+  const out = t.sent || (parts.length && parts.every((x) => x.sent)) ? { state: 'sent', at: t.sent || first.sent, event: t.event || first.event_id }
+    : t.failed || bad ? { state: 'failed', at: t.failed || bad.failed, error: t.error || bad.error }
+      : parts.length ? { state: 'wait', at: first.at } : { state: 'stopped', at: t.at };
+  if (out.state === 'sent') {
+    const ans = bcAnswer(t, out.at, out.event);
+    if (ans?.text) Object.assign(out, { answer: ans.text, rsvp: guessRsvp(ans.text) });
+    else if (ans?.held) out.held = true;
+  }
+  if (t.rsvp) out.rsvp = t.rsvp;
+  return out;
+}
+/** Their first message after Karchi's, in any of the person's chats: { text }, or { held: true } while it waits for
+ *  a reading window (its words show only then, like everywhere else), or null. */
+function bcAnswer(t, sent, event) {
+  const g = t.key.startsWith('merge:') && (mergeData().groups || []).find((x) => mergeKey(x) === t.key);
+  const rooms = g ? groupRooms(g) : [S.rooms.get(t.room)].filter(Boolean);
+  const theirs = (x, since) => x.origin_server_ts > since && x.sender !== S.userId && !isBot(x.sender) && x.type === 'm.room.message';
+  let best = null;
+  let held = false;
+  for (const r of rooms) {
+    const m = roomModel(r);
+    const since = (event && (m.byId.get(event) || r.events.get(event))?.origin_server_ts) || sent;
+    const ev = m.messages.find((x) => theirs(x, since) && !isRedacted(m, x));
+    if (ev && (!best || ev.origin_server_ts < best.ts)) best = { ts: ev.origin_server_ts, text: (plainBody(contentOf(m, ev)).trim() || contentOf(m, ev).body || '…').replace(/\s+/g, ' ') };
+    if (!ev && m.held) { const cut = roomCut(r); held ||= [...r.events.values()].some((x) => theirs(x, since) && isHeld(x, cut)); }
+  }
+  return best || (held ? { held } : null);
+}
+let bcRecording = false;
+/** After a sync: what send-later says about a sent broadcast's messages is written into it, so it still shows after
+ *  the service forgets them. */
+function bcRecord() {
+  if (bcRecording || !bcBeta()) return;
+  const marks = {};
+  for (const it of bcData().items || []) {
+    if (it.state !== 'sent') continue;
+    for (const t of it.to) {
+      if (t.sent || t.failed) continue;
+      const s = bcStatus(it, t);
+      if (s.state === 'sent') marks[`${it.id}|${t.key}`] = { sent: s.at, event: s.event };
+      else if (s.state === 'failed') marks[`${it.id}|${t.key}`] = { failed: s.at, error: s.error };
+    }
+  }
+  if (!Object.keys(marks).length) return;
+  bcRecording = true;
+  saveBroadcast((d) => ({ ...d, items: (d.items || []).map((it) => ({ ...it, to: (it.to || []).map((t) => ({ ...t, ...marks[`${it.id}|${t.key}`] })) })) }))
+    .finally(() => { bcRecording = false; });
+}
+/** Zastaviť: what has not gone yet never goes. */
+async function bcStop(it) {
+  await saveLater((list) => { const out = list.filter((x) => !(x.id.startsWith(`bc-${it.id}-`) && !x.sent && !x.failed)); return out.length === list.length ? list : out; });
+  await saveBroadcast((d) => ({ ...d, items: (d.items || []).map((x) => (x.id === it.id ? { ...x, stopped: Date.now() } : x)) }));
+}
+/** A/N/M in step 4: Karchi's own yes, no or maybe for a person (the same key again takes it back). */
+function bcSetRsvp(it, t, rsvp) {
+  const next = t.rsvp === rsvp ? undefined : rsvp;
+  t.rsvp = next;
+  saveBroadcast((d) => ({ ...d, items: (d.items || []).map((x) => (x.id !== it.id ? x : { ...x, to: x.to.map((y) => (y.key === t.key ? { ...y, rsvp: next } : y)) })) }));
+}
+/** „Pripomenúť tým, čo neodpísali“: a new broadcast for those, with the same text after a line. */
+function bcRemind(it) {
+  const left = it.to.filter((t) => { const s = bcStatus(it, t); return s.state === 'sent' && !s.answer && !s.held && !t.rsvp; });
+  if (!left.length) return;
+  const rest = it.text.replace(/^\s*\{oslovenie\}\s*/, '');
+  openOverlay('broadcast', { ...bcFresh(), step: 2, picked: left.map((t) => t.key), names: Object.fromEntries(left.map((t) => [t.key, t.name])),
+    tpl: `{oslovenie}\n\nešte sa pripomínam:\n\n${rest}`, files: it.files || [] }); // i18n-ignore: text sent to people
+  bcOpen = S.overlay;
+}
+
+const bcKbd = (k) => h('kbd', {}, k);
+const bcKey2 = (k, label) => h('span', {}, bcKbd(k), ' ', label);
+const bcNet = (app) => (appOf(app) ? h('img', { class: 'net', src: appOf(app).icon, alt: appOf(app).name }) : null);
+const bcAv = (t) => avatar(S.rooms.has(t.room) ? roomAvatar(S.rooms.get(t.room)) : '', t.name, 32);
+/** The overlay: steps on top, the step's own body under them. */
+function bcView(o) {
+  const steps = [[1, T('Komu')], [2, T('Správa')], [3, T('Náhľad')], [4, T('Rozoslané')]];
+  return [
+    h('div', { class: 'steps' }, h('h1', {}, T('Rozoslať')),
+      steps.map(([n, label]) => h('button', { class: `step${n === o.step ? ' on' : n < o.step ? ' done' : ''}`, disabled: o.sent && n < 4, onclick: () => bcGo(o, n) }, `${n} ${label}`)),
+      h('button', { class: 'x', title: T('Zavrieť (Esc)'), onclick: () => closeOverlay() }, icon('close'))),
+    o.step === 1 ? bcPickView(o) : o.step === 2 ? bcWriteView(o) : o.step === 3 ? bcPreviewView(o) : bcStatusView(o),
+  ];
+}
+function bcPickView(o) {
+  const rows = bcRows(o);
+  o.index = Math.max(0, Math.min(o.index, rows.length - 1));
+  const lists = bcData().lists || [];
+  const n = bcReach(o).length;
+  return h('div', { class: 'body' },
+    h('input', { class: 'cmdinput', placeholder: T('Komu? Meno alebo zoznam…'), value: o.query, 'data-root': '__overlay', autocomplete: 'off',
+      oninput: (e) => { o.query = e.target.value; o.index = 0; render(); } }),
+    lists.length ? h('div', { class: 'chips' }, lists.filter((l) => !o.query || norm(l.name).includes(norm(o.query))).map((l) =>
+      h('button', { class: `chip${l.people.length && l.people.every((p) => o.picked.includes(p.key)) ? ' on' : ''}`, onclick: () => bcList(o, l) }, l.name, ' ', h('small', {}, String(l.people.length))))) : null,
+    h('div', { class: 'pane', 'data-scroll': 'bc:1' }, h('div', { class: 'rsec' }, T('Ľudia')), rows.length ? rows.map((p, i) => {
+      const on = o.picked.includes(p.key);
+      const sub = p.gone ? T('nemáte spolu chat, vynechá sa') : p.rooms.length > 1 ? T`spojený chat · ${p.rooms.map((r) => appOf(r.app)?.name).join(', ')}` : appOf(p.rooms[0].app)?.name;
+      return h('button', { class: `res${i === o.index ? ' on' : ''}${on ? ' picked' : ''}${p.gone ? ' dim' : ''}`, 'data-key': p.key,
+        onclick: () => { o.index = i; bcToggle(o, p); render(); } },
+        h('span', { class: 'check' }, on ? icon('check') : null), avatar(p.gone ? '' : roomAvatar(p.rooms[0]), p.name, 32),
+        h('span', { class: 'rmeta' }, h('b', {}, highlighted(p.name, o.query)), h('small', {}, sub)), h('span', { class: 'nets' }, p.rooms.map((r) => bcNet(r.app))));
+    }) : h('div', { class: 'empty' }, T('Taký človek tu nie je. Rozoslať vie len do chatov jeden na jedného na Messengeri, Instagrame, WhatsAppe a Discorde.'))),
+    h('div', { class: 'foot' }, h('span', {}, h('b', {}, String(n)), ' ', T('vybraných')),
+      h('span', { class: 'keys' }, bcKey2(T('Medzerník'), T('označiť')), h('span', {}, bcKbd('↑↓'))),
+      h('button', { class: 'ghost', disabled: !o.picked.length, onclick: () => bcSaveList(o) }, T('Uložiť ako zoznam…')),
+      h('button', { class: 'go', disabled: !n, onclick: () => bcGo(o, 2) }, T('Ďalej'), ' ', bcKbd('Enter'))));
+}
+function bcWriteView(o) {
+  const insert = (e, slot) => {
+    const t = e.currentTarget.closest('.cmd').querySelector('.field textarea');
+    const a = t.selectionStart;
+    o.tpl = t.value.slice(0, a) + slot + t.value.slice(t.selectionEnd);
+    t.value = o.tpl;
+    t.focus();
+    t.selectionStart = t.selectionEnd = a + slot.length;
+  };
+  return h('div', { class: 'body' },
+    h('div', { class: 'write' },
+      h('label', {}, T('Správa.'), ' ', h('span', { class: 'slot' }, '{oslovenie}'), ' ', T('sa každému nahradí jeho oslovením, zvyšok dostanú všetci rovnako.')),
+      h('div', { class: 'field' }, h('textarea', { value: o.tpl, 'data-root': '__overlay', 'aria-label': T('Správa'), oninput: (e) => { o.tpl = e.target.value; } })),
+      h('div', { class: 'hint' }, T('Vložiť:'), ' ', h('button', { class: 'chip', onclick: (e) => insert(e, '{oslovenie}') }, '{oslovenie}'), ' ',
+        h('button', { class: 'chip', onclick: (e) => insert(e, '{meno}') }, '{meno}'), ' · ', T('osobnú vetu navyše pridáš komukoľvek v náhľade')),
+      h('div', { class: 'atts' }, o.files.map((f, i) => h('div', { class: 'att' }, h('b', {}, f.name || f.body),
+        h('small', {}, `${fileSize(f.size ?? f.info?.size ?? 0)} · ${T('nahrá sa raz, pôjde každému')}`),
+        h('button', { class: 'attx', title: T('Odobrať'), onclick: () => { o.files.splice(i, 1); render(); } }, icon('close')))),
+        h('label', { class: 'ghost' }, T('+ Súbor'), h('input', { type: 'file', multiple: true, hidden: true, onchange: (e) => { o.files.push(...e.target.files); e.target.value = ''; render(); } }))),
+      h('div', { class: 'pace' }, h('span', { class: 'hint' }, T('Tempo:')), ' ', h('span', { class: 'tag' }, T('jedna správa každých 25–70 s')), ' ',
+        h('span', { class: 'tag' }, T`najviac ${BC_DAY} ľudí na sieť a deň`))),
+    h('div', { class: 'foot' }, h('span', { class: 'keys' }, bcKey2('Esc', T('späť'))), o.busy ? h('span', {}, o.busy) : null,
+      h('button', { class: 'go', disabled: !!o.busy, onclick: () => bcGo(o, 3) }, T('Náhľad'), ' ', bcKbd('Ctrl+Enter'))));
+}
+/** The message as the person gets it, their greeting underlined. */
+function bcBubble(o, t) {
+  const text = personalText(o.tpl, t);
+  const g = String(t.greeting || '').trim();
+  const at = g ? text.indexOf(g) : -1;
+  return h('div', { class: 'bubble' }, at < 0 ? text : [text.slice(0, at), h('mark', {}, g), text.slice(at + g.length)]);
+}
+const bcPlural = (n) => (n === 1 ? T('správa') : n < 5 ? T('správy') : T('správ'));
+function bcPreviewView(o) {
+  const t = o.to[o.psel];
+  const p = t && bcReach(o).find((x) => x.key === t.key);
+  const left = o.picked.filter((k) => !o.to.some((x) => x.key === k));
+  const why = bcRefusal(o);
+  const n = o.to.length;
+  const setGreeting = (e) => { t.greeting = e.target.value; t.guessed = false; render(); };
+  const remember = () => { const g = t.greeting.trim(); if (g && bcNames()[t.key] !== g) putAccount(NAMES, { ...bcNames(), [t.key]: g }).catch(() => alert(T('Oslovenie sa nezapamätalo.'))); };
+  return h('div', { class: 'body' },
+    h('div', { class: 'split' },
+      h('div', { class: 'pane', tabindex: 0, 'data-root': '__overlay', 'data-scroll': 'bc:3' }, h('div', { class: 'rsec' }, T('Správy')),
+        o.to.map((x, i) => h('button', { class: `res${i === o.psel ? ' on' : ''}`, 'data-key': x.key, tabindex: -1, onclick: () => { o.psel = i; render(); } },
+          bcAv(x), h('span', { class: 'rmeta' }, h('b', {}, x.name), h('small', {}, x.greeting)),
+          x.guessed ? h('span', { class: 'tag warn' }, T('uhádnuté')) : null, bcNet(x.net))),
+        left.length ? [h('div', { class: 'rsec' }, T('Vynechaní')), left.map((k) => h('div', { class: 'res dim', 'data-key': k }, avatar('', o.names[k] || k, 32),
+          h('span', { class: 'rmeta' }, h('b', {}, o.names[k] || k), h('small', {}, T('nemáte spolu chat')))))] : null),
+      h('div', { class: 'preview', 'data-scroll': 'bc:3p' }, !t ? h('span', { class: 'hint' }, T('Nikto nezostal. Vráť sa na krok 1.')) : [
+        h('div', { class: 'phead' }, bcAv(t), h('span', { class: 'rmeta' }, h('b', {}, t.name), h('small', {}, T`${o.psel + 1} z ${n}`))),
+        h('div', { class: 'greet' }, h('span', { class: 'hint' }, T('Oslovenie')),
+          h('input', { value: t.greeting, 'data-root': '__overlay-greet', 'aria-label': T('Oslovenie'), oninput: setGreeting, onchange: remember }),
+          t.guessed ? h('span', { class: 'tag warn' }, T('uhádnuté – skontroluj')) : h('span', { class: 'tag' }, T('zapamätané'))),
+        p?.rooms.length > 1 ? h('div', { class: 'netpick' }, h('span', { class: 'hint' }, T('Cez')), p.rooms.map((r) =>
+          h('button', { class: `chip${r.id === t.room ? ' on' : ''}`, onclick: () => { t.room = r.id; t.net = r.app; render(); } }, bcNet(r.app), appOf(r.app)?.name)))
+          : h('div', { class: 'hint' }, T`Cez ${appOf(t.net)?.name || t.net}`),
+        bcBubble(o, t),
+        o.files.map((f) => h('div', { class: 'bubble file' }, f.name || f.body)),
+        h('div', { class: 'extra' }, h('span', { class: 'hint' }, T('Osobná veta navyše, len v tejto správe')),
+          h('textarea', { value: t.extra || '', 'data-root': '__overlay-extra', placeholder: T('napr. Ty by si mohol robiť foto?'), oninput: (e) => { t.extra = e.target.value; render(); } }))])),
+    h('div', { class: 'foot' },
+      h('span', { class: 'keys' }, bcKey2('↑↓', T('ďalší')), bcKey2('E', T('oslovenie')), bcKey2('←→', T('sieť')), bcKey2('Delete', T('vyhodiť'))),
+      why ? h('span', { class: 'refuse' }, why) : h('span', {}, n ? [T('Odíde'), ' ', h('b', {}, String(n)), ` ${bcPlural(n)}, `, T('posledná o ~'), h('b', {}, `${Math.max(1, Math.round((n * 47) / 60))} min`)] : T('Nikto nezostal')),
+      o.busy ? h('span', {}, o.busy) : null,
+      h('button', { class: 'go', disabled: !n || !!why || !!o.busy, onclick: () => bcSend(o) }, T('Rozoslať'), ` ${n} `, bcKbd('Ctrl+Enter'))));
+}
+function bcStatusView(o) {
+  const it = (bcData().items || []).find((x) => x.id === o.id) || bcItem(o, 'sent');
+  const rows = it.to.map((t) => ({ t, s: bcStatus(it, t) }));
+  o.psel = Math.max(0, Math.min(o.psel, rows.length - 1));
+  const c = (st) => rows.filter((x) => x.s.state === st).length;
+  const r = (v) => rows.filter((x) => x.s.rsvp === v).length;
+  const num = (n, label) => h('span', {}, h('b', {}, String(n)), label);
+  const st = { sent: ['ok', T('odišlo')], wait: ['wait', T('čaká')], failed: ['no', T('neodišlo')], stopped: ['no', T('zastavené')] };
+  const rs = { ano: ['ok', T('áno')], nie: ['no', T('nie')], mozno: ['warn', T('možno')] };
+  const waiting = c('wait');
+  const quiet = rows.filter((x) => x.s.state === 'sent' && !x.s.answer && !x.s.held && !x.t.rsvp).length;
+  return h('div', { class: 'body' },
+    h('div', { class: 'sum' }, num(c('sent'), T('odišlo')), num(waiting, T('čaká')), c('stopped') ? num(c('stopped'), T('zastavené')) : null,
+      c('failed') ? num(c('failed'), T('neodišlo')) : null, h('i', { class: 'gap' }),
+      num(r('ano'), T('áno')), num(r('nie'), T('nie')), num(r('mozno'), T('možno')), num(rows.filter((x) => !x.s.answer && !x.s.held).length, T('bez odpovede'))),
+    h('div', { class: 'pane', id: 'bcstatus', tabindex: 0, 'data-root': '__overlay', 'data-scroll': 'bc:4' }, rows.map(({ t, s }, i) =>
+      h('div', { class: `res${i === o.psel ? ' on' : ''}`, 'data-key': t.key, title: s.error || '', onclick: () => { o.psel = i; render(); }, ondblclick: () => bcOpenChat(t) },
+        h('time', {}, s.at ? timeLabel(s.at) : ''), bcAv(t),
+        h('span', { class: 'rmeta' }, h('b', {}, t.name), h('small', {}, appOf(t.net)?.name || t.net)),
+        h('span', { class: 'stcol' }, h('span', { class: `tag ${st[s.state][0]}` }, st[s.state][1])),
+        h('span', { class: 'ans' }, s.answer ? `„${s.answer}“` : s.held ? T('odpísal(a), ukáže sa v okne na čítanie') : s.state === 'sent' ? T('zatiaľ neodpísal(a)') : s.state === 'failed' ? s.error || '' : ''),
+        h('span', { class: 'rscol' }, s.rsvp ? h('span', { class: `tag ${rs[s.rsvp][0]}` }, rs[s.rsvp][1]) : null)))),
+    h('div', { class: 'foot' },
+      h('span', { class: 'keys' }, bcKey2('Enter', T('otvoriť chat')), bcKey2('A N M', T('áno / nie / možno'))),
+      h('button', { class: 'ghost', disabled: !quiet, onclick: () => bcRemind(it) }, T('Pripomenúť tým, čo neodpísali')),
+      waiting ? h('button', { class: 'ghost danger', onclick: () => bcStop(it) }, T('Zastaviť')) : null));
+}
+function bcOpenChat(t) {
+  if (!S.rooms.has(t.room)) return;
+  S.overlay = null;
+  select(t.room);
+}
+/** Rozoslať's keys, wherever the focus is in its overlay; true when one was taken. */
+function bcKey(e) {
+  const o = S.overlay;
+  if (o?.kind !== 'broadcast' || e.altKey || e.metaKey) return false;
+  const a = document.activeElement;
+  const field = a?.matches?.('textarea, input:not([type=file])') && !(o.step === 1 && a.matches('.cmdinput'));
+  const take = (fn) => { e.preventDefault(); e.stopPropagation(); fn(); return true; };
+  const toList = () => document.querySelector('.cmd.broadcast [data-root="__overlay"]')?.focus({ preventScroll: true });
+  const move = (field, n) => take(() => { o[field] = Math.max(0, Math.min(o[field] + n, (o.step === 1 ? bcRows(o).length : o.step === 3 ? o.to.length : (bcData().items || []).find((x) => x.id === o.id)?.to.length || o.to.length) - 1)); render(); document.querySelector('.cmd.broadcast .res.on')?.scrollIntoView({ block: 'nearest' }); });
+  const k = e.key;
+  if (k === 'Escape') {
+    if (field && o.step === 3) return take(toList);
+    if (field && a.matches('.field textarea')) return take(() => a.blur());
+    if (o.step === 2 || (o.step === 3 && !o.sent)) return take(() => bcGo(o, o.step - 1));
+    return false; // closes, as any overlay
+  }
+  if (o.busy) return false;
+  if (o.step === 1) {
+    if (e.ctrlKey) return false;
+    if (k === 'ArrowDown') return move('index', 1);
+    if (k === 'ArrowUp') return move('index', -1);
+    if (k === ' ' && (!a?.matches('.cmdinput') || !o.query)) return take(() => { bcToggle(o, bcRows(o)[o.index]); render(); });
+    if (k === 'Enter' && !e.isComposing) return take(() => bcGo(o, 2));
+    return false;
+  }
+  if (o.step === 2) return k === 'Enter' && e.ctrlKey ? take(() => bcGo(o, 3)) : false;
+  if (o.step === 3) {
+    if (k === 'Enter' && e.ctrlKey) return take(() => { if (a?.dataset.root === '__overlay-greet') a.dispatchEvent(new Event('change')); bcSend(o); });
+    if (field) return k === 'Enter' && a.dataset.root === '__overlay-greet' ? take(() => { a.dispatchEvent(new Event('change')); toList(); }) : false;
+    if (e.ctrlKey) return false;
+    const t = o.to[o.psel];
+    const p = t && bcReach(o).find((x) => x.key === t.key);
+    if (k === 'ArrowDown') return move('psel', 1);
+    if (k === 'ArrowUp') return move('psel', -1);
+    if ((k === 'ArrowRight' || k === 'ArrowLeft') && p?.rooms.length > 1) return take(() => {
+      const i = p.rooms.findIndex((r) => r.id === t.room);
+      const r = p.rooms[(i + (k === 'ArrowRight' ? 1 : p.rooms.length - 1)) % p.rooms.length];
+      Object.assign(t, { room: r.id, net: r.app });
+      render();
+    });
+    if (k === 'Delete' && t) return take(() => { o.picked.splice(o.picked.indexOf(t.key), 1); o.to.splice(o.psel, 1); o.psel = Math.max(0, Math.min(o.psel, o.to.length - 1)); render(); });
+    if ((k === 'e' || k === 'E') && t) return take(() => { const g = document.querySelector('.cmd.broadcast [data-root="__overlay-greet"]'); g?.focus(); g?.select(); });
+    return false;
+  }
+  if (field || e.ctrlKey) return false;
+  const it = (bcData().items || []).find((x) => x.id === o.id);
+  const t = it?.to[o.psel];
+  if (k === 'ArrowDown') return move('psel', 1);
+  if (k === 'ArrowUp') return move('psel', -1);
+  if (k === 'Enter' && t) return take(() => bcOpenChat(t));
+  const rsvp = { a: 'ano', n: 'nie', m: 'mozno' }[k.toLowerCase()];
+  if (rsvp && t) return take(() => { bcSetRsvp(it, t, rsvp); render(); });
+  return false;
+}
+/** Settings → Správy: the beta's switch, and the saved lists (the way out of „Uložiť ako zoznam…“). */
+function bcSettings() {
+  const lists = bcData().lists || [];
+  return [
+    h('h3', {}, T('Rozoslať')),
+    h('label', { class: 'bcheck' },
+      h('input', { type: 'checkbox', checked: bcBeta(), 'data-focus': 'bcbeta', onchange: (e) => { const on = e.currentTarget.checked; saveBroadcast((d) => ({ ...d, beta: on || undefined })); } }),
+      h('span', {}, T('Rozoslať viacerým (beta)'),
+        h('small', {}, T('Jedna správa viacerým ľuďom, každému do jeho vlastného chatu s jeho oslovením, odoslaná jedným potvrdením a postupne. Ctrl+J → Rozoslať… alebo menu chatu. Platí na všetkých zariadeniach.')))),
+    bcBeta() && lists.length ? h('div', { class: 'bclists' }, lists.map((l) => h('div', { class: 'bclist', 'data-key': l.id },
+      h('span', {}, l.name, ' ', h('small', {}, T`${l.people.length} ľudí`)),
+      h('button', { class: 'ghost danger', 'data-focus': `bclist:${l.id}`, onclick: () => bcDropList(l.id) }, T('Zmazať zoznam'))))) : null,
+  ];
 }
 
 // ------------------------------------------------------------------ relay: an awaited answer, as a picture for a friend
@@ -5396,6 +5853,7 @@ document.addEventListener('keydown', (e) => {
   if (mod && !e.shiftKey && key === 'p') return run(() => (gal ? closeGallery() : openGallery(S.rooms.get(S.selected))));
   if (S.overlay?.kind === 'gallery' && galleryKey(e)) return;
   if (S.overlay?.kind === 'image' && viewerKey(e)) return;
+  if (S.overlay?.kind === 'broadcast' && bcKey(e)) return;
   // Ctrl+S: the message box to the stash, or an empty box takes from it. Never the browser's „save page“.
   if (mod && !e.shiftKey && key === 's') return run(() => { if (S.overlay?.kind === 'stashask') S.overlay.flat?.[0](); else if (!S.overlay && !S.panel && !e.isComposing) stashShortcut(); });
   // Ctrl+Shift+Space: the voice message in hand plays or pauses, else the open chat's first unheard one starts.
@@ -9970,7 +10428,8 @@ function menuView(o) {
         ? item(icon('users'), T('Členovia'), null, () => openMembers(room, document.querySelector('[data-members="head"]'), false, true)) : null,
       room && !room.archiveOnly ? item(icon('label'), T('Prezývka…'), null, () => openNick(e)) : null,
       room ? item(icon('fill'), T('Farba chatu…'), null, () => openChatLook(e)) : null,
-      personChat(e) ? item(icon('user'), T('Profil'), null, () => openProfile(e)) : null],
+      personChat(e) ? item(icon('user'), T('Profil'), null, () => openProfile(e)) : null,
+      bcBeta() && bcKeyOf(e) ? item(icon('users'), T('Rozoslať…'), null, () => openBroadcast(bcKeyOf(e))) : null],
     // Merged chats: one more of the person's chats, or apart again.
     [room && canMerge(room) ? item(icon('link'), T('Spojiť s…'), null, () => openMergePick(room)) : null,
       e.merged?.auto ? h('div', { class: 'mnote' }, T`Spojené automaticky: ${e.merged.auto === 'people' ? T('ten istý človek v mape ľudí') : T('rovnaké meno')} (${e.rooms.map((x) => appOf(x.app)?.name).join(', ')})`) : null,
@@ -10383,6 +10842,8 @@ function toolList() {
     [T('Hľadať chaty, ľudí a správy'), 'search find vyhladavanie najst', 'Ctrl+K', () => openSearch()],
     [T('Nová správa'), 'new message napisat novy chat konverzacia', 'Ctrl+N', openNewChat],
     [T('Nový mail'), 'gmail outlook email napisat novy mail posta', null, () => openMail()],
+    ...(bcBeta() ? [[T('Rozoslať…'), 'rozoslat broadcast hromadna sprava viacerym ludom oznam pozvanka beta', null, () => openBroadcast(bcKeyOf(e))],
+      ...(bcData().items || []).slice(0, 3).map((it) => [T`Rozoslanie: ${it.title}`, 'rozoslat rozoslane odpovede stav koncept', null, () => openBroadcastItem(it.id)])] : []),
     ...(S.links.whatsapp?.length && !hidden.has('whatsapp') ? [[T('Nová skupina na WhatsAppe'), 'whatsapp nova skupina group vytvorit', null, openNewGroup]] : []),
     [T('Známky'), 'edupage znamky hodnotenie skola grades', 'Ctrl+G', show('grades')],
     [T('Ľudia: mapa, koho odkiaľ poznáš'), 'people mapa priatelia kamarati kamosi friends vetvy druzina', 'Ctrl+M', show('people')],
@@ -10472,7 +10933,7 @@ function overlayView() {
   const live = o.kind === 'search' && document.querySelector('#app > .veil.search');
   if (live?._o === o) { if (!o.base || !sameSig(o.base.sig, searchSig())) searchRedrawSoon(o); return live; }
   const body = o.kind === 'search' ? searchView(o) : o.kind === 'new' ? newChatView(o) : o.kind === 'remind' ? remindView(o) : o.kind === 'chatlook' ? chatLookView(o) : o.kind === 'stashask' ? stashAskView(o)
-    : o.kind === 'gif' ? gifView(o) : o.kind === 'emoji' ? emojiView(o) : o.kind === 'later' ? laterView(o) : o.kind === 'tools' ? toolsView(o) : o.kind === 'merge' ? mergePickView(o) : o.kind === 'relay' ? relayPickView(o) : o.kind === 'forward' ? forwardPickView(o) : o.kind === 'nick' ? nickView(o)
+    : o.kind === 'gif' ? gifView(o) : o.kind === 'emoji' ? emojiView(o) : o.kind === 'later' ? laterView(o) : o.kind === 'tools' ? toolsView(o) : o.kind === 'merge' ? mergePickView(o) : o.kind === 'relay' ? relayPickView(o) : o.kind === 'forward' ? forwardPickView(o) : o.kind === 'nick' ? nickView(o) : o.kind === 'broadcast' ? bcView(o)
     : [h('div', { class: 'rsec' }, T('Klávesové skratky')), h('div', { class: 'results keys', ...listScroll(o) }, SHORTCUTS.map(([k, label]) => h('div', { class: 'krow' }, h('kbd', {}, k), label)))];
   // Pickers that send the open chat's message elsewhere stand over that chat, not over the inbox beside it.
   const pane = (o.kind === 'forward' || o.kind === 'relay') && document.querySelector('#app .detail.chat')?.getBoundingClientRect();
@@ -13966,6 +14427,7 @@ function batchSettings() {
     workSettings(),
     ringSettings(),
     lookSettings(),
+    bcSettings(),
     h('h3', {}, T('Spojené chaty')),
     h('label', { class: 'bcheck' },
       h('input', { type: 'checkbox', checked: mergeData().auto !== false, onchange: (e) => { saveMerges({ ...mergeData(), auto: e.target.checked ? null : false }); autoMergeSoon(); } }),

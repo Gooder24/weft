@@ -1500,3 +1500,96 @@ button.prof-status:hover { background: var(--hover); }
 .rcard span { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
 .form.welcome { text-align: center; }
 .form.welcome .welcome-logo { width: 48px; height: 48px; align-self: center; }
+
+/* Rozoslať (beta): four steps in one box, as docs/navrhy/2026-11-rozoslat/ukazka.html. */
+.cmd.broadcast { max-width: 780px; height: 80vh; max-height: none; }
+.cmd.broadcast > .pclose { display: none; }
+.cmd.broadcast kbd { margin: 0; padding: 1px 5px; border: 1px solid var(--line-strong); border-radius: var(--radius-s); color: var(--muted); }
+.cmd.broadcast .steps { flex: none; display: flex; gap: 4px; align-items: center; padding: 12px 14px; border-bottom: var(--bw) solid var(--line); }
+.cmd.broadcast .steps h1 { margin: 0 12px 0 4px; font-size: var(--fs-2); line-height: 28px; font-weight: 400; }
+.cmd.broadcast .step { border: 0; border-radius: var(--radius); padding: 5px 10px; background: none; color: var(--muted); font-size: var(--fs); cursor: pointer; }
+.cmd.broadcast .step:hover { background: var(--hover); }
+.cmd.broadcast .step.on { background: var(--soft); color: var(--text); }
+.cmd.broadcast .step.done { color: var(--link); }
+.cmd.broadcast .step:disabled { cursor: default; background: none; }
+.cmd.broadcast .steps .x { margin-left: auto; width: 32px; height: 32px; display: grid; place-items: center; border: 0; border-radius: var(--radius); background: none; color: var(--text); cursor: pointer; }
+.cmd.broadcast .steps .x:hover { background: var(--hover); }
+.cmd.broadcast .body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.cmd.broadcast .pane { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 6px 8px; outline: none; }
+.cmd.broadcast .cmdinput { padding: 12px 18px; }
+.cmd.broadcast .chips { padding: 10px 12px 4px; }
+.cmd.broadcast .chip:hover { border-color: var(--line-strong); }
+.cmd.broadcast .chip small { font-weight: 400; color: var(--muted); }
+.cmd.broadcast .res { padding: 7px 10px; }
+.cmd.broadcast .res:hover { background: var(--hover); }
+.cmd.broadcast .res.on { background: var(--accent); color: var(--accent-text); }
+.cmd.broadcast .res.on small, .cmd.broadcast .res.on .tag { color: var(--accent-text); border-color: var(--accent-text); }
+.cmd.broadcast .res .av { flex: none; width: 32px; height: 32px; }
+.cmd.broadcast .check { flex: none; width: 20px; height: 20px; display: grid; place-items: center; border: var(--bw) solid var(--line-strong); border-radius: var(--radius-s); }
+.cmd.broadcast .check svg { width: 16px; height: 16px; }
+.cmd.broadcast .res.picked .check { background: var(--link); border-color: var(--link); color: var(--accent-text); }
+.cmd.broadcast .res.on .check { border-color: var(--accent-text); }
+.cmd.broadcast .res.on.picked .check { background: var(--accent-text); color: var(--accent); }
+.cmd.broadcast .net { flex: none; width: 16px; height: 16px; border-radius: var(--radius-s); }
+.cmd.broadcast .nets { display: flex; gap: 4px; }
+.cmd.broadcast .tag { flex: none; padding: 1px 6px; border: 1px solid var(--line-strong); border-radius: var(--radius-s); color: var(--muted); }
+.cmd.broadcast .tag.warn { color: var(--warning); border-color: var(--warning); }
+.cmd.broadcast .tag.ok { color: var(--notice); border-color: var(--notice); }
+.cmd.broadcast .tag.no { color: var(--error); border-color: var(--error); }
+.cmd.broadcast .foot { flex: none; display: flex; align-items: center; gap: 10px; min-height: 52px; padding: 8px 12px; border-top: var(--bw) solid var(--line); color: var(--muted); }
+.cmd.broadcast .foot b { color: var(--text); font-weight: 600; }
+.cmd.broadcast .foot .keys { display: flex; gap: 10px; flex-wrap: wrap; }
+.cmd.broadcast .foot .refuse { color: var(--warning); }
+.cmd.broadcast .go { margin-left: auto; flex: none; display: flex; align-items: center; gap: 8px; border: 0; border-radius: var(--radius); padding: 8px 14px; background: var(--accent); color: var(--accent-text); font-weight: 600; cursor: pointer; }
+.cmd.broadcast .go kbd { color: var(--accent-text); border-color: var(--accent-text); }
+.cmd.broadcast .go:disabled { opacity: .5; cursor: default; }
+.cmd.broadcast .ghost { flex: none; border: var(--bw) solid var(--line-strong); border-radius: var(--radius); padding: 6px 12px; background: none; color: var(--text); cursor: pointer; }
+.cmd.broadcast .ghost:hover { background: var(--hover); }
+.cmd.broadcast .ghost:disabled { opacity: .5; cursor: default; background: none; }
+.cmd.broadcast .ghost.danger { color: var(--error); border-color: var(--error); }
+.cmd.broadcast .write { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; overflow-y: auto; }
+.cmd.broadcast .write label { color: var(--muted); }
+.cmd.broadcast .field { border: var(--bw) solid var(--line-strong); border-radius: var(--radius-l); background: var(--page); }
+.cmd.broadcast .field:focus-within { border-color: var(--text); }
+.cmd.broadcast .field textarea { display: block; width: 100%; min-height: 190px; resize: vertical; border: 0; background: none; color: var(--text); padding: 10px 12px; outline: none; line-height: var(--lh); }
+.cmd.broadcast .slot { display: inline-block; padding: 0 5px; border-radius: var(--radius-s); background: var(--soft); color: var(--link); }
+.cmd.broadcast .hint { color: var(--muted); }
+.cmd.broadcast .atts { padding: 0; align-items: center; }
+.cmd.broadcast .att { height: 56px; }
+.cmd.broadcast label.ghost input { display: none; }
+.cmd.broadcast .pace { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.cmd.broadcast .split { flex: 1; min-height: 0; display: grid; grid-template-columns: 290px 1fr; }
+.cmd.broadcast .split .pane { border-right: var(--bw) solid var(--line); }
+.cmd.broadcast .preview { min-height: 0; overflow-y: auto; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+.cmd.broadcast .phead { position: static; display: flex; align-items: center; gap: 10px; padding: 0; background: none; border: 0; }
+.cmd.broadcast .greet { display: flex; align-items: center; gap: 8px; }
+.cmd.broadcast .greet input, .cmd.broadcast .extra textarea { flex: 1; min-width: 0; border: var(--bw) solid var(--line); border-radius: var(--radius-s); padding: 6px 10px; background: var(--page); color: var(--text); outline: none; }
+.cmd.broadcast .greet input:focus, .cmd.broadcast .extra textarea:focus { border-color: var(--link); }
+.cmd.broadcast .netpick { display: flex; gap: 6px; align-items: center; }
+.cmd.broadcast .netpick .chip { display: flex; gap: 6px; align-items: center; }
+.cmd.broadcast .bubble { align-self: flex-end; max-width: 92%; padding: 9px 12px; border-radius: var(--radius-l); background: var(--accent); color: var(--accent-text); white-space: pre-wrap; }
+.cmd.broadcast .bubble mark { background: none; color: inherit; font-weight: inherit; text-decoration: underline 2px; text-underline-offset: 3px; }
+.cmd.broadcast .bubble.file { padding: 8px 12px; opacity: .9; }
+.cmd.broadcast .extra { display: flex; flex-direction: column; gap: 4px; }
+.cmd.broadcast .extra textarea { width: 100%; min-height: 40px; resize: vertical; }
+.cmd.broadcast .sum { flex: none; display: flex; gap: 14px; flex-wrap: wrap; padding: 12px 16px; border-bottom: var(--bw) solid var(--line); }
+.cmd.broadcast .sum .gap { width: 1px; margin: 4px 6px; background: var(--line-strong); }
+.cmd.broadcast .sum span b { font-size: var(--fs-2); line-height: 28px; font-weight: 400; margin-right: 4px; }
+.cmd.broadcast #bcstatus .rmeta { flex: none; width: 190px; }
+.cmd.broadcast .stcol { flex: none; width: 64px; }
+.cmd.broadcast .rscol { flex: none; width: 56px; text-align: right; }
+.cmd.broadcast .res .ans { flex: 1; min-width: 0; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cmd.broadcast .res.on .ans, .cmd.broadcast .res.on time { color: var(--accent-text); }
+.cmd.broadcast .res time { width: 40px; font-variant-numeric: tabular-nums; }
+@media (max-width: 720px) {
+  .cmd.broadcast { height: 100%; }
+  .cmd.broadcast .split { grid-template-columns: 1fr; grid-template-rows: 40% 1fr; }
+  .cmd.broadcast .split .pane { border-right: 0; border-bottom: var(--bw) solid var(--line); }
+  .cmd.broadcast .steps h1 { display: none; }
+  .cmd.broadcast .foot .keys { display: none; }
+  .cmd.broadcast #bcstatus .rmeta { width: 120px; }
+}
+/* Settings → Správy → Rozoslať: the saved lists, each with its way out. */
+.bclists { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.bclist { display: flex; align-items: center; gap: 10px; }
+.bclist small { color: var(--muted); }

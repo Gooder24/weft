@@ -260,6 +260,16 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   the later steps (phone, official APIs): `docs/navrhy/2026-11-konektory/`. Checks: `bun run check` there, `bun dry-run.ts`.
 - `server/sendlater/` is the send-later service (source of truth here, deployed to asus `~/matrix-spike/sendlater/`,
   unit `matrix-spike-sendlater`): it sends the messages Weft keeps in account data `sk.karchi.sendlater` when due.
+  An item with `gap` (ms) goes at most one batch per `gap` per network (`net`), also after an outage. Check:
+  `tests/sendlater/gap_test.py`.
+- Rozoslať (beta, Settings → Správy, account data `sk.karchi.broadcast` `beta`; off shows it nowhere): one message
+  to many people in four steps (Komu, Správa, Náhľad, Rozoslané; Ctrl+J or chat menu), each in their own chat with
+  their own greeting (`{oslovenie}`, `{meno}`; corrected ones kept in `sk.karchi.people.names`, keys as in
+  `sk.karchi.people.look`) and maybe one extra sentence. Saved lists of people, at most 30 people per network a day.
+  The confirmation writes send-later items `bc-<broadcast>-<person>-<seq>` with `gap`, 25–70 s apart, so a second
+  confirmation sends nothing more; step 4 shows what went, answers (held ones say only that they came) and yes/no/maybe
+  (A/N/M correct it). `app/broadcast.js` + the „Rozoslať (beta)“ section of app.js; design
+  `docs/navrhy/2026-11-rozoslat/`. Checks: `overenie/rozoslat/run.sh`, `tests/broadcast/`.
 - Voice messages play from the keyboard too: Space or K on the player, ← → 5 s, Ctrl+S downloads, and Ctrl+Shift+Space
   anywhere plays or pauses the one in hand (else the open chat's first unheard; heard ones are kept per device in
   localStorage `ep_voice_heard`). The one in hand keeps playing in other chats under a bar above the inbox (pause,
