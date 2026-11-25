@@ -4,7 +4,8 @@ Návrh pre ľudí, ktorí Weft spustia bez Beeperu a len si pripoja účty. Prec
 `server/archive/import_beeper.py`; spoločné časti (odhad miesta, výber rozsahu) sú navrhnuté tak, aby ich použil aj
 on. Napísal ho agent 24. 11. 2026 ako plánovací dokument a nadväzuje na [prevádzku](../2026-11-prevadzka/README.md):
 Weft je softvér na vlastný server, takže „cloud“ nižšie znamená server používateľa (doma alebo VPS), nie službu.
-Postavený je z neho len odhad miesta (`server/archive/estimate.py`), ostatné čaká na rozhodnutia na konci.
+Postavený je z neho len odhad miesta (`server/archive/estimate.py`), ostatné čaká na rozhodnutia na konci. Ako ľudí
+prevedie sprievodca a ako sa to postaví, je v [pláne](plan.md) s GIFmi všetkých ciest.
 
 ## Krátko
 
@@ -78,8 +79,8 @@ Dnes:
 - **„Len v zariadení“** naozaj sú mosty v zariadení (možnosť D v [prevádzke](../2026-11-prevadzka/README.md#možnosti)).
   To je mesiace práce, nie nastavenie.
 
-Odporúčanie: výber „kde“ dať len k histórii a len ako „aj v tomto počítači“ (desktopová appka). „Len v počítači“
-zatiaľ nerobiť.
+Ako ďalej: na vlastnom serveri je výber „na serveri“ alebo „aj v tomto počítači“. Pri pozvánke na cudzí server drží
+server len 30 dní a stará história je len v počítači (Karchi, 25. 11.). Postup je v [pláne](plan.md).
 
 ## Odhad miesta: `server/archive/estimate.py` (postavené)
 
@@ -157,7 +158,7 @@ Na čo ešte nie je zdroj:
    (pravidlo bez banu, rovnaké ako v [konektoroch](../2026-11-konektory/README.md)).
 3. **WhatsApp: otázka na rozsah pred QR kódom** (`request_full_sync`, `days_limit`)? Mení to konfiguráciu mosta, preto
    tvoje áno. Pre teba platí až pri ďalšom spárovaní.
-4. **„Kde“ len ako „história aj v tomto počítači“ v desktopovej appke a „len v počítači“ zatiaľ nie?** Odporúčam áno.
+4. **„Kde“:** rozhodnuté 25. 11., pozri [plán](plan.md).
 5. **EduPage nepovinná pri prvom spustení**: toto je oprava bez rozhodnutia. Treba ju ale skúsiť s novým prázdnym
    účtom na skúšobnom homeserveri a nasadiť do `~/matrix-spike`, kde má byť naraz len jedno vlákno. Spravím ju,
    keď povieš.
