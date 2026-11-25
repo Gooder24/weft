@@ -37,8 +37,9 @@ if (-not (Get-Command wsl.exe -ErrorAction SilentlyContinue) -or -not (Get-Distr
   }
 }
 
-$here = (wsl.exe -d $Distro -u root -- wslpath -a ($PSScriptRoot -replace '\\', '/')).Trim()
-function Install-Weft { wsl.exe -d $Distro -u root -- bash "$here/install.sh" | Tee-Object -Variable script:out | Write-Host; $LASTEXITCODE }
+# --exec hands the arguments over as they are, without a shell that would split a folder name with spaces.
+$here = (wsl.exe -d $Distro -u root --exec wslpath -a ($PSScriptRoot -replace '\\', '/')).Trim()
+function Install-Weft { wsl.exe -d $Distro -u root --exec bash "$here/install.sh" | Tee-Object -Variable script:out | Write-Host; $LASTEXITCODE }
 $code = Install-Weft
 if ($code -eq 3) {
   # install.sh switched systemd on; WSL starts the distribution again with it.

@@ -1,0 +1,2 @@
+# Git for Windows would otherwise check scripts out with CRLF, which bash in WSL cannot run (install.ps1).
+*.sh text eol=lf
