@@ -18,6 +18,13 @@ import { linksIn, trimLink, LINK_RE, fromBridge, card as linkCard, createLinkRea
 document.documentElement.lang = LANG;
 
 const BRIDGE = '/_bridges/edupage/_matrix/provision/v3';
+// A new server's first start: install.sh opens Weft at #weft-setup=<registration token>. The token stays on this
+// device until an account exists, so a reload or a later visit can still create one; the address loses it at once.
+const SETUP_KEY = 'ep_setup_token';
+{
+  const m = location.hash.match(/^#weft-setup=([\w-]+)$/);
+  if (m) { localStorage.setItem(SETUP_KEY, m[1]); history.replaceState(null, '', location.pathname + location.search); }
+}
 const BOT_LOCALPART = 'edupagebot';
 const MARK = 'sk.karchi.edupage';
 const TO_KEY = 'sk.karchi.edupage.to';
@@ -250,7 +257,8 @@ async function boot() {
     const user = localStorage.getItem('cinny_user_id');
     if (token && user) saveSession(token, user);
   }
-  if (!S.token) return show('login');
+  // Not signed in: the welcome with the language first, unless this device already chose one and has no new server to set up.
+  if (!S.token) return show(localStorage.getItem('ep_lang') && !localStorage.getItem(SETUP_KEY) ? 'login' : 'welcome');
   const run = ++bootRun; // "Prihlásiť sa znova" and a later boot() end this one
   // The kept profile pictures come with the copy, so its first frame has them (both ways it is drawn, below).
   const kept = Promise.all([readSnapshot(), avatarsReady()]).then(([snap]) => snap);
@@ -303,7 +311,7 @@ async function boot() {
   if (run !== bootRun) return;
   S.waiting = null;
   // Shown from the kept copy already, the window stays: a bridge that did not answer is no reason to leave it.
-  if (!(S.fromSnapshot && S.view === 'main')) show(S.logins.length ? 'main' : 'connect');
+  if (!(S.fromSnapshot && S.view === 'main')) show(S.logins.length || S.edupage === false ? 'main' : 'connect');
   refreshLinks().then(refresh); // chat accounts' states, for the disconnected bar
   syncLoop();
   codesLoop();
@@ -353,7 +361,8 @@ function noteOpened(id) {
 
 async function refreshLogins() {
   const token = S.token; // an answer for a session that has since ended changes nothing
-  const logins = await bridge('GET', '/whoami').then((r) => r.logins || [], () => []);
+  // A server without the EduPage bridge (a new install) answers 404 or nothing: then EduPage is simply not offered.
+  const logins = await bridge('GET', '/whoami').then((r) => { S.edupage = true; return r.logins || []; }, (err) => { if (err.status === 404 || err.status === 502) S.edupage = false; return []; });
   if (S.token === token) S.logins = logins;
 }
 
@@ -4650,6 +4659,27 @@ async function setPref(key, value) {
   await putAccount(PREFS, next).catch(() => alert(T('Nastavenie sa neuložilo.')));
 }
 
+// The first account of a new server: Matrix registration with the token install.sh made (m.login.registration_token).
+async function matrixRegister(username, password) {
+  const body = { username, password, initial_device_display_name: 'Weft' };
+  let auth;
+  for (let round = 0; round < 4; round++) {
+    try {
+      const data = await call('POST', '/register', auth ? { ...body, auth } : body);
+      saveSession(data.access_token, data.user_id);
+      return;
+    } catch (err) {
+      const flow = err.status === 401 && err.details.flows?.[0]?.stages;
+      if (!flow) throw err;
+      const next = flow.find((stage) => !(err.details.completed || []).includes(stage));
+      if (next === 'm.login.registration_token') auth = { type: next, token: localStorage.getItem(SETUP_KEY) || '', session: err.details.session };
+      else if (next === 'm.login.dummy') auth = { type: next, session: err.details.session };
+      else throw err;
+    }
+  }
+  throw new Error(T('Server účet nevytvoril.'));
+}
+
 async function matrixLogin(user, password) {
   const data = await call('POST', '/login', {
     type: 'm.login.password',
@@ -5607,7 +5637,8 @@ function sideItems() {
   const today = new Date().toDateString(); // the rows' dates read "today" or "yesterday"
   items.push(...shown.slice(from, to).map((e) => itemRow(e, today)));
   if (shown.length > SIDE_ALL) items.push(h('div', { 'data-key': '__end', 'aria-hidden': 'true', style: { height: `${(shown.length - to) * rowH}px` } }));
-  if (!(S.roomId && S.historyDone) && !shown.length) {
+  // Without EduPage (a new server) the first sync is the end of loading; with it, its room's history.
+  if (!shown.length && !(S.edupage === false ? S.homeSynced : S.roomId && S.historyDone)) {
     items.push(h('div', { class: 'empty' }, T('Sťahujem správy…')));
   } else if (!pool.length) {
     items.push(h('div', { class: 'empty' }, S.box === 'inbox' ? T('Zatiaľ žiadne správy.') : T('Nič tu nie je.')));
@@ -10559,7 +10590,8 @@ async function loadCalendar() {
       cal.error = '';
     } catch (err) {
       if (token !== S.token) return;
-      if (isNetErr(err)) goOffline(); else cal.error = T`Kalendár sa nenačítal: ${err.message}`;
+      if (isNetErr(err)) goOffline();
+      else cal.error = err.status === 404 ? T('Kalendár na tomto serveri zatiaľ nebeží.') : T`Kalendár sa nenačítal: ${err.message}`;
     }
   }
   cal.loaded = true;
@@ -14204,8 +14236,58 @@ async function setCodeMode(l, select) {
 }
 
 
+// The first screen of a device that is not signed in: what Weft is, its language, and an account.
+function welcomeView() {
+  const setup = !!localStorage.getItem(SETUP_KEY);
+  return h('div', { class: 'form welcome' },
+    h('img', { class: 'welcome-logo', src: '/icon.svg', alt: '' }),
+    h('h2', {}, 'Weft'),
+    h('p', {}, T('Všetky tvoje správy v jednej schránke: Messenger, Instagram, WhatsApp, Discord, EduPage, Gmail, Outlook a Teams.')),
+    h('div', { class: 'seg', role: 'radiogroup', 'aria-label': T('Jazyk') }, LANGS.map(([id, label]) =>
+      h('button', { type: 'button', role: 'radio', lang: id, 'aria-checked': String(LANG === id), class: LANG === id ? 'on' : '',
+        onclick: () => { setLang(id); if (id !== LANG) location.reload(); else render(); } }, label))),
+    setup ? h('button', { class: 'primary', type: 'button', onclick: () => show('register') }, T('Vytvoriť účet')) : null,
+    h('button', { class: setup ? 'ghost' : 'primary', type: 'button', onclick: () => { setLang(LANG); show('login'); } }, T('Mám už účet')));
+}
+
+function registerView() {
+  return h('form', {
+    class: 'form',
+    onsubmit: async (e) => {
+      e.preventDefault();
+      if (S.busy) return;
+      const form = e.currentTarget;
+      const f = form.elements;
+      if (f.password.value !== f.password2.value) { S.error = T('Heslá sa nezhodujú.'); render(); return; }
+      S.busy = true; S.error = ''; render();
+      try {
+        await matrixRegister(f.user.value.trim().toLowerCase(), f.password.value);
+        localStorage.removeItem(SETUP_KEY);
+        setLang(LANG);
+        S.busy = false;
+        boot();
+      } catch (err) {
+        S.busy = false;
+        S.error = err.errcode === 'M_USER_IN_USE' ? T('Toto meno už niekto má.')
+          : err.errcode === 'M_INVALID_USERNAME' ? T('Meno môže mať len malé písmená bez diakritiky, číslice a . _ -')
+          : err.status === 401 || err.errcode === 'M_FORBIDDEN' ? T('Kód na vytvorenie účtu neplatí. Spusti inštalátor znova, otvorí Weft s novým.')
+          : err.message;
+        render();
+      }
+    },
+  },
+  h('h2', {}, T('Tvoj účet')),
+  h('p', {}, T('Účet je na tvojom serveri. Prvý účet ho aj spravuje.')),
+  h('label', {}, T('Meno'), h('input', { name: 'user', autocomplete: 'username', required: true, autocapitalize: 'none', spellcheck: false })),
+  h('label', {}, T('Heslo'), h('input', { name: 'password', type: 'password', autocomplete: 'new-password', required: true, minLength: 8 })),
+  h('label', {}, T('Heslo znova'), h('input', { name: 'password2', type: 'password', autocomplete: 'new-password', required: true })),
+  h('div', { class: 'err', role: 'alert', 'aria-atomic': 'true' }, S.error),
+  h('button', { class: 'primary', type: 'submit', disabled: S.busy }, S.busy ? T('Vytváram účet…') : T('Vytvoriť účet')),
+  h('button', { class: 'ghost', type: 'button', onclick: () => show('welcome') }, T('Späť')));
+}
+
 function loginView() {
-  const user = h('input', { name: 'user', autocomplete: 'username', defaultValue: 'karchi' });
+  const user = h('input', { name: 'user', autocomplete: 'username' });
   const pass = h('input', { name: 'password', type: 'password', autocomplete: 'current-password' });
   return h('form', {
     class: 'form',
@@ -14348,14 +14430,16 @@ function render() {
   if (S.overlay?.kind !== 'image') viewerVideo = null;
   let content;
   document.title = 'Weft';
-  if (S.view === 'login') content = loginView();
+  if (S.view === 'welcome') content = welcomeView();
+  else if (S.view === 'register') content = registerView();
+  else if (S.view === 'login') content = loginView();
   else if (S.view === 'connect') content = connectView();
   else if (S.view === 'main') content = mainView();
   else if (S.waiting) content = h('div', { class: 'form' }, h('p', {}, S.waiting),
     h('button', { class: 'ghost', onclick: () => { bootRun++; S.waiting = null; clearSession(); show('login'); } }, T('Prihlásiť sa znova')));
   else content = h('div', { class: 'empty' }, T('Načítavam…'));
   const kids = [content].flat().filter(Boolean);
-  if (S.view !== 'main' && S.view !== 'login') kids.forEach(opaque);
+  if (S.view !== 'main' && S.view !== 'login' && S.view !== 'register') kids.forEach(opaque);
   // A field taken away blurs and may fire its change inside this: hmInput keeps that half-typed text as it is.
   patching = true;
   try { patchChildren(root, kids); } finally { patching = false; }

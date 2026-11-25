@@ -18,6 +18,21 @@ a pretend homeserver, bridges, calendar and Feed in one process on 127.0.0.1; wh
 the people answer with canned lines. Try Ctrl+K (search), Ctrl+N (a new chat; in a browser tab, where Ctrl+N opens a window, Ctrl+Shift+K), Ctrl+Shift+F
 (Feed) and Ctrl+, (Settings).
 
+## Install (early)
+
+The installer sets up the homeserver and the app on one machine and updates them from this repository every day.
+Chat networks (bridges) are not part of it yet, so for now it gives you an empty Weft with an account.
+
+- **Windows 10 or 11:** download the repository (Code → Download ZIP, or `git clone`), then in its folder in
+  PowerShell: `powershell -ExecutionPolicy Bypass -File install.ps1`. It installs WSL with Debian if needed (asks
+  for administrator rights, then a restart of Windows; run it again after that), runs the server there and opens
+  Weft in the browser on http://localhost:8790.
+- **Debian or Ubuntu:** `git clone https://github.com/Gooder24/weft && cd weft && sudo ./install.sh`, then open the
+  address it prints last.
+
+The first screen picks the language (Slovenčina or English) and creates the first account. Everything listens on
+that machine only. `sudo /opt/weft/src/install.sh --remove` takes it away and keeps the data in `/var/lib/weft`.
+
 ## What is different
 
 - **Reading windows.** Messages wait until you open a reading window (1 to 8 a day, 5 to 30 minutes each, set by
@@ -58,8 +73,8 @@ models) that get only the goal and the change and report what they could break. 
 people while testing.
 
 The client in `app/` is plain JavaScript with no build step; `desktop/` is the Electron shell; `server/` holds the
-bridges and services that run on the owner's host (a Tuwunel homeserver, systemd user units, Caddy). There is no
-installer for the server side yet: `CLAUDE.md` describes how the owner's host is laid out.
+bridges and services that run on the owner's host (a Tuwunel homeserver, systemd user units, Caddy). `install.sh`
+installs the homeserver and the app so far; `CLAUDE.md` describes how the owner's full host is laid out.
 
 ## Requirements
 

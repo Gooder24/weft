@@ -1485,3 +1485,5 @@ button.prof-status:hover { background: var(--hover); }
 .rcard.on { visibility: visible; }
 .rcard b { color: var(--muted); font-weight: 600; }
 .rcard span { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.form.welcome { text-align: center; }
+.form.welcome .welcome-logo { width: 48px; height: 48px; align-self: center; }

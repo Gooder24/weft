@@ -1,5 +1,18 @@
 // Weft's English, keyed by the Slovak text in the code (see i18n.js). `{}` stands for each ${…} in order.
 export default {
+  "Kalendár na tomto serveri zatiaľ nebeží.": "The calendar does not run on this server yet.",
+  "Všetky tvoje správy v jednej schránke: Messenger, Instagram, WhatsApp, Discord, EduPage, Gmail, Outlook a Teams.": "All your messages in one inbox: Messenger, Instagram, WhatsApp, Discord, EduPage, Gmail, Outlook and Teams.",
+  "Vytvoriť účet": "Create account",
+  "Mám už účet": "I have an account",
+  "Heslá sa nezhodujú.": "The passwords do not match.",
+  "Toto meno už niekto má.": "Someone already has this name.",
+  "Meno môže mať len malé písmená bez diakritiky, číslice a . _ -": "A name may have only lowercase letters, digits and . _ -",
+  "Kód na vytvorenie účtu neplatí. Spusti inštalátor znova, otvorí Weft s novým.": "The code for creating an account is not valid. Run the installer again, it opens Weft with a new one.",
+  "Tvoj účet": "Your account",
+  "Účet je na tvojom serveri. Prvý účet ho aj spravuje.": "The account lives on your server. The first account also runs it.",
+  "Heslo znova": "Password again",
+  "Vytváram účet…": "Creating the account…",
+  "Server účet nevytvoril.": "The server did not create the account.",
   "účet je odhlásený, prihlás sa znova v Nastaveniach": "account signed out, sign in again in Settings",
   "sieť neodpovedala": "the network did not answer",
   "Nedeľa": "Sunday",
