@@ -217,9 +217,10 @@ class Rooms:
             for ev in room.get("ephemeral", {}).get("events", []):
                 if ev.get("type") != "m.receipt": continue  # the server sends typing too
                 for eid, kinds in (ev.get("content") or {}).items():
-                    for k in ("m.read", "m.read.private"):  # the later of the public and private one
-                        sent = ((kinds.get(k) or {}).get(mx.user) or {}).get("ts")
-                        if sent is not None and sent >= it.get("receipt_ts", -1): it["receipt"], it["receipt_ts"] = eid, sent
+                    # Weft reads only public receipts (it sends no private ones); the latest sent one wins.
+                    if mx.user not in (kinds.get("m.read") or {}): continue
+                    sent = (kinds["m.read"][mx.user] or {}).get("ts") or 0
+                    if sent >= it.get("receipt_ts", 0): it["receipt"], it["receipt_ts"] = eid, sent
 
     def muted(self):
         """Rooms muted on the network (a push rule without notify): the server counts none of their messages."""
