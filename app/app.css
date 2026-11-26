@@ -223,6 +223,9 @@ kbd { margin-left: auto; font-family: inherit; font-size: var(--fs); color: var(
 .acctopts .ghost.danger { align-self: flex-start; padding: 6px 0 0; }
 .acctopts h4 { margin: 4px 0 0; font-size: var(--fs); color: var(--muted); font-weight: normal; }
 .acctopts .primary { align-self: flex-start; margin-top: 6px; }
+.acctopts .bcheck { display: flex; align-items: flex-start; gap: 8px; padding: 2px 0; color: var(--text); }
+.acctopts .bcheck input { flex: none; margin-top: 1px; }
+.acctopts .bcheck input:disabled { opacity: .6; }
 /* Settings → Účty → Prejsť z Beeperu: what the import would add, per network. */
 .bpmove { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
 .bptable { align-self: stretch; border-collapse: collapse; font-size: var(--fs); }

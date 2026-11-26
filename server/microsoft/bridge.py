@@ -26,6 +26,7 @@ Provisioning speaks the subset of the mautrix bridgev2 API that Weft's Accounts 
   POST /<outlook|teams>/_matrix/provision/v3/logout/<login>
   POST /outlook/_matrix/provision/v3/send/<login>     a new mail, as Gmail's: {"to", "cc", "subject", "text", "files"}
   GET  /<outlook|teams>/_matrix/provision/v3/consent   what each login may do, what waits, the admin's link
+  POST /<outlook|teams>/_matrix/provision/v3/features  {"off": [CHOICES ids]}: what Weft leaves out (both products)
   POST /teams/_matrix/provision/v3/meeting/<login>    a meeting in that account's calendar, see create_meeting
   POST /teams/_matrix/provision/v3/search_users       {"query"}: people in Karchi's organization
   GET  /teams/_matrix/provision/v3/resolve_identifier/<Entra id or address>
@@ -132,6 +133,61 @@ FEATURES = {
 }
 USER_SCOPES = list(dict.fromkeys(s for p in PRODUCTS.values() for s in p["scopes"] + p["extra"] + WORK_ONLY))
 ALL_SCOPES = USER_SCOPES + ADMIN_ONLY
+# What Karchi may leave out (Settings → Účty → Outlook or Teams, POST /features; state/features.json {"off": [ids]}).
+# One choice for both products, since a work sign-in asks for both at once; mail and chats ("scopes") are always on.
+# A sign-in, the admin's link and the consent report ask only for what is on, and the bridge never uses what is off.
+CHOICES = [
+    {"id": "calendar", "name": "kalendár a stretnutia", "scopes": ["Calendars.ReadWrite", "OnlineMeetings.ReadWrite"]},
+    {"id": "contacts", "name": "kontakty a ľudia, s ktorými píšeš", "scopes": ["Contacts.ReadWrite", "People.Read"]},
+    {"id": "tasks", "name": "úlohy (To Do)", "scopes": ["Tasks.ReadWrite"]},
+    {"id": "mailbox", "name": "automatická odpoveď a nastavenia schránky", "scopes": ["MailboxSettings.ReadWrite"]},
+    {"id": "shared", "name": "zdieľané schránky a kalendáre", "work": True,
+     "scopes": ["Mail.ReadWrite.Shared", "Mail.Send.Shared", "Calendars.ReadWrite.Shared"]},
+    {"id": "presence", "name": "kto je online a tvoj stav v Teams", "scopes": ["Presence.Read.All", "Presence.ReadWrite"]},
+    {"id": "channels", "name": "tímy, kanály a písanie do nich", "scopes": ["Team.ReadBasic.All", "Channel.ReadBasic.All", "ChannelMessage.Send"]},
+    {"id": "channel_read", "name": "čítanie kanálov a ľudia v tímoch", "admin": True,
+     "scopes": ["ChannelMessage.Read.All", "ChannelMember.Read.All", "TeamMember.Read.All"]},
+    {"id": "chat_members", "name": "pridávanie ľudí do chatov", "admin": True, "scopes": ["ChatMember.ReadWrite"]},
+    {"id": "recordings", "name": "prepisy a nahrávky stretnutí", "admin": True,
+     "scopes": ["OnlineMeetingTranscript.Read.All", "OnlineMeetingRecording.Read.All"]},
+]
+FEATURES_FILE = STATE_DIR / "features.json"
+assert {G + s for c in CHOICES for s in c["scopes"]} == set(ALL_SCOPES) - {s for p in PRODUCTS.values() for s in p["scopes"]}
+
+
+def features_off() -> set[str]:
+    try:
+        off = json.loads(FEATURES_FILE.read_text()).get("off")
+    except (OSError, ValueError, AttributeError):
+        return set()
+    return {c["id"] for c in CHOICES if isinstance(off, list) and c["id"] in off}
+
+
+def set_features_off(off: object) -> None:
+    if not isinstance(off, list) or not all(isinstance(i, str) for i in off):
+        raise ApiError(400, "SK.KARCHI.INVALID_INPUT", "Pošli zoznam vypnutých funkcií.")
+    known = {c["id"] for c in CHOICES}
+    if set(off) - known:
+        raise ApiError(400, "SK.KARCHI.INVALID_INPUT", "Takú funkciu Weft nepozná.")
+    tmp = FEATURES_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"off": sorted(set(off))}))
+    tmp.replace(FEATURES_FILE)
+
+
+def allowed(scopes: list[str]) -> list[str]:
+    """These scopes without the ones of features turned off."""
+    off = {G + s for c in CHOICES if c["id"] in features_off() for s in c["scopes"]}
+    return [s for s in scopes if s not in off]
+
+
+def feature_on(feature: str) -> bool:
+    return feature not in features_off()
+
+
+def choices() -> list[dict]:
+    off = features_off()
+    return [{"id": c["id"], "name": c["name"], "on": c["id"] not in off, "admin": bool(c.get("admin")),
+             "work": bool(c.get("work"))} for c in CHOICES]
 # A sign-in that asked for "extra" and was refused for want of consent, or closed unfinished: the next one in this
 # time asks only "scopes".
 BASE_ONLY: dict[str, float] = {}
@@ -217,7 +273,7 @@ def admin_consent_url(tenant: str = "") -> str:
     if tenant in ("", "common", "consumers"):  # Microsoft takes no admin consent there; the admin's sign-in picks the tenant
         tenant = "organizations"
     return f"{LOGIN}/{tenant}/v2.0/adminconsent?" + urllib.parse.urlencode({
-        "client_id": client["client_id"], "scope": " ".join(ALL_SCOPES), "redirect_uri": REDIRECT_URI, "state": "weft"})
+        "client_id": client["client_id"], "scope": " ".join(allowed(ALL_SCOPES)), "redirect_uri": REDIRECT_URI, "state": "weft"})
 
 
 def needs_admin(tenant: str = "") -> str:
@@ -608,8 +664,8 @@ def signin_scopes(product: str, client: dict) -> list[str]:
 def all_user_scopes(product: str, client: dict) -> list[str]:
     spec = PRODUCTS[product]
     if product == "teams" or str(client.get("tenant") or "common") not in ("common", "consumers"):
-        return list(dict.fromkeys(spec["scopes"] + USER_SCOPES))
-    return spec["scopes"] + spec["extra"]
+        return allowed(list(dict.fromkeys(spec["scopes"] + USER_SCOPES)))
+    return allowed(spec["scopes"] + spec["extra"])
 
 
 def start_login(product: str) -> dict:
@@ -944,8 +1000,8 @@ def consent_report(product: str) -> dict:
         key = login["id"]
         tenant = tenant or ("" if ACCOUNTS.tenant_of(product, key) == CONSUMERS else ACCOUNTS.tenant_of(product, key))
         personal = ACCOUNTS.tenant_of(product, key) == CONSUMERS
-        wanted = PRODUCTS[product]["scopes"] + PRODUCTS[product]["extra"] if personal else \
-            all_user_scopes(product, ms_client() or {}) + ADMIN_ONLY
+        wanted = allowed(PRODUCTS[product]["scopes"] + PRODUCTS[product]["extra"] if personal else
+                         all_user_scopes(product, ms_client() or {}) + ADMIN_ONLY)
         wanted = [s.rsplit("/", 1)[-1] for s in dict.fromkeys(wanted) if s.startswith(G)]
         try:
             have = ACCOUNTS.consented(product, key)
@@ -955,7 +1011,7 @@ def consent_report(product: str) -> dict:
         logins.append({"id": key, "name": login["name"], "granted": sorted(have),
                        "missing": [{"scope": s, "what": FEATURES.get(s, s), "admin": G + s in ADMIN_ONLY}
                                    for s in wanted if s not in have]})
-    return {"logins": logins, "admin_url": admin_consent_url(tenant)}
+    return {"logins": logins, "admin_url": admin_consent_url(tenant), "choices": choices()}
 
 
 # ---------------------------------------------------------------- Teams: meetings
@@ -979,6 +1035,9 @@ def create_meeting(key: str, body: dict) -> dict:
     if end <= start:
         raise ApiError(400, "SK.KARCHI.INVALID_INPUT", "Koniec je pred začiatkom.")
     attendees = [{**a, "type": "required"} for a in recipients(body.get("attendees"))]
+    if not feature_on("calendar"):
+        raise ApiError(403, "SK.KARCHI.FEATURE_OFF", "Kalendár a stretnutia máš vo Wefte vypnuté. Zapni ich v Nastavenia → "
+                       "Účty → Teams → Čo smie Weft.")
     try:
         access = ACCOUNTS.scoped_token("teams", key, CALENDAR_SCOPES)
     except ApiError as err:
@@ -2048,6 +2107,9 @@ def route(product: str, method: str, parts: list[str], body: dict, args: dict, t
             return {}
         case "GET", ["consent"]:
             return consent_report(product)
+        case "POST", ["features"]:
+            set_features_off(body.get("off"))
+            return {"choices": choices()}
         case "POST", ["meeting", login_id] if product == "teams":
             return create_meeting(TEAMS.login_for(login_id), body)
         case "POST", ["search_users"] if product == "teams":

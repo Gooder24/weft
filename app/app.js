@@ -14297,7 +14297,8 @@ function accountSettings() {
       login ? h('button', { class: 'ghost danger', onclick: edupageLogout }, T('Odhlásiť EduPage')) : null) : null,
     LINKS.map((app) => {
       const logins = S.links[app.id];
-      if (logins?.length) return appAccounts(app, logins);
+      // Outlook and Teams open even before the first account, so what Weft may do can be chosen before signing in.
+      if (logins?.length || (logins && app.flow === 'microsoft')) return appAccounts(app, logins);
       return h('div', { class: 'acct', 'data-key': `acct:${app.id}` }, h('img', { class: 'appicon', src: app.icon, alt: '' }),
         h('span', {}, appLabel(app), h('small', {},
           logins === undefined ? T('zisťujem…') : logins === null ? T('most neodpovedá') : T('nepripojené'))),
@@ -14972,7 +14973,7 @@ const appLabel = (app) => (app.beta ? `${app.name} (beta)` : app.name);
 function appAccounts(app, logins) {
   const open = S.acctOpen === app.id;
   const down = logins.filter((l) => linkStatus(l)).length;
-  const sub = logins.length === 1 ? logins[0].name + linkStatus(logins[0])
+  const sub = !logins.length ? T('nepripojené') : logins.length === 1 ? logins[0].name + linkStatus(logins[0])
     : (logins.length < 5 ? T`${logins.length} účty` : T`${logins.length} účtov`) + (down ? ` · ${T`odpojené: ${down}`}` : '');
   return [
     openableAcct(app.id, app.icon, appLabel(app), sub),
@@ -14984,13 +14985,22 @@ function appAccounts(app, logins) {
           h('button', { class: 'ghost danger', type: 'button', onclick: () => unlink(app, l, l.name) }, T('Odhlásiť'))))),
       app.id === 'discord' ? discordServers() : null,
       app.flow === 'microsoft' ? microsoftFeatures(app) : null,
-      app.multi ? h('button', { class: 'primary', type: 'button', onclick: () => startLink(app) }, T('Pridať ďalší účet'))
+      !logins.length ? h('button', { class: 'primary', type: 'button', onclick: () => startLink(app) }, T('Pripojiť'))
+        : app.multi ? h('button', { class: 'primary', type: 'button', onclick: () => startLink(app) }, T('Pridať ďalší účet'))
         : h('p', { class: 'hint' }, T`${app.name} vo Wefte vie zatiaľ len jeden účet.`)) : null,
   ];
 }
 
-/** Outlook and Teams: what each account may do and what still waits for consent (bridge GET /consent, asked when the
- *  row opens). Signing in again asks for everything; where only an admin may consent, one link grants it all. */
+/** Outlook and Teams: what Weft may do (one choice for both, bridge POST /features), what each account may do and what
+ *  still waits for consent (bridge GET /consent, asked when the row opens). Signing in again asks for everything chosen;
+ *  where only an admin may consent, one link grants it all. */
+const MS_FEATURES = {
+  calendar: T('kalendár a stretnutia'), contacts: T('kontakty a ľudia, s ktorými píšeš'), tasks: T('úlohy (To Do)'),
+  mailbox: T('automatická odpoveď a nastavenia schránky'), shared: T('zdieľané schránky a kalendáre'),
+  presence: T('kto je online a tvoj stav v Teams'), channels: T('tímy, kanály a písanie do nich'),
+  channel_read: T('čítanie kanálov a ľudia v tímoch'), chat_members: T('pridávanie ľudí do chatov'),
+  recordings: T('prepisy a nahrávky stretnutí'),
+};
 function microsoftFeatures(app) {
   const all = (S.msConsent ||= {});
   if (all[app.id] === undefined) {
@@ -15004,19 +15014,37 @@ function microsoftFeatures(app) {
   const here = new Set((S.links[app.id] || []).map((l) => l.id));
   r = { ...r, logins: (r.logins || []).filter((l) => here.has(l.id)) };
   const waiting = r.logins.filter((l) => l.missing?.length);
+  const choose = async (e, id) => {
+    const on = e.currentTarget.checked;
+    const off = (r.choices || []).filter((c) => (c.id === id ? !on : !c.on)).map((c) => c.id);
+    let res;
+    try { res = await prov(app, 'POST', '/features', { off }); } catch { alert(T('Nastavenie sa neuložilo.')); }
+    // The list stays in place while both rows ask again what now waits for consent.
+    for (const a of LINKS.filter((x) => x.flow === 'microsoft')) {
+      if (res?.choices && all[a.id] && all[a.id] !== 'loading') all[a.id] = { ...all[a.id], choices: res.choices };
+      prov(a, 'GET', '/consent').then((x) => { all[a.id] = x; if (S.panel === 'settings') render(); }, () => {});
+    }
+    render();
+  };
   const copy = async (e) => {
     const b = e.currentTarget;
     try { await navigator.clipboard.writeText(r.admin_url); b.textContent = T('Skopírované'); }
     catch { prompt(T('Odkaz pre správcu:'), r.admin_url); }
   };
   return [
-    h('h4', {}, T('Funkcie Microsoftu')),
+    h('h4', {}, T('Čo smie Weft')),
+    h('p', { class: 'hint' }, T('Platí pre Outlook aj Teams. Prihlásenie a odkaz pre správcu pýtajú len zaškrtnuté; vypnuté Weft nepoužije.')),
+    h('label', { class: 'bcheck' }, h('input', { type: 'checkbox', checked: true, disabled: true }), T('pošta, chaty a súbory (vždy)')),
+    (r.choices || []).map((c) => h('label', { class: 'bcheck', 'data-key': `feat:${c.id}` },
+      h('input', { type: 'checkbox', checked: c.on, 'data-focus': `feat:${c.id}`, onchange: (e) => choose(e, c.id) }),
+      h('span', {}, MS_FEATURES[c.id] || c.name, c.admin ? h('small', {}, T('povolí len správca')) : c.work ? h('small', {}, T('len pracovný alebo školský účet')) : null))),
+    r.logins.length ? h('h4', {}, T('Funkcie Microsoftu')) : null,
     (r.logins || []).map((l) => h('p', { class: 'hint', 'data-key': `ms:${l.id}` }, l.error ? `${l.name}: ${l.error}`
-      : l.missing?.length ? T`${l.name}: čaká na súhlas: ${l.missing.map((m) => m.what).join(', ')}` : T`${l.name}: všetko povolené`,
-      waiting.length > 1 && l.missing?.length ? [' ', h('button', { class: 'linkbtn', type: 'button', onclick: () => signInAgain(app, S.links[app.id]?.find((x) => x.id === l.id) || l) }, T('Povoliť všetko'))] : null)),
-    waiting.length ? h('p', { class: 'hint' }, T('Povoliť všetko ťa prihlási znova a Microsoft sa spýta na všetko naraz. Ak to škola alebo firma nedovolí, jej správca to povolí pre všetkých jedným odkazom.')) : null,
+      : l.missing?.length ? T`${l.name}: čaká na súhlas: ${l.missing.map((m) => m.what).join(', ')}` : T`${l.name}: všetko vybrané je povolené`,
+      waiting.length > 1 && l.missing?.length ? [' ', h('button', { class: 'linkbtn', type: 'button', onclick: () => signInAgain(app, S.links[app.id]?.find((x) => x.id === l.id) || l) }, T('Povoliť vybrané'))] : null)),
+    waiting.length ? h('p', { class: 'hint' }, T('Povoliť vybrané ťa prihlási znova a Microsoft sa spýta na všetko zaškrtnuté naraz. Ak to škola alebo firma nedovolí, jej správca to povolí pre všetkých jedným odkazom.')) : null,
     waiting.length ? h('div', { class: 'row' },
-      waiting.length === 1 ? h('button', { class: 'primary', type: 'button', onclick: () => signInAgain(app, S.links[app.id]?.find((x) => x.id === waiting[0].id) || waiting[0]) }, T('Povoliť všetko')) : null,
+      waiting.length === 1 ? h('button', { class: 'primary', type: 'button', onclick: () => signInAgain(app, S.links[app.id]?.find((x) => x.id === waiting[0].id) || waiting[0]) }, T('Povoliť vybrané')) : null,
       h('button', { class: 'ghost', type: 'button', onclick: copy }, T('Kopírovať odkaz pre správcu')),
       h('button', { class: 'ghost', type: 'button', onclick: () => { delete all[app.id]; render(); } }, T('Skontrolovať znova'))) : null,
   ];
