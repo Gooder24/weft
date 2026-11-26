@@ -13938,7 +13938,9 @@ function startLink(app, flow = app.flow, relogin = null, again = null) {
   render();
   if (!window.desktop && !app.anywhere) return;
   if (app.legacy) return discordLogin(l);
-  prov(app, 'POST', linkStartPath(flow, relogin, again?.full))
+  // Outlook and Teams sign in only once the feature choice being saved is on the bridge, whichever button started it.
+  (app.flow === 'microsoft' ? msFeat.chain : Promise.resolve())
+    .then(() => prov(app, 'POST', linkStartPath(flow, relogin, again?.full)))
     .then((step) => { if (S.link === l) { l.id = step.login_id; advance(step); } })
     .catch((err) => { if (S.link === l) { l.error = err.message; l.busy = false; render(); } });
 }
@@ -15027,8 +15029,8 @@ function appAccounts(app, logins) {
           h('button', { class: 'ghost danger', type: 'button', onclick: () => unlink(app, l, l.name) }, T('Odhlásiť'))))),
       app.id === 'discord' ? discordServers() : null,
       app.flow === 'microsoft' ? microsoftFeatures(app) : null,
-      !logins.length ? h('button', { class: 'primary', type: 'button', disabled: app.flow === 'microsoft' && msSaving(), onclick: () => startLink(app) }, T('Pripojiť'))
-        : app.multi ? h('button', { class: 'primary', type: 'button', disabled: app.flow === 'microsoft' && msSaving(), onclick: () => startLink(app) }, T('Pridať ďalší účet'))
+      !logins.length ? h('button', { class: 'primary', type: 'button', onclick: () => startLink(app) }, T('Pripojiť'))
+        : app.multi ? h('button', { class: 'primary', type: 'button', onclick: () => startLink(app) }, T('Pridať ďalší účet'))
         : h('p', { class: 'hint' }, T`${app.name} vo Wefte vie zatiaľ len jeden účet.`)) : null,
   ];
 }
@@ -15045,13 +15047,13 @@ const MS_FEATURES = {
 };
 /** pending: ticks not yet saved; seq: the newest consent refresh, so an older answer that comes late is dropped. */
 const msFeat = { pending: {}, chain: Promise.resolve(), seq: 0 };
-/** While a choice is being saved (or its consent not asked again yet), nothing may start a sign-in with the old one. */
-const msSaving = () => Object.keys(msFeat.pending).length > 0 || Object.values(S.msConsent || {}).some((x) => x?.stale);
 function microsoftFeatures(app) {
   const all = (S.msConsent ||= {});
   if (all[app.id] === undefined) {
     all[app.id] = 'loading';
-    prov(app, 'GET', '/consent').then((r) => { all[app.id] = r; }, () => { all[app.id] = null; }).then(() => { if (S.panel === 'settings') render(); });
+    const seq = msFeat.seq; // a save after this asks again, and its answer wins
+    prov(app, 'GET', '/consent').then((r) => { if (seq === msFeat.seq) all[app.id] = r; }, () => { if (seq === msFeat.seq) all[app.id] = null; })
+      .then(() => { if (S.panel === 'settings') render(); });
   }
   let r = all[app.id];
   if (r === 'loading') return h('p', { class: 'hint' }, T('Zisťujem, čo Microsoft Weftu dovolil…'));
@@ -15064,7 +15066,8 @@ function microsoftFeatures(app) {
   // Ticks show at once; each click saves only its own change, one after another, so quick clicks add up and another
   // window's choices stay. Signing in and the admin's link wait until the bridge has them.
   const isOn = (c) => (c.id in msFeat.pending ? msFeat.pending[c.id].on : c.on);
-  const saving = msSaving();
+  // The admin's link and its consent line wait for the bridge's fresh answer (a sign-in waits in startLink).
+  const saving = Object.keys(msFeat.pending).length > 0 || !!r.stale;
   const choose = (e, id) => {
     const on = e.currentTarget.checked;
     const mine = msFeat.pending[id] = { on };
