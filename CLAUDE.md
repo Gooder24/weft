@@ -44,8 +44,14 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   in one of Karchi's groups gets a room of their own, not his room with its history. Their permissions refuse Karchi,
   and Karchi's bridges admit only him. Discord gets the caller's own user id from setup.py's forward_auth
   (`/_bridges/auth-guest`, header `X-Weft-User`). Weft leaves out what the server refuses an account (`notOffered` in
-  app.js: 404 only, as the owner's services answer 401/403 for a moment; kept per account in localStorage `ep_absent:<user>`): EduPage, mail, calendar, feed and its
-  reading windows (nothing waits), send later, connectors, automations and the archive stay Karchi's. Check:
+  app.js: 404 only, as the owner's services answer 401/403 for a moment; kept per account in localStorage `ep_absent:<user>`).
+  Every account is a whole Weft with data of its own (Karchi, 2026-11-26: „celý weft pre každého a oddelené dáta“;
+  plan `GOAL-hostia-weft.md`): the calendar, feed with its reading windows and Instagram session, send later (their
+  Weft says hello on `/_sendlater/hello`, port 29336, and the service sends as them through the double puppet), links,
+  the plan judge and „píše…“ answer any person of the server (`server/common/weft_users.py`: a person is a local
+  account outside every appservice's exclusive namespace; the owner's files stay where they were, everyone else's in
+  `<data>/users/<localpart>/`; friends have per-person limits). Still Karchi's only: EduPage, mail, connectors,
+  automations and the archive. Checks: `tests/hostia/` (a throwaway Tuwunel with the owner and two friends),
   `overenie/hostia/` (guest view, isolation).
 - `desktop/` is the Electron shell, installed on x270 in `~/.local/share/spravy`. Its login windows go out through
   an `ssh -D` tunnel to asus and wait until Meta's checks are done.
