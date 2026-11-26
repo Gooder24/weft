@@ -33,6 +33,15 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   Every button, row, icon and text follows `DESIGN.md` (icons only from `app/icons.js`, pixelarticons at 24 px;
   texts Slovak in `T()` with English in `app/i18n-en.js`, Settings → Správy → Jazyk); `tools/ui-check` checks it.
 - `next/` is the old Svelte 5 demo (/next/index.html); it is no longer developed, the speed work happens in app/.
+- Invited people use Karchi's server through Weft.exe (`desktop/`, built by `.github/workflows/windows-app.yml` into the
+  release `windows`; the repository variable `WEFT_SERVER` is the address it opens). They make an account with the
+  invitation code, the homeserver's registration token (`registration_token_file` in asus `tuwunel.toml`). They reach
+  asus through the Cloudflare tunnel on dell, which sends the public name to Caddy's site `http://:3482` on asus. That
+  site lets only dell connect and passes only an allowlist: the app, Matrix's client API and the WhatsApp, Messenger,
+  Instagram and Discord bridges. Those bridges let every account of the server sign in its own networks (`permissions`
+  `<server name>: user`). Discord gets the caller's own user id from setup.py's forward_auth (`X-Weft-User`). Weft
+  leaves out what the server refuses an account (`notOffered` in app.js: 401/403/404): EduPage, mail, calendar, feed,
+  connectors and the archive stay Karchi's. Check: `overenie/hostia/` (guest view, isolation).
 - `desktop/` is the Electron shell, installed on x270 in `~/.local/share/spravy`. Its login windows go out through
   an `ssh -D` tunnel to asus and wait until Meta's checks are done.
   Checks: `overenie/ig-checkpoint/` (`window.cjs`, `tunnel.cjs`).

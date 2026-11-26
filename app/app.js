@@ -133,6 +133,7 @@ const S = {
   gradeOpen: null, // grade id whose details show in the table
   profileOf: null, // whose profile the panel shows: { key } a chat's person, { room, user } one member of a group
   links: {}, // chat app id -> its logins (null: the bridge does not answer)
+  linksAbsent: new Set(), // chat app ids this server does not offer this account (notOffered)
   link: null, // account login in progress: { app, id, step, error, busy }
   acctOpen: null, // account row expanded in settings ('edupage' shows its options)
   eduKindOpen: null, // notice type whose colour and mark are being chosen in Settings → EduPage
@@ -253,6 +254,9 @@ async function call(method, path, body, base = '/_matrix/client/v3', signal = un
   return data;
 }
 const bridge = (method, path, body) => call(method, path, body ?? (method === 'POST' ? {} : undefined), BRIDGE);
+/** A service this server does not offer this account: missing here (404; the public site for invited people has only
+ *  the app, Matrix and the chat bridges) or kept for the server's owner (401/403). Weft then leaves it out. */
+const notOffered = (status) => status === 401 || status === 403 || status === 404;
 const q = encodeURIComponent;
 
 // ------------------------------------------------------------------ boot
@@ -370,8 +374,8 @@ function noteOpened(id) {
 
 async function refreshLogins() {
   const token = S.token; // an answer for a session that has since ended changes nothing
-  // A server without the EduPage bridge (a new install) answers 404 or nothing: then EduPage is simply not offered.
-  const logins = await bridge('GET', '/whoami').then((r) => { S.edupage = true; return r.logins || []; }, (err) => { if (err.status === 404) S.edupage = false; return []; });
+  // A server without the EduPage bridge (a new install) or one kept for its owner: then EduPage is simply not offered.
+  const logins = await bridge('GET', '/whoami').then((r) => { S.edupage = true; return r.logins || []; }, (err) => { if (notOffered(err.status)) S.edupage = false; return []; });
   if (S.token === token) S.logins = logins;
 }
 
@@ -7883,7 +7887,7 @@ function bubbleView(r, m, ev, grouped, group, sug = null) {
       inDiscordThread(r, ev.event_id) ? h('small', { class: 'mthread' }, T('vo vlákne · odpovedať sa dá len v appke Discord')) : null,
       h('span', { class: 'mtime' }, m.edits.has(ev.event_id) && !m.edits.get(ev.event_id).content?.['com.beeper.dont_render_edited'] && !gone && !POLL_START.includes(ev.type) && !pollIn(ev, ev.content) ? T('upravené · ') : '', fail ? (fail.sure ? T('neodoslané') : T('možno neodoslané')) : ev.waiting ? T('čaká na sieť') : ev.pending ? 'odosielam' : timeLabel(ev.origin_server_ts))),
     acts && (hoverMsg === ev.event_id || S.actsFor === ev.event_id || S.pick?.event === ev.event_id) ? msgActs(r, m, ev, mine) : null),
-  sug ? calSuggestion(r, ev, sug) : null,
+  sug && !cal.absent ? calSuggestion(r, ev, sug) : null,
   fail ? h('div', { class: 'lateracts failacts' },
     h('span', { class: 'failwhy' }, fail.reason),
     r.app === 'discord' && /^@discord_\d+:/.test(dmPartner(r)?.[0] || '') && /friends|priateľom/.test(fail.reason) ? h('a', { class: 'linkbtn', href: discordProfileUrl(dmPartner(r)[0].match(/^@discord_(\d+):/)[1]), target: '_blank', rel: 'noopener noreferrer' }, T('Profil v Discorde ↗')) : null,
@@ -11096,7 +11100,12 @@ const feed = createFeed({
   settingsPanel: () => togglePanel('settings', 'feed'), close: () => closeFeed(),
   isOpen: () => S.surface === 'feed', readingWindow, onWindow: takeWindow,
   api: async (method, path, body) => {
-    if (method !== 'MEDIA') return call(method, path, body, '/_feed', AbortSignal.timeout(method === 'GET' ? 15000 : 120000));
+    if (method !== 'MEDIA') {
+      return call(method, path, body, '/_feed', AbortSignal.timeout(method === 'GET' ? 15000 : 120000)).catch((err) => {
+        if (notOffered(err.status) && !S.feedAbsent) { S.feedAbsent = true; refresh(); }
+        throw err;
+      });
+    }
     const res = await fetch('/_feed' + path, { headers: { Authorization: `Bearer ${S.token}` }, signal: AbortSignal.timeout(30000) });
     if (!res.ok) throw new Error(T('Médium sa nenačítalo alebo už vypršalo.'));
     return res.blob();
@@ -11115,6 +11124,7 @@ function toggleBoard() {
 }
 
 function showFeed() {
+  if (S.feedAbsent) return; // this server has no feed for this account
   if (S.panel === 'link') return;
   if (S.surface === 'feed') return closeFeed();
   S.surface = 'feed'; S.panel = null; S.overlay = null;
@@ -11128,10 +11138,18 @@ function closeFeed() {
   render();
 }
 
+/** Where the calendar would be on a server without one for this account (an invited person's): the way to their chats. */
+function homeStart() {
+  const linked = LINKS.some((a) => S.links[a.id]?.length);
+  return h('section', { class: 'home-start' },
+    h('p', {}, linked ? T('Vyber chat vľavo.') : T('Pripoj Messenger, Instagram, WhatsApp alebo Discord a tvoje správy prídu sem.')),
+    linked ? null : h('button', { class: 'primary', type: 'button', onclick: () => togglePanel('settings', 'accounts') }, T('Pripojiť účty')));
+}
+
 function homeView() {
   return h('main', { class: 'detail home', 'data-scroll': 'home' },
-    h('section', { class: 'home-calendar', tabindex: '0', 'aria-label': T('Kalendár') }, calendarView()),
-    h('div', { class: 'feed-launch' }, h('button', { class: 'ghost', onclick: showFeed, 'aria-expanded': String(S.surface === 'feed') }, S.surface === 'feed' ? T('Zavrieť feed') : T('Otvoriť denný feed')), h('kbd', {}, 'Ctrl+Shift+F'),
+    cal.absent ? homeStart() : h('section', { class: 'home-calendar', tabindex: '0', 'aria-label': T('Kalendár') }, calendarView()),
+    h('div', { class: 'feed-launch' }, S.feedAbsent ? null : [h('button', { class: 'ghost', onclick: showFeed, 'aria-expanded': String(S.surface === 'feed') }, S.surface === 'feed' ? T('Zavrieť feed') : T('Otvoriť denný feed')), h('kbd', {}, 'Ctrl+Shift+F')],
       board.available ? [h('button', { class: 'ghost', onclick: toggleBoard }, T('Nástenka')), h('kbd', {}, 'Ctrl+B')] : null, h('span', { class: 'mobile-workspace-options' }, workspaceStatus(), h('button', { class: 'ghost', 'aria-label': T('Nastavenia'), onclick: () => togglePanel('settings') }, T('Nastavenia')))),
     S.surface === 'feed' ? h('section', { class: 'feed-drawer', 'aria-label': T('Denný feed') }, feed.view()) : null);
 }
@@ -11150,7 +11168,7 @@ const DAYS_SHORT = [T('Ne'), T('Po'), T('Ut'), T('St'), T('Št'), T('Pi'), T('So
 const CAL_START_HOUR = 5;
 const CAL_END_HOUR = 21;
 const CAL_HOURS = CAL_END_HOUR - CAL_START_HOUR;
-const cal = { today: Cal.dayNumber(Date.now()), doc: null, version: '', seq: 0, loaded: false, error: '', view: 'week', cursor: Cal.startOfDay(Date.now()), edit: null, lastCal: null, detail: null, search: null };
+const cal = { today: Cal.dayNumber(Date.now()), doc: null, version: '', seq: 0, loaded: false, error: '', absent: false, view: 'week', cursor: Cal.startOfDay(Date.now()), edit: null, lastCal: null, detail: null, search: null };
 // A click with no Weft window open: sw.js opens /?event=<key>, shown once the calendar is in.
 let calAsked = new URLSearchParams(location.search).get('event');
 const calDefault = () => (CAL_VIEWS.some(([id]) => id === S.account[CAL_PREFS]?.view) ? S.account[CAL_PREFS].view : 'week');
@@ -11204,7 +11222,8 @@ async function loadCalendar() {
     } catch (err) {
       if (token !== S.token) return;
       if (isNetErr(err)) goOffline();
-      else cal.error = err.status === 404 ? T('Kalendár na tomto serveri zatiaľ nebeží.') : T`Kalendár sa nenačítal: ${err.message}`;
+      else if (notOffered(err.status)) cal.absent = true;
+      else cal.error = T`Kalendár sa nenačítal: ${err.message}`;
     }
   }
   cal.loaded = true;
@@ -13799,8 +13818,10 @@ async function refreshLinks() {
       } else {
         fresh[app.id] = (await prov(app, 'GET', '/whoami')).logins || [];
       }
-    } catch {
+      S.linksAbsent.delete(app.id);
+    } catch (err) {
       fresh[app.id] = null;
+      if (notOffered(err.status)) S.linksAbsent.add(app.id); // not offered here: Settings leaves it out
     }
   }));
   // An older answer that comes after a newer one (a check while a sign-in finished) never wins.
@@ -14034,31 +14055,33 @@ function linkView() {
 
 // Settings: one section at a time, chosen on the left (on a phone, tabs along the top). Arrow keys move
 // between sections; a disconnected account shows on its section's name.
-const SET_TABS = [['messages', T('Správy')], ['edupage', 'EduPage'], ['calendar', T('Kalendár')], ['feed', 'Feed'], ['accounts', T('Účty')], ['access', T('Prístupnosť')]];
+const SET_TABS_ALL = [['messages', T('Správy')], ['edupage', 'EduPage'], ['calendar', T('Kalendár')], ['feed', 'Feed'], ['accounts', T('Účty')], ['access', T('Prístupnosť')]];
 function settingsTab(id) {
   S.setTab = id;
   render();
   document.querySelector(`.setnav [data-tab="${id}"]`)?.focus();
 }
 function settingsView() {
-  const tab = SET_TABS.some(([id]) => id === S.setTab) ? S.setTab : 'messages';
+  // Tabs of services this server does not offer this account stay out.
+  const tabs = SET_TABS_ALL.filter(([id]) => !(id === 'edupage' && S.edupage === false) && !(id === 'calendar' && cal.absent) && !(id === 'feed' && S.feedAbsent));
+  const tab = tabs.some(([id]) => id === S.setTab) ? S.setTab : 'messages';
   const down = downAccounts();
   const pane = { messages: batchSettings, edupage: eduSettings, calendar: calendarSettings, feed: feed.settings, accounts: accountSettings, access: accessSettings }[tab]();
   const move = (ev) => {
     const step = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 }[ev.key];
     if (!step) return;
     ev.preventDefault();
-    const i = SET_TABS.findIndex(([id]) => id === tab);
-    settingsTab(SET_TABS[(i + step + SET_TABS.length) % SET_TABS.length][0]);
+    const i = tabs.findIndex(([id]) => id === tab);
+    settingsTab(tabs[(i + step + tabs.length) % tabs.length][0]);
   };
   return h('div', { class: 'settings' },
     h('div', { class: 'setnav', role: 'tablist', 'aria-label': T('Nastavenia'), 'aria-orientation': 'vertical', onkeydown: move },
       h('h2', {}, T('Nastavenia')),
-      SET_TABS.map(([id, label]) => h('button', {
+      tabs.map(([id, label]) => h('button', {
         type: 'button', role: 'tab', 'data-tab': id, 'aria-selected': String(id === tab), tabindex: id === tab ? 0 : -1,
         class: id === tab ? 'on' : '', onclick: () => settingsTab(id),
       }, h('span', {}, label), id === 'accounts' && down.length ? h('small', { class: 'setwarn' }, T`odpojené: ${down.length}`) : null))),
-    h('div', { class: 'form inpanel setpane', 'data-scroll': `settings:${tab}`, role: 'tabpanel', 'aria-label': SET_TABS.find(([id]) => id === tab)[1] }, pane));
+    h('div', { class: 'form inpanel setpane', 'data-scroll': `settings:${tab}`, role: 'tabpanel', 'aria-label': tabs.find(([id]) => id === tab)[1] }, pane));
 }
 
 // Settings → EduPage: how each type of school notice is made and shown, and which subjects are Karchi's. The bridge
@@ -14239,12 +14262,13 @@ function accountSettings() {
   const login = S.logins[0];
   return [
     h('h3', {}, T('Pripojené účty')),
-    openableAcct('edupage', '/edupage.png', 'EduPage', login ? login.name + (login.state?.message ? ` · ${login.state.message}` : '') : T('nepripojené')),
-    S.acctOpen === 'edupage' ? h('div', { class: 'acctopts' },
+    S.edupage === false ? null : openableAcct('edupage', '/edupage.png', 'EduPage', login ? login.name + (login.state?.message ? ` · ${login.state.message}` : '') : T('nepripojené')),
+    S.acctOpen === 'edupage' && S.edupage !== false ? h('div', { class: 'acctopts' },
       h('button', { class: 'ghost', type: 'button', onclick: () => settingsTab('edupage') }, T('Oznamy a predmety…')),
       login ? h('button', { class: 'ghost danger', onclick: edupageLogout }, T('Odhlásiť EduPage')) : null) : null,
     LINKS.map((app) => {
       const logins = S.links[app.id];
+      if (S.linksAbsent.has(app.id)) return null;
       if (logins?.length) return appAccounts(app, logins);
       return h('div', { class: 'acct', 'data-key': `acct:${app.id}` }, h('img', { class: 'appicon', src: app.icon, alt: '' }),
         h('span', {}, appLabel(app), h('small', {},
@@ -14267,16 +14291,17 @@ async function loadConnectors(change) {
       headers: { Authorization: `Bearer ${S.token}`, ...(change ? { 'Content-Type': 'application/json' } : {}) },
       body: change ? JSON.stringify({ on: change.on }) : undefined,
     });
-    if (!res.ok) throw new Error(res.status);
+    if (!res.ok) throw Object.assign(new Error(res.status), { status: res.status });
     S.connectors = (await res.json()).connectors;
-  } catch {
+  } catch (err) {
     if (change) alert(T('Nastavenie sa neuložilo.'));
-    S.connectors ??= null;
+    S.connectors = !change && notOffered(err.status) ? false : S.connectors ?? null;
   }
   render();
 }
 function connectorSettings() {
   const state = S.connectors;
+  if (state === false) return null;
   return [
     h('h3', {}, T('Z mailov')),
     h('p', { class: 'hint' }, T('Weft číta len maily, ktoré ti tieto služby už posielajú, a robí z nich chaty. Nikam sa neprihlasuje ani nič neposiela, takže ti účet nemôžu zablokovať.')),
@@ -14296,20 +14321,20 @@ function connectorRow(c) {
 
 /* Settings → Účty → „Telefón“: Karchi's phones with Weft Telefón (android/), which send SMS and the notifications of
  * the apps picked there (server/connect/phone.ts). „Pridať telefón“ shows a code for ten minutes; „Odpojiť“ ends that
- * phone's token at once. S.phones: undefined loading, null no answer; S.phoneCode the code being shown. */
+ * phone's token at once. S.phones: undefined loading, null no answer, false not offered here; S.phoneCode the code being shown. */
 async function loadPhones(action) {
   try {
     const path = action?.remove ? `/_connect/phones/${q(action.remove)}` : action?.code ? '/_connect/phones/code' : '/_connect/phones';
     const res = await fetch(path, { method: action?.remove ? 'DELETE' : action?.code ? 'POST' : 'GET', cache: 'no-store', headers: { Authorization: `Bearer ${S.token}` } });
-    if (!res.ok) throw new Error(res.status);
+    if (!res.ok) throw Object.assign(new Error(res.status), { status: res.status });
     const body = await res.json();
     if (action?.code) S.phoneCode = { ...body, since: S.phones?.length ?? 0 };
     else S.phones = body.phones;
     // A phone that claimed the code shows up in the list: the code goes away.
     if (S.phoneCode && !action?.code && (S.phones.length > S.phoneCode.since || S.phoneCode.expires < Date.now())) S.phoneCode = null;
-  } catch {
+  } catch (err) {
     if (action) alert(T('Nepodarilo sa. Skús to znova.'));
-    S.phones ??= null;
+    S.phones = !action && notOffered(err.status) ? false : S.phones ?? null;
   }
   render();
   // While a code is shown, look every 5 s whether the phone came.
@@ -14318,6 +14343,7 @@ async function loadPhones(action) {
 }
 function phoneSettings() {
   const phones = S.phones;
+  if (phones === false) return null;
   const code = S.phoneCode && S.phoneCode.expires > Date.now() ? S.phoneCode : null;
   const when = (ts) => ts ? seenLabel(ts) : T('ešte nič');
   // The phone reaches Weft on the address its certificate names (PHONE_URL on asus), not a tunnel or name this window uses.

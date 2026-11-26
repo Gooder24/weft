@@ -1,6 +1,5 @@
 // Weft's English, keyed by the Slovak text in the code (see i18n.js). `{}` stands for each ${…} in order.
 export default {
-  "Kalendár na tomto serveri zatiaľ nebeží.": "The calendar does not run on this server yet.",
   "Všetky tvoje správy v jednej schránke: Messenger, Instagram, WhatsApp, Discord, EduPage, Gmail, Outlook a Teams.": "All your messages in one inbox: Messenger, Instagram, WhatsApp, Discord, EduPage, Gmail, Outlook and Teams.",
   "Vytvoriť účet": "Create account",
   "Mám už účet": "I have an account",
@@ -1497,4 +1496,7 @@ export default {
   "Zmazať z nástenky (súbor na disku ostane)": "Remove from the board (the file stays on the disk)",
   "Znova to poslať nejde: súbor už nie je na disku alebo zariadenie bolo zabudnuté.": "It cannot be sent again: the file is no longer on the disk or the device was forgotten.",
   "zrušené odosielateľom": "cancelled by the sender",
+  "Vyber chat vľavo.": "Pick a chat on the left.",
+  "Pripoj Messenger, Instagram, WhatsApp alebo Discord a tvoje správy prídu sem.": "Connect Messenger, Instagram, WhatsApp or Discord and your messages come here.",
+  "Pripojiť účty": "Connect accounts",
 };
