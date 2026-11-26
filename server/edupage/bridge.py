@@ -81,6 +81,12 @@ ACTIONS_KEY = "sk.karchi.edupage.actions"
 TO_KEY = "sk.karchi.edupage.to"
 # Content key on a new message the admin starts in Matrix: the ghost mxid of the one person it goes to.
 RECIPIENT_KEY = "sk.karchi.edupage.recipient"
+# Content key on a reply the admin writes: "all" sends it to everyone the thread went to, anything else only to its
+# author. Weft asks only in threads REPLIES_TYPE marks "all"; elsewhere EduPage has one answer anyway.
+REPLY_TO_KEY = "sk.karchi.edupage.reply_to"
+# Written by the bridge for Weft: {root event id: "all" | "author"} for threads that did not go to Karchi alone:
+# "all" when a reply may go to everyone or to the author alone, "author" when the author allowed only the latter.
+REPLIES_TYPE = "sk.karchi.edupage.replies"
 DEFAULT_PREFS = {"polls": True, "arrivals": False, "meals": False}
 # Timeline types shown as notices when the admin turns them on, with the pref that controls them.
 NOTICE_TYPES = {"pipnutie": "arrivals", "strava_vydaj": "meals"}
@@ -333,6 +339,58 @@ def is_mine(item: dict, user_id: str) -> bool:
     return bool(user_id) and (item.get("vlastnik") or "").replace("Only", "") == user_id
 
 
+def item_data(item: dict) -> dict:
+    data = item.get("data")
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except ValueError:
+            return {}
+    return data if isinstance(data, dict) else {}
+
+
+# A recipient that is one person (with or without their parents), not a class, a group or everyone.
+ONE_PERSON = re.compile(r"(Ucitel|Student|StudentOnly|Rodic|RodicOnly)-?\d+")
+
+
+def reply_audience(item: dict, user_id: str) -> str | None:
+    """Whom a reply in the thread of this first message may go to: None when EduPage has one answer (Karchi wrote it,
+    or it went to him alone), "author" when its author allowed replies only to themselves, "all" when Karchi may
+    choose between everyone it went to and its author alone (edupage.org's reply box offers the same)."""
+    if is_mine(item, user_id):
+        return None
+    data = item_data(item)
+    if str(data.get("repliesToAllDisabled") or "0") == "1":
+        return "author"
+    if data.get("toMultiple") or not ONE_PERSON.fullmatch(str(item.get("user") or "")):
+        return "all"
+    return None
+
+
+def reply_recipient(root_item: dict | None, user_id: str, reply_to: str) -> str:
+    """createReply's recipient: "" is everyone the thread went to (and the only choice in a two-person thread), an
+    author's user string that author alone. Without Karchi's explicit "all" a reply never goes to a whole class."""
+    if not root_item or not root_item.get("vlastnik"):
+        return ""
+    audience = reply_audience(root_item, user_id)
+    if audience == "author" or (audience == "all" and reply_to != "all"):
+        return str(root_item["vlastnik"])
+    return ""
+
+
+def own_item(items: list, user_id: str, text: str, root: int | None, known: set[int]) -> int | None:
+    """The newest of Karchi's own items with this text, as a reply in `root` or as a new message when root is None;
+    how a send is found when EduPage's answer does not name it."""
+    norm = lambda t: " ".join(str(t or "").split())
+    found = [
+        int(i["timelineid"]) for i in items
+        if isinstance(i, dict) and str(i.get("timelineid") or "").isdigit() and int(i["timelineid"]) not in known
+        and is_mine(i, user_id) and not i.get("pomocny_zaznam") and norm(i.get("text")) == norm(text)
+        and (int(i.get("reakcia_na") or 0) == root if root is not None else not i.get("reakcia_na"))
+    ]
+    return max(found) if found else None
+
+
 class Rooms:
     """Writes EduPage message items into Matrix; idempotent per EduPage item id."""
 
@@ -377,6 +435,20 @@ class Rooms:
     def root_event(self, root: int) -> str | None:
         row = self.db.execute("SELECT event_id FROM items WHERE id = ?", (root,)).fetchone()
         return row[0] if row else None
+
+    def raw_item(self, item_id: int | None) -> dict | None:
+        row = self.db.execute("SELECT item FROM raw WHERE id = ?", (item_id,)).fetchone() if item_id is not None else None
+        return json.loads(row[0]) if row else None
+
+    def reply_audiences(self, user_id: str) -> dict[str, str]:
+        """REPLIES_TYPE: each thread's first message event whose replies Weft must ask about or explain."""
+        out = {}
+        for event_id, item in self.db.execute(
+                "SELECT items.event_id, raw.item FROM items JOIN raw ON raw.id = items.id WHERE items.id = items.root"):
+            audience = reply_audience(json.loads(item), user_id)
+            if audience:
+                out[event_id] = audience
+        return out
 
     def mark_sent(self, item_id: int, root: int, event_id: str) -> None:
         """A reply written in Matrix and accepted by EduPage: the next poll must not post it again."""
@@ -797,7 +869,8 @@ def upload_attachment(edu: Edupage, name: str, mimetype: str, data: bytes) -> tu
     return path, str((answer.get("data") or {}).get("name") or name)
 
 
-def send_message(edu: Edupage, recipient: str, text: str, attachments: dict | None = None) -> int:
+def send_message(edu: Edupage, recipient: str, text: str, attachments: dict | None = None,
+                 user_id: str = "", known: set[int] | None = None) -> int | None:
     """Starts a new message to one person the way edupage.org's "Nová správa" does; returns its timeline id.
     attachments maps each uploaded file's EduPage path to its name."""
     resp = edu.session.post(
@@ -813,18 +886,17 @@ def send_message(edu: Edupage, recipient: str, text: str, attachments: dict | No
         data = json.loads(RequestData.decode_response(resp.text))
     except ValueError:
         raise SessionExpired() from None
-    for change in (data.get("changes") or []) if isinstance(data, dict) else []:
-        if str(change.get("timelineid") or "").isdigit():
-            return int(change["timelineid"])
-    raise RuntimeError("EduPage did not accept the message")
+    return sent_id(edu, data, user_id, text, None, known or set(), "EduPage did not accept the message")
 
 
-def send_reply(edu: Edupage, root: int, text: str, attachments: dict | None = None) -> int:
-    """Replies in the thread `root` the way edupage.org does; returns the new timeline id."""
+def send_reply(edu: Edupage, root: int, text: str, attachments: dict | None = None, recipient: str = "",
+               user_id: str = "", known: set[int] | None = None) -> int | None:
+    """Replies in the thread `root` the way edupage.org does, to `recipient` (see reply_recipient); returns the
+    new timeline id, None when EduPage took it but its id could not be found."""
     resp = edu.session.post(
         f"https://{edu.subdomain}.edupage.org/timeline/?akcia=createReply&eqav=1&maxEqav=7",
         data=RequestData.encode_request_body(
-            {"groupid": str(root), "recipient": "", "text": text,
+            {"groupid": str(root), "recipient": recipient, "text": text,
              "moredata": json.dumps({"attachements": attachments or {}})}
         ),
         headers={"Content-Type": "application/x-www-form-urlencoded"},
@@ -834,10 +906,32 @@ def send_reply(edu: Edupage, root: int, text: str, attachments: dict | None = No
         data = json.loads(RequestData.decode_response(resp.text))
     except ValueError:
         raise SessionExpired() from None
-    for change in (data.get("changes") or []) if isinstance(data, dict) else []:
-        if str(change.get("timelineid") or "").isdigit():
+    return sent_id(edu, data, user_id, text, root, known or set(), "EduPage odpoveď neprijal")
+
+
+def sent_id(edu: Edupage, data, user_id: str, text: str, root: int | None, known: set[int], refused: str) -> int | None:
+    """The id of what createItem/createReply just made. EduPage names it in "changes" only sometimes (also
+    edupage-api issue 62); a reply often comes back as the thread's replies ("reakcie") instead, and otherwise the
+    message tab is read again. Raises `refused` only when EduPage said no; None when it said ok but hid the id."""
+    if not isinstance(data, dict):
+        raise RuntimeError(refused)
+    for change in data.get("changes") or []:
+        if isinstance(change, dict) and str(change.get("timelineid") or "").isdigit():
             return int(change["timelineid"])
-    raise RuntimeError("EduPage odpoveď neprijal")
+    inner = data.get("data") if isinstance(data.get("data"), dict) else {}
+    replies = [*(data.get("reakcie") or []), *(inner.get("reakcie") or [])]
+    found = own_item([{"reakcia_na": root, **r} for r in replies if isinstance(r, dict)], user_id, text, root, known) \
+        if root is not None else None
+    if found is None and user_id:
+        try:
+            found = own_item(fetch_tab(edu, date.today() - timedelta(days=1), "messages"), user_id, text, root, known)
+        except Exception as err:  # it may still have gone; the status below decides what Karchi hears
+            log("sent item lookup failed:", type(err).__name__)
+    if found is not None:
+        return found
+    if str(data.get("status") or "").lower() == "ok":
+        return None
+    raise RuntimeError(refused)
 
 
 def points_mark(percent: float, scale: dict) -> str:
@@ -1329,10 +1423,10 @@ class Account:
         self.creds: dict | None = json.loads(ACCOUNT_FILE.read_text()) if ACCOUNT_FILE.exists() else None
         self.state = "CONNECTING"
         self.message = ""
-        # (room_id, event_id, replied-to event_id, text, recipient ghost, files) written by the admin in
+        # (room_id, event_id, replied-to event_id, text, recipient ghost, files, reply_to) written by the admin in
         # Matrix, sent by the poller thread: a reply when it answers a message, else a new message to the
-        # recipient. files is the FILES_KEY list of the message.
-        self.outbox: queue.Queue[tuple[str, str, str, str, str, list]] = queue.Queue()
+        # recipient. files is the FILES_KEY list of the message, reply_to its REPLY_TO_KEY.
+        self.outbox: queue.Queue[tuple[str, str, str, str, str, list, str]] = queue.Queue()
         # Teachers Karchi can start a message to, from the school's data at the last poll.
         self.teachers: list[dict] = []
         self.grades_at = 0.0
@@ -1343,6 +1437,7 @@ class Account:
         self.timetable_tries: dict[str, int] | None = None  # refreshes per notice, loaded from kv on the first poll
         self.grades_sent: dict | None = None
         self.people_sent: dict | None = None
+        self.replies_sent: dict | None = None
         self.facts: dict | None = None
         self.facts_sent: dict | None = None
         self.last_success = 0.0
@@ -1460,6 +1555,13 @@ class Account:
             log("matrix error:", err)
             return
         log(f"poll ok: {len(items)} source items, posted {posted} messages, {noticed} notices")
+        try:
+            replies = rooms.reply_audiences(creds["user_id"])
+            if replies != self.replies_sent:
+                matrix("PUT", f"/user/{q(ADMIN)}/account_data/{REPLIES_TYPE}", replies, user=ADMIN)
+                self.replies_sent = replies
+        except (MatrixError, urllib.error.URLError) as err:
+            log("replies account data failed:", err)
         marks = {str(i.get("timelineid")) for i in items if i.get("typ") == "znamka"}
         if self.grade_marks is not None and marks - self.grade_marks:
             self.grades_at = 0.0  # a new grade: Ctrl+G shows it now, not up to GRADES_EVERY later
@@ -1595,7 +1697,7 @@ class Account:
     def send_outbox(self, rooms: Rooms) -> None:
         while True:
             try:
-                room_id, event_id, answers, text, recipient, files = self.outbox.get_nowait()
+                room_id, event_id, answers, text, recipient, files, reply_to = self.outbox.get_nowait()
             except queue.Empty:
                 return
             if room_id != rooms.school_room()[0]:
@@ -1619,16 +1721,25 @@ class Account:
                 blobs = [(str(f.get("name") or "subor"), str(f.get("mimetype") or ""), matrix_file(str(f.get("url") or "")))
                          for f in files]
 
-                def send(e: Edupage) -> int:
+                user_id = str(creds.get("user_id") or "")
+                known = {row[0] for row in rooms.db.execute("SELECT id FROM items")}
+                to_whom = reply_recipient(rooms.raw_item(root), user_id, reply_to) if root is not None else ""
+
+                def send(e: Edupage) -> int | None:
                     # Uploaded with the session that sends, so a renewed session uploads them again.
                     attachments = dict(upload_attachment(e, *blob) for blob in blobs)
-                    return send_reply(e, root, text, attachments) if root is not None else send_message(e, to, text, attachments)
+                    if root is not None:
+                        return send_reply(e, root, text, attachments, to_whom, user_id, known)
+                    return send_message(e, to, text, attachments, user_id, known)
                 try:
                     item_id = send(edu)
                 except SessionExpired:
                     edu = self.connect({**creds, "session": ""})
                     item_id = send(edu)
-                rooms.mark_sent(item_id, root if root is not None else item_id, event_id)
+                if item_id is None:
+                    log("sent, but EduPage did not say under which id")
+                else:
+                    rooms.mark_sent(item_id, root if root is not None else item_id, event_id)
                 with self.lock:
                     if self.creds is creds:
                         self.edu = edu
@@ -1801,7 +1912,8 @@ class Handler(BaseHTTPRequestHandler):
                     text = re.sub(r"^(> .*\n)+\n", "", content["body"])  # drop a Matrix reply quote
                     answers = ((content.get("m.relates_to") or {}).get("m.in_reply_to") or {}).get("event_id")
                     recipient = content.get(RECIPIENT_KEY) if isinstance(content.get(RECIPIENT_KEY), str) else ""
-                    ACCOUNT.outbox.put((event["room_id"], event["event_id"], str(answers or ""), text.strip(), recipient, files))
+                    reply_to = content.get(REPLY_TO_KEY) if isinstance(content.get(REPLY_TO_KEY), str) else ""
+                    ACCOUNT.outbox.put((event["room_id"], event["event_id"], str(answers or ""), text.strip(), recipient, files, reply_to))
                     ACCOUNT.wake.set()
         self.reply(200, {})
 

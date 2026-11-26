@@ -31,6 +31,9 @@ const BOT_LOCALPART = 'edupagebot';
 const MARK = 'sk.karchi.edupage';
 const TO_KEY = 'sk.karchi.edupage.to';
 const RECIPIENT_KEY = 'sk.karchi.edupage.recipient'; // a new EduPage message: the ghost of the person it goes to
+const REPLY_TO_KEY = 'sk.karchi.edupage.reply_to'; // a reply: 'all' goes to everyone the thread went to, else its author alone
+// Written by the bridge: { [thread root event id]: 'all' | 'author' } for threads that did not go to Karchi alone.
+const EDU_REPLIES = 'sk.karchi.edupage.replies';
 const PREFS = 'sk.karchi.edupage.prefs';
 const GRADES = 'sk.karchi.edupage.grades';
 const PEOPLE = 'sk.karchi.edupage.people';
@@ -122,6 +125,7 @@ const S = {
   surface: feedFromLocation() ? 'feed' : 'calendar',
   drafts: storedDrafts(localStorage.getItem('ep_user')), // room or thread root id -> unsent text
   attach: new Map(), // room id -> [File] picked with "+", pasted or dropped; sent with the next message
+  eduTo: new Map(), // thread root id -> 'all' when Karchi chose to answer everyone; its author alone otherwise
   eduNote: null, // EduPage thread or new message where a file could not be taken: it gets a short note
   eduPeople: new Map(), // teachers from the EduPage bridge, mxid -> name, for new messages
   historyDone: false,
@@ -5114,6 +5118,7 @@ async function sendReply(rootId) {
   const txn = `ep${Date.now()}${Math.random().toString(36).slice(2, 8)}`;
   // Without text EduPage still gets the files; the message then says what they are.
   const content = { msgtype: 'm.text', body: text || files.map((f) => f.name).join(', '), 'm.relates_to': { 'm.in_reply_to': { event_id: rootId } } };
+  if (S.account[EDU_REPLIES]?.[rootId] === 'all') content[REPLY_TO_KEY] = S.eduTo.get(rootId) === 'all' ? 'all' : 'one';
   S.pending.set(txn, { event_id: txn, pending: true, sender: S.userId, origin_server_ts: Date.now(), content: { ...content, [EDU_FILES]: files.map((f) => ({ name: f.name })) } });
   deleteDraft(rootId);
   S.attach.delete(rootId);
@@ -5646,16 +5651,42 @@ function detailView(t) {
         const color = mix(colorOf(r.sender), 0.5);
         return h('div', {
           class: `reply${bot ? ' bot' : ''}${r.pending ? ' pending' : ''}`,
-          style: bot ? {} : { background: mix(colorOf(r.sender), 0.85) },
+          style: bot ? {} : { '--who': colorOf(r.sender) },
         },
         bot ? null : h('div', { class: 'sq', style: { background: color, color: textOn(color) } }, initials(r.sender)),
         h('div', { class: 'rt' }, bot ? null : [h('b', {}, nameOf(r.sender)), ': '], linkified(bodyOf(r), findIn(r)), eduFiles(r), eduActions(r)),
         h('div', { class: 'rd' }, r.pending ? 'odosielam' : `${shortDate(r.origin_server_ts)} ${timeLabel(r.origin_server_ts)}`));
       })),
-      notice ? null : composeView(t.id)));
+      notice ? null : composeView(t.id, root)));
 }
 
-function composeView(rootId) {
+/** To whom a reply goes, where EduPage lets Karchi choose: the author alone (the default, as nothing reaches a whole
+ *  class by mistake) or everyone the message went to. Where the author allowed only replies to themselves, it says so. */
+function eduReplyTo(rootId, root) {
+  const audience = S.account[EDU_REPLIES]?.[rootId];
+  const author = nameOf(root.sender);
+  if (audience === 'author') return h('small', { class: 'eduto' }, T`Odpoveď uvidí len ${author}.`);
+  if (audience !== 'all') return null;
+  const all = S.eduTo.get(rootId) === 'all';
+  const pick = (to) => (e) => {
+    if (to === 'all') S.eduTo.set(rootId, 'all'); else S.eduTo.delete(rootId);
+    render();
+    e.currentTarget.closest('.compose')?.querySelector('textarea')?.focus();
+  };
+  const keys = (e) => {
+    if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) return;
+    e.preventDefault();
+    const next = all ? 'one' : 'all';
+    if (next === 'all') S.eduTo.set(rootId, 'all'); else S.eduTo.delete(rootId);
+    render();
+    e.currentTarget.querySelector(`[data-to="${next}"]`)?.focus();
+  };
+  const choice = (to, on, label) => h('button', { type: 'button', role: 'radio', 'data-to': to, 'aria-checked': String(on), tabindex: on ? 0 : -1, class: on ? 'on' : '', onclick: pick(to) }, label);
+  return h('div', { class: 'seg eduto', role: 'radiogroup', 'aria-label': T('Komu odpovedať'), onkeydown: keys },
+    choice('one', !all, T`Len ${author}`), choice('all', all, T('Všetkým')));
+}
+
+function composeView(rootId, root) {
   const draft = S.drafts.get(rootId) || '';
   const files = S.attach.get(rootId) || [];
   const area = h('textarea', {
@@ -5674,7 +5705,7 @@ function composeView(rootId) {
     },
   });
   const send = h('button', { class: 'primary', disabled: !draft.trim() && !files.length, onclick: () => sendReply(rootId) }, T('Odoslať'));
-  return h('div', { class: 'compose' }, eduNote(rootId), eduAtts(rootId), area, h('div', {}, eduAttachButton(), send));
+  return h('div', { class: 'compose' }, eduNote(rootId), root ? eduReplyTo(rootId, root) : null, eduAtts(rootId), area, h('div', {}, eduAttachButton(), send));
 }
 
 /** Files waiting to go with an EduPage message, under the key of its thread or new message. */
