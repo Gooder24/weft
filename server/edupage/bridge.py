@@ -973,7 +973,7 @@ def school_recipients(edu: Edupage) -> dict:
                 own=role == "teacher" and me in (str(c.get("teacherid")), str(c.get("teacher2id"))))
     for pid, plan in plans.items():  # named as EduPage names them: "III. A · Slovenský jazyk a literatúra - Literatúra"
         pupils_of = {str(x) for x in plan.get("students") or []}
-        if role == "student" and (f"StudPlan{pid}" not in member if member else pupils_of and me not in pupils_of):
+        if role == "student" and (f"StudPlan{pid}" not in member if member else me not in pupils_of):
             continue
         subject = str(plan.get("predmetMeno") or plan.get("nazov") or (subjects.get(str(plan.get("predmetid"))) or {}).get("name") or "").strip()
         part = str(plan.get("zlozka") or "").strip()
@@ -1005,6 +1005,10 @@ def message_flags(options: dict | None) -> dict:
     return {"receipt": "1" if options.get("important") is True else "0",
             "repliesDisabled": "1" if replies == "none" else "0",
             "repliesToAllDisabled": "1" if replies != "all" else "0"}
+
+
+class RecipientsRefused(Exception):
+    """A new message's „Komu“ list is not what the signed-in account may write to; nothing is sent."""
 
 
 class AttachmentRefused(Exception):
@@ -1741,7 +1745,7 @@ class Account:
             log("teachers failed:", type(err).__name__)
         else:
             with self.lock:
-                if self.creds and self.creds["login_id"] == creds["login_id"]:  # not a login replaced meanwhile
+                if self.edu is edu:  # not a login replaced meanwhile
                     self.teachers, self.recipients = teachers, recipients
         rooms.keep(items)
         self.nudge_timetable(items, rooms.db)
@@ -1922,14 +1926,19 @@ class Account:
             try:
                 if edu is None:
                     edu = self.connect(creds)
-                if many and root is None:
-                    # Only ids the signed-in account's school offers it now (GET /contacts shows the same list).
-                    school = school_recipients(edu)
+                ids = list(dict.fromkeys(recipient["to"])) if many and root is None else []
+
+                def check_recipients(e: Edupage) -> None:
+                    """Only ids the account behind `e` offers now (GET /contacts shows the same list), and only while
+                    that account is still the one signed in."""
+                    nonlocal to, flags
+                    with self.lock:
+                        if not self.creds or self.creds["login_id"] != creds["login_id"]:
+                            raise RecipientsRefused("EduPage účet sa medzitým zmenil")
+                    school = school_recipients(e)
                     offered = {i for r in school["recipients"] for i in (r["id"], r.get("parents")) if i}
-                    ids = list(dict.fromkeys(recipient["to"]))
                     if not ids or not all(i in offered for i in ids):
-                        rooms.say(room_id, "Neodoslané: niektorého adresáta EduPage teraz neponúka. Vyber adresátov v Ctrl+N znova.", event_id)
-                        continue
+                        raise RecipientsRefused("niektorého adresáta EduPage teraz neponúka. Vyber adresátov v Ctrl+N znova")
                     to = ";".join(ids)
                     flags = message_flags(recipient.get("options")) if school["role"] == "teacher" else None
                 blobs = [(str(f.get("name") or "subor"), str(f.get("mimetype") or ""), matrix_file(str(f.get("url") or "")))
@@ -1943,6 +1952,8 @@ class Account:
 
                 def send(e: Edupage) -> int | None:
                     # Uploaded with the session that sends, so a renewed session uploads them again.
+                    if many and root is None:
+                        check_recipients(e)
                     attachments = dict(upload_attachment(e, *blob) for blob in blobs)
                     if root is not None:
                         return send_reply(e, root, text, attachments, to_whom, user_id, known, since)
@@ -1966,6 +1977,8 @@ class Account:
                     log("session not kept after a send:", repr(err))
             except AttachmentRefused as err:
                 rooms.say(room_id, f"Táto správa neodišla do EduPage: {err}. Skús iný súbor alebo ju pošli bez neho.", event_id)
+            except RecipientsRefused as err:
+                rooms.say(room_id, f"Neodoslané: {err}.", event_id)
             except Exception as err:
                 log("reply failed:", repr(err))
                 rooms.say(room_id, "Táto správa neodišla do EduPage. Skús to znova alebo odpovedz na edupage.org.", event_id)
