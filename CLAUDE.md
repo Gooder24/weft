@@ -105,7 +105,7 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
 - `server/microsoft/bridge.py` is Outlook and Teams (asus `~/matrix-spike/microsoft/`, unit `matrix-spike-microsoft`,
   127.0.0.1:29330 behind Caddy's `/_bridges/outlook/` and `/_bridges/teams/`). Any number of Microsoft accounts of
   each, signed in on Microsoft's page through Microsoft Graph Command Line Tools (no own app needed; an Entra app in
-  `microsoft/state/microsoft-client.json` replaces it; he pastes the `http://localhost` address it redirects to). A work sign-in asks for every Outlook and Teams feature's permissions at once; where users may not consent, an admin grants all of it for the whole organization with one link (`weft ms-consent`, `GET /consent`, also in the refusal), and the next sign-in asks only for mail and chats. Outlook works like Gmail: all mail read-only into the
+  `microsoft/state/microsoft-client.json` replaces it; he pastes the `http://localhost` address it redirects to). A work sign-in asks at once for the permissions of every Outlook and Teams feature Karchi left ticked (Settings → Účty → Outlook or Teams → „Čo smie Weft“, one choice for both, `POST /features`, `state/features.json`; mail and chats always; the bridge never uses what is off); where users may not consent, an admin grants all of it for the whole organization with one link (`weft ms-consent`, `GET /consent`, also in the refusal), and the next sign-in asks only for mail and chats. Outlook works like Gmail: all mail read-only into the
   archive (`archive:outlook:…`, „Odpovedať mailom“), Nový mail and `weft mail` send through Graph (20 MB of files).
   Teams one-to-one, group and meeting chats are real rooms through the appservice `appservices/teams.yaml`
   (ghosts `@teams_<Entra id>`, polled every 20 s): text, mentions, photos, files, replies, edits, deletions and
@@ -176,8 +176,12 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   over the whole archive and every network of a merged chat (archive `GET /_archive/stats?room=…`, which first copies
   the rooms' newest messages from the homeserver); in a group it is Karchi's own chat with that person. Its name opens
   the profile. Check: `overenie/profil-karta/run.sh` (`stats_test.py`, `ui.cjs`).
-- New chats (Ctrl+N): Weft's own people first; a full number typed there goes to WhatsApp at once, and „Hľadať mimo
-  kontaktov“ asks one network (Messenger and Instagram by name, WhatsApp by number, Teams in the directory). „Nová
+- New chats (Ctrl+N, or „Nová“ in the inbox head): with the field empty, one row per connected network says where to
+  start on it (`START_NETS`: EduPage and Discord narrow the list to their people, WhatsApp, Teams, Messenger and
+  Instagram open their network mode, Gmail and Outlook a new mail from that account), then recent people; a typed number
+  goes to WhatsApp at once (0900 123 456 is read as +421), and „Hľadať mimo
+  kontaktov“ asks one network (Messenger and Instagram by name, WhatsApp by number, Teams in the directory).
+  Check: `overenie/nova-sprava/run.sh`. „Nová
   skupina na WhatsAppe“ (also Ctrl+J) makes a group through the bridge's `POST /v3/create_group/group` after Karchi
   confirms; whom WhatsApp would not add gets the bridge's invitation in their chat only on a second yes. Check:
   `overenie/whatsapp-skupina/run.sh` (the bridge faked). Following on Instagram and friend requests on Facebook have
@@ -207,6 +211,10 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   (`server/bridges/instagram-carousel.patch`, asus build/meta branch `weft-ig-carousel` on `weft-archive-ig`). The bubble
   shows each small under the large one and the viewer pages through them; the bridge's fill-in edit never waits for a
   reading window. Posts resolved before 2026-11-20 keep one photo. Check: `overenie/ig-carousel/ui.cjs`.
+  The bridge syncs only the first page of Instagram's inbox, so an old chat of the export (a group, or one whose
+  person it does not name) may have no live room: under it „Otvoriť chat“ opens that very thread by the id its export
+  folder ends with (`POST /v3/create_dm/thread:<id>`, `server/bridges/instagram-open-thread.patch`, asus build/meta-carousel
+  branch `weft-ig-open-thread`) and moves the old history into it. Check: `overenie/ig-group/ui.cjs`.
   A shared reel or story is its video alone, without the page's card or address; Preposlať (the hover bar, a right
   click on it, the viewer) shows the address without Instagram's tracking parameters and puts it into a picked chat's
   message box, unsent; „Kopírovať odkaz“ copies it. Check: `overenie/reels/ui.cjs`.

@@ -25,7 +25,7 @@
                                                             --no-link; WHO is an address or a name from the Teams
                                                             directory; Exchange sends the invitations (--yes to make it)
     weft ms-consent                                         what Outlook and Teams may do in Weft, what still waits
-                                                            for consent, and the link an admin opens to grant it all
+                                                            for consent, what is turned off, and the admin's link
     weft cals                                               calendars
     weft cal [--from YYYY-MM-DD] [--days 7]                 events, repeating ones expanded as Weft draws them
     weft cal-add TITLE --start "YYYY-MM-DD[ HH:MM]" [--end ...|--minutes 60] [--cal NAME] [--location] [--notes]
@@ -1035,7 +1035,9 @@ def main(argv=None):
                 lines.append(head + ("smie všetko" if not missing else "čaká: " + ", ".join(
                     m["what"] + (" (len správca)" if m.get("admin") else "") for m in missing)))
         if not any(r.get("logins") for r in reports.values()): lines.append("vo Wefte nie je pripojený Outlook ani Teams")
-        return out(reports, lines + ([f"Správca schváli všetko pre celú firmu týmto odkazom: {link}"] if link else []))
+        off = [c["name"] for r in list(reports.values())[:1] for c in r.get("choices") or [] if not c.get("on")]
+        if off: lines.append("vypnuté vo Wefte (Nastavenia → Účty → Outlook/Teams): " + ", ".join(off))
+        return out(reports, lines + ([f"Správca schváli všetko vybrané pre celú firmu týmto odkazom: {link}"] if link else []))
 
     if a.cmd == "mail":
         text = text_arg(a.text) if a.text else ""

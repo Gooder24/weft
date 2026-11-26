@@ -110,8 +110,7 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
 .filter:hover { background: var(--hover); }
 .filter.on { border-color: var(--link); }
 .filter.on svg { color: var(--link); }
-.touchonly { display: none; }
-@media (max-width: 700px) and (hover: none) { .touchonly { display: flex; } }
+.filter.word { width: auto; gap: 4px; padding: 0 6px; color: var(--muted); font: inherit; font-size: var(--fs); }
 .menu {
   position: absolute; top: 38px; right: 10px; z-index: 5; min-width: 230px; padding: 6px;
   display: flex; flex-direction: column; background: var(--panel); border: var(--bw) solid var(--line-strong); border-radius: var(--radius-l);
@@ -223,6 +222,9 @@ kbd { margin-left: auto; font-family: inherit; font-size: var(--fs); color: var(
 .acctopts .ghost.danger { align-self: flex-start; padding: 6px 0 0; }
 .acctopts h4 { margin: 4px 0 0; font-size: var(--fs); color: var(--muted); font-weight: normal; }
 .acctopts .primary { align-self: flex-start; margin-top: 6px; }
+.acctopts .bcheck { display: flex; align-items: flex-start; gap: 8px; padding: 2px 0; color: var(--text); }
+.acctopts .bcheck input { flex: none; margin-top: 1px; }
+.acctopts .bcheck input:disabled { opacity: .6; }
 /* Settings → Účty → Prejsť z Beeperu: what the import would add, per network. */
 .bpmove { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
 .bptable { align-self: stretch; border-collapse: collapse; font-size: var(--fs); }
