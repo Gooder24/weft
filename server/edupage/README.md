@@ -36,5 +36,12 @@ homeserver, uploads them through EduPage's own `uploadAtt` and sends them as the
 refused file stops the message and says why. `GET /contacts` lists the school's current teachers, who can be
 written to before they ever wrote. Sign-up notices carry `sk.karchi.edupage.signin` (name, type, window, choice).
 
+A reply goes where Karchi chose, like edupage.org's reply box: in a thread that did not go to him alone the bridge
+marks its first message in account data `sk.karchi.edupage.replies` (`all`: Weft asks „Len <autor> / Všetkým“,
+the author by default; `author`: the author allowed only replies to themselves) and sends createReply's `recipient`
+as the author's user string unless the reply says `sk.karchi.edupage.reply_to: all`. EduPage often answers a send
+without its id (no `changes`); the bridge then finds the item among the thread's replies or the message tab, so it
+is never reported as failed nor imported twice. Check: `tests/edupage/reply_test.py` (bridge venv).
+
 Run `overenie/run.sh --edupage` for fake regression cases and read-only source-to-Matrix comparisons.
 Those local checks live in the globally ignored `overenie/` directory, per the verification skill.

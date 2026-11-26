@@ -163,7 +163,8 @@ kbd { margin-left: auto; font-family: inherit; font-size: var(--fs); color: var(
 .icon svg { color: var(--accent-text); }
 .text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .replies { display: flex; flex-direction: column; gap: 3px; }
-.reply { display: flex; align-items: stretch; border-radius: var(--radius-s); overflow: hidden; font-size: var(--fs); }
+/* A reply wears its writer's EduPage colour as a faint tint over the panel, so its text keeps the theme's contrast. */
+.reply { display: flex; align-items: stretch; border-radius: var(--radius-s); overflow: hidden; font-size: var(--fs); background: color-mix(in srgb, var(--who, var(--soft)) 14%, var(--panel)); color: var(--text); }
 .reply .sq { flex: none; width: 30px; min-height: 28px; display: flex; align-items: center; justify-content: center; font-size: var(--fs); }
 .reply .rt { flex: 1; min-width: 0; padding: 5px 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .reply .rd { flex: none; display: flex; align-items: center; padding: 0 8px; font-size: var(--fs); color: var(--muted); }
@@ -172,6 +173,9 @@ kbd { margin-left: auto; font-family: inherit; font-size: var(--fs); color: var(
 .compose { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
 .compose textarea { background: var(--card); font: inherit; font-size: var(--fs); padding: 8px; border: 1px solid var(--line); border-radius: var(--radius-s); resize: vertical; color: var(--text); }
 .compose div { display: flex; gap: 8px; }
+.compose .seg.eduto { align-self: flex-start; margin-top: 0; }
+.compose .seg.eduto button { flex: none; padding: 5px 10px; }
+.compose small.eduto { color: var(--muted); font-size: var(--fs); }
 .primary { border: 0; border-radius: var(--radius-s); padding: 6px 14px; background: var(--accent); color: var(--accent-text); cursor: pointer; }
 .primary:disabled { opacity: .6; cursor: default; }
 .ghost { border: 0; background: none; color: var(--muted); cursor: pointer; }
