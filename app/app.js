@@ -3275,18 +3275,21 @@ const laterItems = () => S.account[LATER]?.items || [];
 let laterChain = Promise.resolve();
 // The service learns once per session that this account schedules messages: it then sends them as this account
 // (every person of the server, not only the owner). A hello that did not get through is said again at most once a
-// minute, by the next change or the next sync while something still waits.
-let laterHello = null, laterHelloFailed = -Infinity;
+// minute for that account (also across reloads of the tab: sessionStorage), by the next change or the next sync while
+// something still waits.
+const laterHello = new Map(); // user id → 'said' | 'asking'
+const laterHelloKey = (user) => `ep_later_hello:${user}`;
 // After each sync while something of this account still waits (a fresh device learns of it only there).
 const helloIfWaiting = () => {
   if (laterItems().some((it) => !it.sent && !it.failed)) sayLaterHello();
 };
 function sayLaterHello() {
-  if (laterHello === S.userId || Date.now() - laterHelloFailed <= 60000) return;
-  laterHello = S.userId;
-  const failed = () => { laterHello = null; laterHelloFailed = Date.now(); };
+  const user = S.userId;
+  if (laterHello.has(user) || Date.now() - Number(sessionStorage.getItem(laterHelloKey(user)) || -Infinity) <= 60000) return;
+  laterHello.set(user, 'asking');
+  const failed = () => { laterHello.delete(user); sessionStorage.setItem(laterHelloKey(user), String(Date.now())); };
   fetch('/_sendlater/hello', { method: 'POST', headers: { Authorization: `Bearer ${S.token}` } })
-    .then((res) => { if (!res.ok) failed(); }, failed);
+    .then((res) => (res.ok ? laterHello.set(user, 'said') : failed()), failed);
 }
 /** Changes the list as it stands on the server now: the service marks what it sent in the same list. `change` may
  *  be async (it may read other account data just before the write). */
