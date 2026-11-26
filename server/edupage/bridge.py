@@ -1978,6 +1978,7 @@ class Account:
 
                 def send(e: Edupage) -> int | None:
                     # Uploaded with the session that sends, so a renewed session uploads them again.
+                    still_signed_in()  # also a reply or a single person's chat, on every attempt
                     if many and root is None:
                         check_recipients(e)
                     attachments = dict(upload_attachment(e, *blob) for blob in blobs)
