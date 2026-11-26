@@ -55,7 +55,6 @@ BRIDGES = os.environ.get("BRIDGES", "http://127.0.0.1:8080/_bridges")  # Caddy: 
 TOKEN_FILE = os.environ.get("TOKEN_FILE", os.path.join(HERE, "token"))
 MINT = os.path.join(SPIKE, "homeserver", "mint-login-token.py")
 TZ = ZoneInfo("Europe/Bratislava")
-SEEN = "sk.karchi.edupage.seen"   # Weft's "seen up to" per chat
 INBOX = "sk.karchi.inbox"         # Weft's per-chat state (low, archived, ...)
 MERGES = "sk.karchi.merges"       # {"groups": [{id, rooms}]}: one person's chats Weft shows as one (app.js mergeData)
 DISCORD_SERVERS = "sk.karchi.discord.servers"  # {"off": {guild id: name}}: servers Karchi switched off in Weft's Settings → Účty
@@ -199,7 +198,7 @@ class Rooms:
     FILTER = json.dumps({"presence": {"not_types": ["*"]}, "account_data": {"not_types": ["*"]},
                          "room": {"timeline": {"limit": 5, "types": MESSAGE_TYPES + ["m.room.member", "m.room.name", "m.bridge"]},
                                   "state": {"types": ["m.room.name", "m.room.member", "m.bridge"]},
-                                  "ephemeral": {"not_types": ["*"]}, "account_data": {"not_types": ["*"]}}})
+                                  "ephemeral": {"types": ["m.receipt"]}, "account_data": {"not_types": ["*"]}}})
 
     def __init__(self, mx):
         self.mx = mx
@@ -209,8 +208,42 @@ class Rooms:
         r = self.mx("GET", f"/sync?timeout=0&filter={q(self.FILTER)}", timeout=300)
         for rid, room in r.get("rooms", {}).get("join", {}).items():
             it = self.data["rooms"].setdefault(rid, {"id": rid, "name": "", "net": "", "bridge": "", "members": {}, "last": None})
-            for ev in room.get("state", {}).get("events", []) + room.get("timeline", {}).get("events", []):
+            timeline = room.get("timeline", {}).get("events", [])
+            for ev in room.get("state", {}).get("events", []) + timeline:
                 self.apply(it, ev)
+            # As in Weft: the server's count, and Karchi's own receipt for rooms the server does not count.
+            it["count"] = (room.get("unread_notifications") or {}).get("notification_count") or 0
+            it["timeline"] = {ev.get("event_id"): ev.get("origin_server_ts") for ev in timeline}
+            for ev in room.get("ephemeral", {}).get("events", []):
+                if ev.get("type") != "m.receipt": continue  # the server sends typing too
+                for eid, kinds in (ev.get("content") or {}).items():
+                    if any(mx.user in (kinds.get(k) or {}) for k in ("m.read", "m.read.private")): it["receipt"] = eid
+
+    def muted(self):
+        """Rooms muted on the network (a push rule without notify): the server counts none of their messages."""
+        if not hasattr(self, "_muted"):
+            try: g = self.mx("GET", "/pushrules/").get("global") or {}
+            except (HttpError, OSError): g = {}  # without them every chat counts as the server counts it
+            silent = lambda rule: rule.get("enabled") is not False and "notify" not in (rule.get("actions") or [])
+            ids = {rule["rule_id"] for rule in g.get("room") or [] if silent(rule)}
+            ids |= {c.get("pattern") for rule in g.get("override") or [] if not rule.get("default") and silent(rule)
+                    for c in rule.get("conditions") or [] if c.get("key") == "room_id"}
+            self._muted = ids
+        return self._muted
+
+    def is_new(self, rid, it):
+        """Someone else wrote after Karchi read the chat, as Weft's inbox judges it (wherever he read it)."""
+        last = it["last"]
+        if last["sender"] == self.mx.user: return False
+        if it.get("count"): return True
+        if rid not in self.muted(): return False
+        receipt = it.get("receipt")
+        if not receipt: return True
+        at = it["timeline"].get(receipt)
+        if at is None:
+            try: at = self.mx("GET", f"/rooms/{q(rid)}/event/{q(receipt)}").get("origin_server_ts") or 0
+            except (HttpError, OSError): return False
+        return last["ts"] > at
 
     def apply(self, it, ev):
         t, c = ev.get("type"), ev.get("content") or {}
@@ -267,14 +300,14 @@ class Rooms:
         return any(title.startswith(f"{name} / ") for name in self.servers_off.values())
 
     def listing(self, merge=True):
-        seen, state = self.mx.account(SEEN), self.mx.account(INBOX)
+        state = self.mx.account(INBOX)
         out = []
         for rid, it in self.data["rooms"].items():
             if not it["last"] or (it["net"] == "" and not it["name"] and not self.people(it)) or self.off(rid): continue
             last = it["last"]
             st = state.get(rid) or {}
-            # As in Weft: someone else wrote after Karchi last opened it, or he marked it unread himself.
-            new = last["sender"] != self.mx.user and last["ts"] > seen.get(rid, seen.get("_all", 0))
+            # As in Weft: someone else wrote after Karchi read it, or he marked it unread himself.
+            new = self.is_new(rid, it)
             unread = bool(st.get("unread")) or new
             title, own = self.title(it), self.title(it, False)
             out.append({"room": rid, "title": title, **({"name": own} if own != title else {}), "network": it["net"] or "matrix", "ts": last["ts"],
