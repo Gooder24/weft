@@ -57,6 +57,10 @@ check("own reply found by its text, helper copy and known ones skipped",
       b.own_item([older, reply, helper], ME, "Ďakujem, rozumiem.", 14, {19}) == 21)
 check("a reply in another thread is not it", b.own_item([reply], ME, "Ďakujem, rozumiem.", 15, set()) is None)
 check("someone else's reply is not it", b.own_item([{**reply, "vlastnik": "Ucitel7"}], ME, "Ďakujem, rozumiem.", 14, set()) is None)
+check("a removed own reply is not it", b.own_item([{**reply, "removed": "1"}], ME, "Ďakujem, rozumiem.", 14, set()) is None)
+check("an own reply added before the send is not it",
+      b.own_item([{**reply, "cas_pridania": "2026-11-26 13:00:00"}], ME, "Ďakujem, rozumiem.", 14, set(), "2026-11-26 14:03:00") is None
+      and b.own_item([{**reply, "cas_pridania": "2026-11-26 14:05:00"}], ME, "Ďakujem, rozumiem.", 14, set(), "2026-11-26 14:03:00") == 21)
 
 
 class Resp:
@@ -106,6 +110,19 @@ Session.answer, Session.tab = {"status": "ok"}, []
 check("ok without any id: sent, id unknown (no false failure)", b.send_reply(edu, 14, "x", None, "", ME, set()) is None)
 
 edu = Edu()
+Session.answer, Session.tab = {"status": "ok", "changes": [{"timelineid": "19"}, {"timelineid": "23", "vlastnik": "Ucitel7"}]}, [reply]
+check("'changes' naming a known or someone else's item is not taken",
+      b.send_reply(edu, 14, "Ďakujem, rozumiem.", None, "", ME, {19}) == 21)
+
+edu = Edu()
+Session.answer, Session.tab = {"status": "fail"}, [reply]
+try:
+    b.send_reply(edu, 14, "Ďakujem, rozumiem.", None, "", ME, set())
+    check("a refusal is not hidden by an own same-text item", False, "no error")
+except RuntimeError:
+    check("a refusal is not hidden by an own same-text item", True)
+
+edu = Edu()
 Session.answer, Session.tab = {"status": "fail"}, []
 try:
     b.send_reply(edu, 14, "x", None, "", ME, set())
@@ -153,6 +170,18 @@ Session.answer, Session.tab = {"status": "ok"}, []
 acct.outbox.put(("!room", "$r3", "$own", "Ešte niečo", "", [], ""))
 acct.send_outbox(rooms)
 check("taken without an id: no 'neodišla'", not said, said)
+check("the poll links it instead of posting it again",
+      rooms.sync([{"timelineid": "60", "typ": "sprava", "reakcia_na": "14", "vlastnik": ME, "text": "Ešte  niečo"}], "skola", ME) == 0
+      and db.execute("SELECT root, event_id FROM items WHERE id = 60").fetchone() == (14, "$r3") and not rooms.unnamed)
+
+# A thread whose first message was never kept raw: answered when Karchi wrote it, refused for anyone else's.
+db.execute("INSERT INTO items VALUES (98, 98, '$mine'), (99, 99, '$theirs')")
+b.matrix = lambda method, path, *a, **k: {"sender": "@me:test" if "%24mine" in path or "$mine" in path else "@edupage_ucitel1:test"}
+check("own first message without raw: replies go to whom he wrote", rooms.recipient_for(98, ME, "") == "")
+acct.edu = Edu()
+acct.outbox.put(("!room", "$r4", "$theirs", "Hm", "", [], ""))
+acct.send_outbox(rooms)
+check("someone else's without raw: nothing sent, Karchi told", not acct.edu.session.posts and said and "neodišla" in said[-1], (acct.edu.session.posts, said))
 
 print("FAILS:", fails)
 sys.exit(1 if fails else 0)

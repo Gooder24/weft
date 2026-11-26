@@ -5119,6 +5119,7 @@ async function sendReply(rootId) {
   // Without text EduPage still gets the files; the message then says what they are.
   const content = { msgtype: 'm.text', body: text || files.map((f) => f.name).join(', '), 'm.relates_to': { 'm.in_reply_to': { event_id: rootId } } };
   if (S.account[EDU_REPLIES]?.[rootId] === 'all') content[REPLY_TO_KEY] = S.eduTo.get(rootId) === 'all' ? 'all' : 'one';
+  S.eduTo.delete(rootId); // everyone is chosen again for each reply, never carried over to the next one
   S.pending.set(txn, { event_id: txn, pending: true, sender: S.userId, origin_server_ts: Date.now(), content: { ...content, [EDU_FILES]: files.map((f) => ({ name: f.name })) } });
   deleteDraft(rootId);
   S.attach.delete(rootId);
@@ -5130,6 +5131,7 @@ async function sendReply(rootId) {
     S.pending.delete(txn);
     setDraft(rootId, text);
     if (files.length) S.attach.set(rootId, files);
+    if (content[REPLY_TO_KEY] === 'all') S.eduTo.set(rootId, 'all'); // the draft comes back with its choice
     alert(T('Odpoveď sa neodoslala. Skús to znova.'));
     render();
   }
@@ -5651,7 +5653,8 @@ function detailView(t) {
         const color = mix(colorOf(r.sender), 0.5);
         return h('div', {
           class: `reply${bot ? ' bot' : ''}${r.pending ? ' pending' : ''}`,
-          style: bot ? {} : { '--who': colorOf(r.sender) },
+          // Inline, as h() sets style properties, not custom properties.
+          style: bot ? {} : { background: `color-mix(in srgb, ${colorOf(r.sender)} 14%, var(--panel))` },
         },
         bot ? null : h('div', { class: 'sq', style: { background: color, color: textOn(color) } }, initials(r.sender)),
         h('div', { class: 'rt' }, bot ? null : [h('b', {}, nameOf(r.sender)), ': '], linkified(bodyOf(r), findIn(r)), eduFiles(r), eduActions(r)),

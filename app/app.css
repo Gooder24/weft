@@ -164,7 +164,7 @@ kbd { margin-left: auto; font-family: inherit; font-size: var(--fs); color: var(
 .text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .replies { display: flex; flex-direction: column; gap: 3px; }
 /* A reply wears its writer's EduPage colour as a faint tint over the panel, so its text keeps the theme's contrast. */
-.reply { display: flex; align-items: stretch; border-radius: var(--radius-s); overflow: hidden; font-size: var(--fs); background: color-mix(in srgb, var(--who, var(--soft)) 14%, var(--panel)); color: var(--text); }
+.reply { display: flex; align-items: stretch; border-radius: var(--radius-s); overflow: hidden; font-size: var(--fs); background: color-mix(in srgb, var(--soft) 14%, var(--panel)); color: var(--text); }
 .reply .sq { flex: none; width: 30px; min-height: 28px; display: flex; align-items: center; justify-content: center; font-size: var(--fs); }
 .reply .rt { flex: 1; min-width: 0; padding: 5px 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .reply .rd { flex: none; display: flex; align-items: center; padding: 0 8px; font-size: var(--fs); color: var(--muted); }

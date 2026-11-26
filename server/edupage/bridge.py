@@ -378,14 +378,19 @@ def reply_recipient(root_item: dict | None, user_id: str, reply_to: str) -> str:
     return ""
 
 
-def own_item(items: list, user_id: str, text: str, root: int | None, known: set[int]) -> int | None:
-    """The newest of Karchi's own items with this text, as a reply in `root` or as a new message when root is None;
-    how a send is found when EduPage's answer does not name it."""
-    norm = lambda t: " ".join(str(t or "").split())
+def same_text(a, b) -> bool:
+    return " ".join(str(a or "").split()) == " ".join(str(b or "").split())
+
+
+def own_item(items: list, user_id: str, text: str, root: int | None, known: set[int], since: str = "") -> int | None:
+    """The newest of Karchi's own items with this text, as a reply in `root` or as a new message when root is None,
+    never seen before (`known`: every id the bridge has read) nor removed nor added before `since` (EduPage's local
+    "YYYY-MM-DD HH:MM:SS"); how a send is found when EduPage's answer does not name it."""
     found = [
         int(i["timelineid"]) for i in items
         if isinstance(i, dict) and str(i.get("timelineid") or "").isdigit() and int(i["timelineid"]) not in known
-        and is_mine(i, user_id) and not i.get("pomocny_zaznam") and norm(i.get("text")) == norm(text)
+        and is_mine(i, user_id) and not i.get("pomocny_zaznam") and str(i.get("removed") or "0") != "1"
+        and same_text(i.get("text"), text) and (not since or str(i.get("cas_pridania") or since) >= since)
         and (int(i.get("reakcia_na") or 0) == root if root is not None else not i.get("reakcia_na"))
     ]
     return max(found) if found else None
@@ -396,6 +401,8 @@ class Rooms:
 
     def __init__(self, db: sqlite3.Connection):
         self.db = db
+        # Sends EduPage took without naming them: (root or None, text, event_id); the poll links the item it finds.
+        self.unnamed: list[tuple[int | None, str, str]] = []
 
     def ghost(self, item: dict) -> str:
         owner = item.get("vlastnik") or ""
@@ -439,6 +446,21 @@ class Rooms:
     def raw_item(self, item_id: int | None) -> dict | None:
         row = self.db.execute("SELECT item FROM raw WHERE id = ?", (item_id,)).fetchone() if item_id is not None else None
         return json.loads(row[0]) if row else None
+
+    def recipient_for(self, root: int, user_id: str, reply_to: str) -> str:
+        """reply_recipient for a thread. One whose first message the bridge never kept raw is answered only when
+        Karchi wrote it (the double puppet's sender), which goes to whom he wrote to; for anyone else's it refuses
+        rather than guess, as a ghost id does not keep EduPage's id whole (Ucitel-1 is @edupage_ucitel1)."""
+        item = self.raw_item(root)
+        if item:
+            return reply_recipient(item, user_id, reply_to)
+        event_id = self.root_event(root)
+        if not event_id:
+            return ""
+        sender = matrix("GET", f"/rooms/{q(self.school_room()[0])}/event/{q(event_id)}").get("sender") or ""
+        if sender == ADMIN:
+            return ""
+        raise RuntimeError(f"thread {root} has no raw first message to tell its recipients")
 
     def reply_audiences(self, user_id: str) -> dict[str, str]:
         """REPLIES_TYPE: each thread's first message event whose replies Weft must ask about or explain."""
@@ -630,6 +652,13 @@ class Rooms:
             if parent:
                 row = self.db.execute("SELECT root FROM items WHERE id = ?", (parent,)).fetchone()
                 root = row[0] if row else parent
+            if is_mine(item, user_id):
+                match = next((u for u in self.unnamed if u[0] == (root if parent else None) and same_text(u[1], item.get("text"))), None)
+                if match:  # written in Weft, already in the room: only its id was missing
+                    self.unnamed.remove(match)
+                    self.mark_sent(item_id, root, match[2])
+                    known.add(item_id)
+                    continue
             sender = ADMIN if is_mine(item, user_id) else self.ghost(item)
             self.join(room_id, sender)
             ts = item_ts(item)
@@ -870,7 +899,7 @@ def upload_attachment(edu: Edupage, name: str, mimetype: str, data: bytes) -> tu
 
 
 def send_message(edu: Edupage, recipient: str, text: str, attachments: dict | None = None,
-                 user_id: str = "", known: set[int] | None = None) -> int | None:
+                 user_id: str = "", known: set[int] | None = None, since: str = "") -> int | None:
     """Starts a new message to one person the way edupage.org's "Nová správa" does; returns its timeline id.
     attachments maps each uploaded file's EduPage path to its name."""
     resp = edu.session.post(
@@ -886,11 +915,11 @@ def send_message(edu: Edupage, recipient: str, text: str, attachments: dict | No
         data = json.loads(RequestData.decode_response(resp.text))
     except ValueError:
         raise SessionExpired() from None
-    return sent_id(edu, data, user_id, text, None, known or set(), "EduPage did not accept the message")
+    return sent_id(edu, data, user_id, text, None, known or set(), since, "EduPage did not accept the message")
 
 
 def send_reply(edu: Edupage, root: int, text: str, attachments: dict | None = None, recipient: str = "",
-               user_id: str = "", known: set[int] | None = None) -> int | None:
+               user_id: str = "", known: set[int] | None = None, since: str = "") -> int | None:
     """Replies in the thread `root` the way edupage.org does, to `recipient` (see reply_recipient); returns the
     new timeline id, None when EduPage took it but its id could not be found."""
     resp = edu.session.post(
@@ -906,30 +935,37 @@ def send_reply(edu: Edupage, root: int, text: str, attachments: dict | None = No
         data = json.loads(RequestData.decode_response(resp.text))
     except ValueError:
         raise SessionExpired() from None
-    return sent_id(edu, data, user_id, text, root, known or set(), "EduPage odpoveď neprijal")
+    return sent_id(edu, data, user_id, text, root, known or set(), since, "EduPage odpoveď neprijal")
 
 
-def sent_id(edu: Edupage, data, user_id: str, text: str, root: int | None, known: set[int], refused: str) -> int | None:
+def sent_id(edu: Edupage, data, user_id: str, text: str, root: int | None, known: set[int], since: str,
+            refused: str) -> int | None:
     """The id of what createItem/createReply just made. EduPage names it in "changes" only sometimes (also
     edupage-api issue 62); a reply often comes back as the thread's replies ("reakcie") instead, and otherwise the
-    message tab is read again. Raises `refused` only when EduPage said no; None when it said ok but hid the id."""
+    message tab is read again. Raises `refused` when EduPage said no or said nothing and nothing new is found;
+    None when it said ok but hid the id."""
     if not isinstance(data, dict):
         raise RuntimeError(refused)
+    status = str(data.get("status") or "").lower()
     for change in data.get("changes") or []:
-        if isinstance(change, dict) and str(change.get("timelineid") or "").isdigit():
+        if (isinstance(change, dict) and str(change.get("timelineid") or "").isdigit()
+                and int(change["timelineid"]) not in known
+                and (not change.get("vlastnik") or is_mine(change, user_id))):
             return int(change["timelineid"])
+    if status and status != "ok":
+        raise RuntimeError(refused)
     inner = data.get("data") if isinstance(data.get("data"), dict) else {}
     replies = [*(data.get("reakcie") or []), *(inner.get("reakcie") or [])]
-    found = own_item([{"reakcia_na": root, **r} for r in replies if isinstance(r, dict)], user_id, text, root, known) \
-        if root is not None else None
+    found = own_item([{"reakcia_na": root, **r} for r in replies if isinstance(r, dict)], user_id, text, root, known,
+                     since) if root is not None else None
     if found is None and user_id:
         try:
-            found = own_item(fetch_tab(edu, date.today() - timedelta(days=1), "messages"), user_id, text, root, known)
+            found = own_item(fetch_tab(edu, date.today() - timedelta(days=1), "messages"), user_id, text, root, known, since)
         except Exception as err:  # it may still have gone; the status below decides what Karchi hears
             log("sent item lookup failed:", type(err).__name__)
     if found is not None:
         return found
-    if str(data.get("status") or "").lower() == "ok":
+    if status == "ok":
         return None
     raise RuntimeError(refused)
 
@@ -1728,22 +1764,24 @@ class Account:
                          for f in files]
 
                 user_id = str(creds.get("user_id") or "")
-                known = {row[0] for row in rooms.db.execute("SELECT id FROM items")}
-                to_whom = reply_recipient(rooms.raw_item(root), user_id, reply_to) if root is not None else ""
+                known = {row[0] for row in rooms.db.execute("SELECT id FROM items UNION SELECT id FROM raw")}
+                since = (datetime.now(LOCAL) - timedelta(minutes=2)).strftime("%Y-%m-%d %H:%M:%S")
+                to_whom = rooms.recipient_for(root, user_id, reply_to) if root is not None else ""
 
                 def send(e: Edupage) -> int | None:
                     # Uploaded with the session that sends, so a renewed session uploads them again.
                     attachments = dict(upload_attachment(e, *blob) for blob in blobs)
                     if root is not None:
-                        return send_reply(e, root, text, attachments, to_whom, user_id, known)
-                    return send_message(e, to, text, attachments, user_id, known)
+                        return send_reply(e, root, text, attachments, to_whom, user_id, known, since)
+                    return send_message(e, to, text, attachments, user_id, known, since)
                 try:
                     item_id = send(edu)
                 except SessionExpired:
                     edu = self.connect({**creds, "session": ""})
                     item_id = send(edu)
                 if item_id is None:
-                    log("sent, but EduPage did not say under which id")
+                    log("sent, but EduPage did not say under which id; the next poll links it")
+                    rooms.unnamed.append((root, text, event_id))
                 else:
                     rooms.mark_sent(item_id, root if root is not None else item_id, event_id)
                 with self.lock:
