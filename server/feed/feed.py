@@ -34,6 +34,10 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'common'))
+import weft_users
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.environ.get('FEED_DATA', os.path.join(HERE, 'data'))
 IG_SESSION = os.path.expanduser(os.environ.get('FEED_IG_SESSION', os.path.join(DATA, 'instagram-session.json')))
@@ -42,21 +46,42 @@ HS = os.environ.get('HS', 'http://127.0.0.1:8008')
 OWNER = os.environ.get('OWNER', '')  # the owner's Matrix ID, from ~/.config/weft/weft.env on asus; the service needs it
 PORT = int(os.environ.get('PORT', '29328'))
 MAX_BYTES = 8 * 1024 * 1024
-COLLECT = threading.Lock()
-LOCK = threading.RLock()
-UNFOLLOW = threading.Lock()
 WINDOW_MINUTES = int(os.environ.get('FEED_WINDOW_MINUTES', '10'))
 WINDOW_COUNT = int(os.environ.get('FEED_WINDOW_COUNT', '3'))
 COUNTS = range(1, 9)  # Karchi chooses 1–8 a day in Weft
 MINUTES = (5, 10, 15, 20, 30)
 WINDOW_TYPE = 'sk.karchi.window'  # account data mirror the message list reads through /sync
-MIRROR = threading.Lock()
 WEB_EVERY = int(os.environ.get('FEED_WEB_EVERY', '600'))
 X_API = os.environ.get('FEED_X_API', 'https://api.fxtwitter.com/2/profile/')
 YT_FEED = 'https://www.youtube.com/feeds/videos.xml?channel_id='
 X_MEDIA = ('pbs.twimg.com', 'video.twimg.com')
 X_PAUSE = 1.5  # seconds between FxTwitter tries
 DEFAULTS = {'sources': [], 'instagram': True, 'daily': True, 'limitOnce': True, 'hiddenStories': {}}
+
+
+# Every person of this server has a feed of their own: the owner's in DATA, anyone else's in DATA/users/<localpart>/,
+# each with its own reading windows, sources, Instagram session and locks. A request sets whose it is (CTX).
+CTX = threading.local()
+USERS = weft_users.Users(lambda: HS, OWNER)
+_LOCKS, _LOCKS_LOCK = {}, threading.Lock()
+
+
+def data_dir():
+    return getattr(CTX, 'folder', DATA)
+
+
+def person():
+    return getattr(CTX, 'user', OWNER)
+
+
+def ig_session():
+    return IG_SESSION if data_dir() == DATA else os.path.join(data_dir(), 'instagram-session.json')
+
+
+def lock(name):
+    """This person's lock: 'main' (their files, re-entrant), 'collect', 'unfollow' or 'mirror'."""
+    with _LOCKS_LOCK:
+        return _LOCKS.setdefault((data_dir(), name), threading.RLock() if name == 'main' else threading.Lock())
 
 
 def now_ms():
@@ -69,21 +94,21 @@ def today(ms=None):
 
 def read(name, default):
     try:
-        with open(os.path.join(DATA, name), encoding='utf8') as f:
+        with open(os.path.join(data_dir(), name), encoding='utf8') as f:
             return json.load(f)
     except FileNotFoundError:
         return copy.deepcopy(default)
 
 
 def write(name, value):
-    os.makedirs(DATA, mode=0o700, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=DATA)
+    os.makedirs(data_dir(), mode=0o700, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=data_dir())
     try:
         with os.fdopen(fd, 'w', encoding='utf8') as f:
             json.dump(value, f, ensure_ascii=False)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, os.path.join(DATA, name))
+        os.replace(tmp, os.path.join(data_dir(), name))
     finally:
         if os.path.exists(tmp): os.unlink(tmp)
 
@@ -295,7 +320,7 @@ class Instagram:
             raise InstagramError('Instagram feed je pozastavený. Prihlásenie správ sa obnovuje samostatne v Nastaveniach → Účty.')
         try:
             if cookies is None:
-                with open(IG_SESSION, encoding='utf8') as f: cookies = json.load(f)['cookies']
+                with open(ig_session(), encoding='utf8') as f: cookies = json.load(f)['cookies']
             self.cookies = cookies
             if not self.cookies.get('sessionid'): raise ValueError('missing session')
         except (OSError, ValueError, KeyError):
@@ -421,7 +446,7 @@ def document():
     items = [] if locked else [i for i in available if not hidden(i)]
     # The authenticated owner retains hidden stories for reversible offline filters.
     hidden_items = [] if locked else [i for i in available if hidden(i)]
-    return {**doc, 'items': items, 'hiddenItems': hidden_items, 'settings': cfg, 'locked': bool(locked), 'busy': COLLECT.locked(), 'today': today(),
+    return {**doc, 'items': items, 'hiddenItems': hidden_items, 'settings': cfg, 'locked': bool(locked), 'busy': lock('collect').locked(), 'today': today(),
             'due': any(due(cfg, read('attempt.json', {})))}
 
 
@@ -451,7 +476,7 @@ def set_policy(body):
     count, minutes = body.get('count'), body.get('minutes')
     if count not in COUNTS or minutes not in MINUTES or isinstance(count, bool) or isinstance(minutes, bool):
         raise ValueError('Neplatný počet alebo dĺžka okna.')
-    with LOCK:
+    with lock('main'):
         now = policy()
         nxt = None if (count, minutes) == (now['count'], now['minutes']) else {'count': count, 'minutes': minutes, 'from': tomorrow()}
         write('policy.json', {'count': now['count'], 'minutes': now['minutes'], 'next': nxt})
@@ -482,7 +507,7 @@ def window_active(w, at=None):
 def open_window():
     """Opens the next of today's windows; while one runs (also past midnight) or when today's are used, returns
     the latest one."""
-    with LOCK:
+    with lock('main'):
         w = reading_window()
         if not can_open(w): return w
         start = now_ms()
@@ -493,7 +518,7 @@ def open_window():
 
 def close_window(start=None):
     """Ends the running window now ("Skončiť okno"); `start` keeps a late offline close from ending a newer one."""
-    with LOCK:
+    with lock('main'):
         w = reading_window()
         if window_active(w) and (start is None or start == w['start']):
             w = {**w, 'end': now_ms()}
@@ -506,13 +531,13 @@ def has_access():
 
 
 def mirror_window(token):
-    """Puts the window into the owner's account data with his own token, so every Weft device learns it through
+    """Puts the window into the person's account data with their own token, so every Weft device learns it through
     /sync. Serialized and read inside the lock, so the last write always carries the newest window."""
-    with MIRROR:
+    with lock('mirror'):
         w = reading_window()
         if not w: return
         try:
-            url = f"{HS}/_matrix/client/v3/user/{urllib.parse.quote(OWNER)}/account_data/{WINDOW_TYPE}"
+            url = f"{HS}/_matrix/client/v3/user/{urllib.parse.quote(person())}/account_data/{WINDOW_TYPE}"
             req = urllib.request.Request(url, data=json.dumps(w).encode(), method='PUT',
                                          headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'})
             urllib.request.urlopen(req, timeout=5).close()
@@ -520,13 +545,13 @@ def mirror_window(token):
 
 
 def public_document():
-    with LOCK:
+    with lock('main'):
         doc = document()
         w = reading_window()
         access = window_active(w)
         return {**doc, 'policy': policy(), 'items': doc['items'] if access else [], 'hiddenItems': doc['hiddenItems'] if access else [],
                 'access': access, 'canOpen': can_open(w), 'locked': not access and not can_open(w), 'window': w, 'now': now_ms(),
-                'instagramPaused': IG_PAUSED, 'instagramConnected': not IG_PAUSED and os.path.isfile(IG_SESSION)}
+                'instagramPaused': IG_PAUSED, 'instagramConnected': not IG_PAUSED and os.path.isfile(ig_session())}
 
 
 def connect_instagram(body):
@@ -537,18 +562,18 @@ def connect_instagram(body):
         raise ValueError('Invalid cookies')
     if not cookies.get('sessionid') or not cookies.get('csrftoken') or not re.fullmatch(r'[0-9]+', cookies.get('ds_user_id', '')):
         raise ValueError('Incomplete cookies')
-    with COLLECT, LOCK:
+    with lock('collect'), lock('main'):
         # A closed checkpoint window may already have cookies; validate before persisting them.
         account = Instagram(cookies).request('accounts/current_user/?edit=true')
         if str((account.get('user') or {}).get('pk') or '') != cookies['ds_user_id']:
             raise InstagramError('Instagram nepotvrdil prihlásenie. Dokonči ho v prihlasovacom okne.')
         # Never touch message-bridge credentials. The desktop hands this service its own login.
-        folder = os.path.dirname(IG_SESSION)
+        folder = os.path.dirname(ig_session())
         os.makedirs(folder, mode=0o700, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=folder)
         try:
             with os.fdopen(fd, 'w') as f: json.dump({'cookies': cookies}, f)
-            os.replace(tmp, IG_SESSION)
+            os.replace(tmp, ig_session())
         finally:
             if os.path.exists(tmp): os.unlink(tmp)
         clear_instagram_content()
@@ -568,7 +593,7 @@ def clear_instagram_content():
     write('feed.json', doc)
     write('unfollowed.json', {})
     # Media belongs to the disconnected account too.
-    folder = os.path.join(DATA, 'media')
+    folder = os.path.join(data_dir(), 'media')
     if os.path.isdir(folder):
         for name in os.listdir(folder):
             path = os.path.join(folder, name)
@@ -577,15 +602,16 @@ def clear_instagram_content():
 
 
 def disconnect_instagram():
-    with COLLECT, LOCK:
-        try: os.unlink(IG_SESSION)
+    with lock('collect'), lock('main'):
+        try: os.unlink(ig_session())
         except FileNotFoundError: pass
         update_settings({'instagram': False})
         clear_instagram_content()
 
 
 def collect():
-    if not COLLECT.acquire(blocking=False): return document()
+    collecting = lock('collect')
+    if not collecting.acquire(blocking=False): return document()
     try:
         started = time.time()
         cfg = settings()
@@ -625,7 +651,7 @@ def collect():
                 errors.append({'source': 'instagram', 'message': str(e) + since})
                 out += kept('instagram'); coverage = {}
         unique = {i['id']: i for i in out}
-        with LOCK:
+        with lock('main'):
             removed = read('unfollowed.json', {})
             latest = read('feed.json', {'users': []})
             for user in users:
@@ -635,11 +661,11 @@ def collect():
             # `at` is the last time anything was actually read, never a failed attempt.
             write('feed.json', {'day': today(), 'at': max(fresh.values(), default=0), 'fresh': fresh, 'items': sorted((i for i in unique.values() if removed.get(i.get('user'), 0) < started), key=lambda i: i.get('at', 0), reverse=True)[:1500], 'users': users, 'errors': errors, 'coverage': coverage})
         return document()
-    finally: COLLECT.release()
+    finally: collecting.release()
 
 
 def update_settings(body):
-    with LOCK:
+    with lock('main'):
         cfg = settings()
         for key in ['instagram', 'daily', 'limitOnce']:
             if key in body:
@@ -681,15 +707,15 @@ def unfollow(body):
     pk = str(body.get('user', ''))
     if not pk.isdecimal() or body.get('confirm') is not True: raise ValueError('Potvrď konkrétny účet.')
     # Serialize only mutations, not feed reads, while Instagram takes its time.
-    with UNFOLLOW:
-        with LOCK:
+    with lock('unfollow'):
+        with lock('main'):
             doc = read('feed.json', {'users': []})
             user = next((u for u in doc['users'] if u['id'] == pk), None)
             if not user: raise ValueError('Účet nie je v načítanom feede.')
             if user.get('following') is False: return document()
             if body.get('username') != user['username']: raise ValueError('Účet sa zmenil. Obnov feed.')
         Instagram().unfollow(pk)
-        with LOCK:
+        with lock('main'):
             doc = read('feed.json', {'users': [], 'items': []})
             removed = read('unfollowed.json', {})
             removed[pk] = time.time()
@@ -723,7 +749,7 @@ def media_file(item_id, index):
     if parsed.scheme != 'https' or not allowed:
         raise ValueError('Neplatná adresa média.')
     digest = hashlib.sha256(url.encode()).hexdigest()
-    folder = os.path.join(DATA, 'media')
+    folder = os.path.join(data_dir(), 'media')
     os.makedirs(folder, mode=0o700, exist_ok=True)
     filename = os.path.join(folder, digest)
     kind = 'video/mp4' if asset['type'] == 'video' else 'image/jpeg'
@@ -744,7 +770,7 @@ def media_file(item_id, index):
         os.replace(tmp, filename)
     finally:
         if os.path.exists(tmp): os.unlink(tmp)
-    with LOCK:
+    with lock('main'):
         types = read('media-types.json', {}); types[digest] = kind
         if len(types) > 150: types = dict(list(types.items())[-100:])
         write('media-types.json', types)
@@ -770,14 +796,13 @@ class Api(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError): pass
 
     def authorized(self):
+        """Any person of this server, each with their own feed; sets whose this request is."""
         token = self.headers.get('Authorization', '').removeprefix('Bearer ').strip()
-        if not token: return False
-        try:
-            req = urllib.request.Request(HS + '/_matrix/client/v3/account/whoami', headers={'Authorization': 'Bearer ' + token})
-            with urllib.request.urlopen(req, timeout=10) as r: ok = json.load(r).get('user_id') == OWNER
-        except Exception: return False
-        if ok: self.token = token
-        return ok
+        user = USERS.who(token)
+        if not user: return False
+        CTX.user, CTX.folder = user, weft_users.home(DATA, user, OWNER)
+        self.token = token
+        return True
 
     def do_GET(self):
         if not self.authorized(): return self.send(401, {'error': 'Prihlás sa do Weftu.'})
@@ -844,6 +869,6 @@ class Api(BaseHTTPRequestHandler):
 if __name__ == '__main__':
     if not OWNER: raise SystemExit('OWNER is not set: add it to ~/.config/weft/weft.env')
     os.makedirs(DATA, mode=0o700, exist_ok=True)
-    with open(os.path.join(DATA, '.instance'), 'w') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    with open(os.path.join(DATA, '.instance'), 'w') as instance:
+        fcntl.flock(instance, fcntl.LOCK_EX | fcntl.LOCK_NB)
         ThreadingHTTPServer(('127.0.0.1', PORT), Api).serve_forever()

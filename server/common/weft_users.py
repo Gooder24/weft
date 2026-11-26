@@ -72,7 +72,8 @@ class Users:
 
     def whoami(self, token, as_user=None):
         query = "?" + urllib.parse.urlencode({"user_id": as_user}) if as_user else ""
-        req = urllib.request.Request(self.hs + "/_matrix/client/v3/account/whoami" + query, headers={"Authorization": f"Bearer {token}"})
+        hs = self.hs() if callable(self.hs) else self.hs  # a callable: the service may move its homeserver (tests)
+        req = urllib.request.Request(hs + "/_matrix/client/v3/account/whoami" + query, headers={"Authorization": f"Bearer {token}"})
         with urllib.request.urlopen(req, timeout=10) as r: return json.load(r)["user_id"]
 
     def who(self, token, as_user=None):

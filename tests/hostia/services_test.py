@@ -4,24 +4,7 @@ import importlib.util, json, os, sys, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from harness import Server, call, ok, done, free_port
-
-ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
-
-
-def load(name, path, env):
-    os.environ.update(env)
-    spec = importlib.util.spec_from_file_location(name, os.path.join(ROOT, path))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-def serve(mod):
-    port = free_port()
-    srv = ThreadingHTTPServer(("127.0.0.1", port), mod.Api)
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
-    return port
-
+from services_test_lib import load, serve
 
 class FakeModel(BaseHTTPRequestHandler):
     asked = 0
