@@ -14310,6 +14310,7 @@ function connectorSettings() {
 }
 function connectorRow(c) {
   const state = S.connectors;
+  if (state === false) return null; // no connectors on this server for this account
   const st = state?.find((x) => x.id === c.id);
   const what = state === undefined ? T('zisťujem…') : !st ? T('služba neodpovedá')
     : st.on ? T`${c.about} Chatov: ${st.chats}, správ: ${st.items}.` : c.phone ? T('Vypnuté: čo telefón pošle, zahodí, chaty ostávajú.') : T('Vypnuté: nové maily nečíta, chaty ostávajú.');
