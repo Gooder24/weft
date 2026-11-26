@@ -1750,13 +1750,14 @@ class Account:
                 items = fetch_timeline(edu, since)
         except NeedsLogin as err:
             with self.lock:
-                if self.creds and self.creds["login_id"] == creds["login_id"]:
+                if self.creds and self.gen == gen:
                     self.edu, self.state, self.message = None, "BAD_CREDENTIALS", str(err)
             return
         except (requests.RequestException, SessionExpired) as err:
             log("edupage unreachable:", type(err).__name__)
             with self.lock:
-                self.state, self.message = "TRANSIENT_DISCONNECT", "EduPage neodpovedá, skúsim to znova o pár minút."
+                if self.creds and self.gen == gen:
+                    self.state, self.message = "TRANSIENT_DISCONNECT", "EduPage neodpovedá, skúsim to znova o pár minút."
             return
         with self.lock:
             if self.creds is None or self.gen != gen:
@@ -1772,6 +1773,9 @@ class Account:
             with self.lock:
                 if self.gen == gen:  # not a login replaced meanwhile
                     self.teachers, self.recipients = teachers, recipients
+        with self.lock:
+            if self.gen != gen:
+                return  # what this poll read belongs to an earlier sign-in; the next poll reads it again
         rooms.keep(items)
         self.nudge_timetable(items, rooms.db)
         rooms.fetch_materials(edu, items)
@@ -1805,7 +1809,7 @@ class Account:
             if changed:
                 log(f"tests calendar: {changed} changes")
         with self.lock:
-            if self.creds and self.creds["login_id"] == creds["login_id"]:
+            if self.creds and self.gen == gen:
                 if backfill:
                     self.creds["backfilled"] = True
                     self.save()
@@ -1985,8 +1989,11 @@ class Account:
                     still_signed_in()  # also a reply or a single person's chat, on every attempt
                     if many and root is None:
                         check_recipients(e)
-                    attachments = dict(upload_attachment(e, *blob) for blob in blobs)
-                    still_signed_in()  # the account may have changed while the files went up
+                    attachments = {}
+                    for blob in blobs:
+                        still_signed_in()  # the account may change while the files go up
+                        attachments.update([upload_attachment(e, *blob)])
+                    still_signed_in()
                     if root is not None:
                         return send_reply(e, root, text, attachments, to_whom, user_id, known, since)
                     return send_message(e, to, text, attachments, user_id, known, since, flags)
