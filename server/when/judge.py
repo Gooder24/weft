@@ -112,12 +112,12 @@ class Judge:
                 row = self.db.execute("select plan from verdicts where key = ?", (key,)).fetchone()
             if row:
                 return {"plan": bool(row[0]), "title": None}
+            # The owner's minute counts only his questions; everyone else shares two thirds of it on top.
             now = time.time()
-            self.asked = [t for t in self.asked if now - t < 60]
-            # A third of the model's minute stays the owner's, however many others ask.
-            if len(self.asked) >= (PER_MINUTE if not person else max(1, PER_MINUTE * 2 // 3)):
+            self.asked = [(t, p) for t, p in self.asked if now - t < 60]
+            if sum(1 for _, p in self.asked if bool(p) == bool(person)) >= (PER_MINUTE if not person else max(1, PER_MINUTE * 2 // 3)):
                 return None
-            self.asked.append(now)
+            self.asked.append((now, person))
             try:
                 out = ask(text, when)
             except Exception:

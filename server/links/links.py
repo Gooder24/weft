@@ -533,6 +533,11 @@ class Reader:
                 self.cache[key] = (self.clock() + ttl, out)
                 if out["image"]:
                     self.images[(person, out["image"])] = self.clock() + TTL_OK
+                    # Expired ones go, and each side keeps at most CACHE_MAX (others' never push out the owner's).
+                    now = self.clock()
+                    for k in [k for k, t in self.images.items() if t <= now]: self.images.pop(k)
+                    side = [k for k in self.images if bool(k[0]) == bool(person)]
+                    for old in side[:max(0, len(side) - CACHE_MAX)]: self.images.pop(old)
                 # The owner's cards and everyone else's are kept apart, so others' links never push his out.
                 same = [k for k in self.cache if bool(k[0]) == bool(person)]
                 for old in same[:max(0, len(same) - CACHE_MAX)]:

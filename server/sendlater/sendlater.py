@@ -289,12 +289,12 @@ class People:
         token = puppet(user)  # before it counts as running: a token that cannot be read is tried again next hello
         with self.lock:
             if user == self.owner or user in self.running: return
-            self.running.add(user)
-            if user not in self.known:
-                self.known.add(user)
+            if user not in self.known:  # kept first: a write that fails leaves nothing half done, the next hello retries
                 fd = os.open(PEOPLE_FILE + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IRUSR | stat.S_IWUSR)
-                with os.fdopen(fd, "w") as f: json.dump(sorted(self.known), f)
+                with os.fdopen(fd, "w") as f: json.dump(sorted(self.known | {user}), f)
                 os.replace(PEOPLE_FILE + ".tmp", PEOPLE_FILE)
+                self.known.add(user)
+            self.running.add(user)
         threading.Thread(target=watch, args=(token, user, lambda: again(user)), daemon=True).start()
 
 

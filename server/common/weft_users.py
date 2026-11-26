@@ -39,11 +39,17 @@ def namespaces(folder):
     """The exclusive user patterns and bot ids of every appservice registration in folder."""
     patterns, bots = [], set()
     for f in sorted(glob.glob(os.path.join(folder, "*.yaml"))):
-        reg = yaml.safe_load(open(f, encoding="utf-8")) or {}
+        # A file that is not a registration (half written, a note) is skipped: the homeserver ignores it too.
+        try: reg = yaml.safe_load(open(f, encoding="utf-8"))
+        except (OSError, yaml.YAMLError): continue
+        if not isinstance(reg, dict): continue
         if reg.get("sender_localpart"): bots.add(str(reg["sender_localpart"]))
+        users = (reg.get("namespaces") or {}).get("users") if isinstance(reg.get("namespaces"), dict) else None
         # A registration without exclusive users (the double puppet's @.*) owns nobody.
-        for ns in ((reg.get("namespaces") or {}).get("users") or []):
-            if ns.get("exclusive") is True and ns.get("regex"): patterns.append(re.compile(str(ns["regex"])))
+        for ns in users if isinstance(users, list) else []:
+            if isinstance(ns, dict) and ns.get("exclusive") is True and ns.get("regex"):
+                try: patterns.append(re.compile(str(ns["regex"])))
+                except re.error: continue
     return patterns, bots
 
 
@@ -86,7 +92,10 @@ class Users:
             if key in self.cache: return self.cache[key][0]
         try: user = self.whoami(token, as_user)
         except Exception: return None
-        if not self.human(user): return None
+        # The owner never depends on the registrations being readable; anyone else is refused if they are not.
+        try: person = user == self.owner or self.human(user)
+        except Exception: person = False
+        if not person: return None
         with self.lock: self.cache[key] = (user, now)
         return user
 

@@ -84,6 +84,9 @@ with Server() as hs:
     ok("when: the owner is answered while a friend's questions are asked", results["owner"] == 200, results)
     ok("when: only one friend question at a time reaches the model", sum(1 for k, v in results.items() if k != "owner" and v == 200) <= 1, results)
     FakeModel.delay = 0
+    when.PER_MINUTE, when.JUDGE.asked = 3, []
+    friend = [judge(hs.anna[1], f"nedeľa {i} o 10:00")[0] for i in range(3)]
+    ok("when: friends' questions never use up the owner's minute", friend == [200, 200, 503] and judge(hs.owner[1], "pondelok o 8:00 test")[0] == 200, friend)
 
     # ---- „píše…“
     typing = load("seen", "server/typing/seen.py", {**common, "TYPING_HS": hs.url, "TYPING_OWNER": hs.owner[0]})
@@ -114,6 +117,9 @@ with open(os.path.join(d, "a.yaml"), "w") as f:
     f.write("id: a\nsender_localpart: abot\nnamespaces:\n  users:\n  - exclusive: true\n    regex: '@ab_.*:x\\.test'\n")
 u = weft_users.Users("http://unused", "@owner:x.test", appservice_dir=d)
 ok("people: exclusive written before regex still owns its puppets", not u.human("@ab_1:x.test") and not u.human("@abot:x.test") and u.human("@ann:x.test"))
+for name, text in (("broken.yaml", "id: [unclosed"), ("list.yaml", "- a\n- b\n"), ("odd.yaml", "namespaces:\n  users: ['@x_.*']\n")):
+    with open(os.path.join(d, name), "w") as f: f.write(text)
+ok("people: a file that is no registration is skipped, the others still count", not u.human("@ab_2:x.test") and u.human("@ann2:x.test"))
 ok("people: any localpart the homeserver registers is a person", u.human("@.alice:x.test") and u.human("@alice+qa:x.test"))
 base = tempfile.mkdtemp()
 folders = {weft_users.home(base, f"@{lp}:x.test", "@owner:x.test") for lp in (".alice", "alice+qa", "..", "alice")}
@@ -132,4 +138,17 @@ try:
 finally:
     socket.getaddrinfo = real
 ok("downloads: a name that turns into asus's own address is refused at the connection", refused is True)
+tried = []
+class FakeSocket:
+    def __init__(self, *a): pass
+    def settimeout(self, t): pass
+    def close(self): pass
+    def connect(self, addr):
+        tried.append(addr[0])
+        if addr[0] == "93.184.215.14": raise OSError("unreachable")
+two = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.215.14", 443)), (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.215.15", 443))]
+real_socket, socket.getaddrinfo, socket.socket = socket.socket, lambda *a, **k: two, FakeSocket
+try: got = public_net.public_socket("two.example", 443, 2)
+finally: socket.getaddrinfo, socket.socket = real, real_socket
+ok("downloads: when one checked address does not answer, the next one is tried", isinstance(got, FakeSocket) and tried == ["93.184.215.14", "93.184.215.15"], tried)
 done()

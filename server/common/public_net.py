@@ -12,15 +12,17 @@ def public_socket(host, port, timeout):
     infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     if not infos or any(not ipaddress.ip_address(i[4][0].split("%")[0]).is_global for i in infos):
         raise ValueError("that address is not on the internet")
-    family, kind, proto, _, addr = infos[0]
-    sock = socket.socket(family, kind, proto)
-    try:
-        if timeout is not socket._GLOBAL_DEFAULT_TIMEOUT: sock.settimeout(timeout)
-        sock.connect(addr)
-    except BaseException:
-        sock.close()
-        raise
-    return sock
+    error = None
+    for family, kind, proto, _, addr in infos:  # every address was checked: the next one when one does not answer
+        sock = socket.socket(family, kind, proto)
+        try:
+            if timeout is not socket._GLOBAL_DEFAULT_TIMEOUT: sock.settimeout(timeout)
+            sock.connect(addr)
+            return sock
+        except OSError as e:
+            sock.close()
+            error = e
+    raise error
 
 
 class _Http(http.client.HTTPConnection):

@@ -1146,6 +1146,7 @@ function applySync(data, first = false) {
   for (const ev of data.account_data?.events || []) {
     if (ev.type === WINDOW) takeWindow(ev.content);
     else if (!(ev.type in accountOut()) && !accountSending.has(ev.type)) S.account[ev.type] = ev.content;
+    if (ev.type === LATER) helloIfWaiting(); // a fresh device learns of waiting messages only here
     if (ev.type === NICKS) namesChanged();
     if (ev.type === CALLS) ringRecheck(); // chosen on another device: what rings now follows it
     if (ev.type === CAL_PREFS) calRemindCheck(); // reminders switched on here or elsewhere ring what is due now
