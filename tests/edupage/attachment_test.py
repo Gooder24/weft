@@ -57,6 +57,12 @@ class Session:
             return Resp(b"", "text/html", 302, "https://127.0.0.1/secret")
         if "moved" in url:
             return Resp(b"", "text/html", 302, "/elearning/abcimg?z%3Aplagat")
+        if "tocloud" in url:
+            return Resp(b"", "text/html", 301, "https://cloud-2.edupage.org/cloud?z%3Aplagat.jpg")
+        if "othercloud" in url:
+            return Resp(b"", "text/html", 301, "https://ina.edupage.org/cloud?z")
+        if "cloud-2.edupage.org" in url:
+            return Resp(JPEG, "image/jpeg")
         if self.login:
             return Resp(b"<html>login</html>", "text/html; charset=utf-8")
         if "big" in url:
@@ -109,13 +115,20 @@ try:
 except b.ApiError as err:
     check("over 25 MB: said, not copied", err.status == 413 and len(uploads) == 2, (err.status, uploads))
 
-for key, name in (("/elearning/away", "von.pdf"), ("/elearning/moved", "presun.jpg")):
+for key, name in (("/elearning/away", "von.pdf"), ("/elearning/moved", "presun.jpg"), ("/elearning/tocloud", "c.jpg"), ("/elearning/othercloud", "d.jpg")):
     db.execute("INSERT INTO raw VALUES (?, 'sprava', 0, ?)", (len(key), json.dumps({**item, "timelineid": len(key), "data": json.dumps({"attachements": {key: name}})})))
 try:
     b.message_attachment(db, BASE + "/elearning/away")
     check("a redirect off the school's site is not followed", False, "no error")
 except b.ApiError as err:
     check("a redirect off the school's site is not followed", err.status == 502 and not any("127.0.0.1" in g for g in b.ACCOUNT.edu.session.gets), err.status)
+cloud = b.message_attachment(db, BASE + "/elearning/tocloud")
+check("a redirect to EduPage's file store is followed", cloud["mimetype"] == "image/jpeg" and "cloud-2.edupage.org" in b.ACCOUNT.edu.session.gets[-1], cloud)
+try:
+    b.message_attachment(db, BASE + "/elearning/othercloud")
+    check("a redirect to another school is not followed", False, "no error")
+except b.ApiError as err:
+    check("a redirect to another school is not followed", err.status == 502, err.status)
 moved = b.message_attachment(db, BASE + "/elearning/moved")
 check("a redirect within the school's site is followed", moved["mimetype"] == "image/jpeg" and b.ACCOUNT.edu.session.gets[-1].endswith("abcimg?z%3Aplagat"), moved)
 
