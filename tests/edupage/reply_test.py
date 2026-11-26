@@ -62,6 +62,7 @@ check("own reply found by its text, helper copy and known ones skipped",
       b.own_item([older, reply, helper], ME, "Ďakujem, rozumiem.", 14, {19}) == 21)
 check("a reply in another thread is not it", b.own_item([reply], ME, "Ďakujem, rozumiem.", 15, set()) is None)
 check("someone else's reply is not it", b.own_item([{**reply, "vlastnik": "Ucitel7"}], ME, "Ďakujem, rozumiem.", 14, set()) is None)
+check("EduPage's &quot; is the same text", b.own_item([{**reply, "text": "Povedal &quot;áno&quot;"}], ME, 'Povedal "áno"', 14, set()) == 21)
 check("a removed own reply is not it", b.own_item([{**reply, "removed": "1"}], ME, "Ďakujem, rozumiem.", 14, set()) is None)
 check("an own reply added before the send is not it",
       b.own_item([{**reply, "cas_pridania": "2026-11-26 13:00:00"}], ME, "Ďakujem, rozumiem.", 14, set(), "2026-11-26 14:03:00") is None
@@ -118,6 +119,11 @@ edu = Edu()
 Session.answer, Session.tab = {"status": "ok", "changes": [{"timelineid": "19"}, {"timelineid": "23", "vlastnik": "Ucitel7"}]}, [reply]
 check("'changes' naming a known or someone else's item is not taken",
       b.send_reply(edu, 14, "Ďakujem, rozumiem.", None, "", ME, {19}) == 21)
+
+edu = Edu()
+Session.answer, Session.tab = {"status": "ok", "changes": [{"timelineid": "81", "reakcia_na": "15"}, {"timelineid": "82", "cas_pridania": "2026-01-01 08:00:00"}]}, []
+check("a change in another thread or older than the send is not taken",
+      b.send_reply(edu, 14, "x", None, "", ME, set(), "2026-11-26 14:00:00") is None)
 
 edu = Edu()
 Session.answer, Session.tab = {"status": "error", "changes": [{"timelineid": "77"}]}, []

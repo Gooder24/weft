@@ -5658,12 +5658,58 @@ function eduActions(ev) {
     h('small', {}, T('Otvorí formulár na EduPage.'))) : null;
 }
 
-/** Files pinned to an EduPage homework: pictures show whole width, a tap opens them in the viewer. */
+// An EduPage message's attachments: the bridge writes them under its text as „Prílohy:“ lines, `- name: address`.
+// Weft shows them like a homework's files; the bridge copies each from EduPage only when it is shown (a picture) or
+// clicked (a file), POST /attachment, and keeps the copy.
+const EDU_ATT_BLOCK = /\n*Prílohy:\n((?:- .+: https:\/\/[a-z0-9-]+\.edupage\.org\/\S+[ \t]*(?:\n|$))+)\s*$/;
+const EDU_PICTURE = /\.(jpe?g|png|gif|webp)$/i;
+const eduAtt = new Map(); // edupage.org address -> its Matrix copy { name, url, mimetype, size, w, h } | 'loading' | 'failed'
+const eduAttWait = new Map(); // edupage.org address -> the bridge's answer on its way
+function eduAttFetch(src) {
+  if (!eduAttWait.has(src)) {
+    eduAtt.set(src, 'loading');
+    eduAttWait.set(src, bridge('POST', '/attachment', { url: src }).then(
+      (f) => { eduAtt.set(src, f); renderSoon(); return f; },
+      () => { eduAtt.set(src, 'failed'); eduAttWait.delete(src); renderSoon(); return null; }));
+  }
+  return eduAttWait.get(src);
+}
+/** The text of an EduPage message without its „Prílohy:“ lines, and its files (a homework's, Karchi's, or those). */
+function eduParts(ev) {
+  const body = bodyOf(ev);
+  const own = ev.content[EDU_FILES];
+  if (Array.isArray(own)) return { text: body, files: own };
+  const m = ev.content.msgtype === 'm.text' && body.match(EDU_ATT_BLOCK);
+  if (!m) return { text: body, files: [] };
+  const files = m[1].trim().split('\n').map((line) => {
+    const at = line.lastIndexOf(': https://');
+    const src = line.slice(at + 2).trim();
+    const name = line.slice(2, at);
+    const got = eduAtt.get(src);
+    return typeof got === 'object' ? { ...got, src } : { name, src, mimetype: EDU_PICTURE.test(name) ? 'image/*' : '', state: got };
+  });
+  return { text: body.slice(0, m.index).trim(), files };
+}
+
+/** Files of an EduPage message or homework: pictures show whole width, a tap opens them in the viewer. */
 function eduFiles(ev) {
-  const files = ev.content[EDU_FILES];
-  if (!Array.isArray(files) || !files.length) return null;
+  const { files } = eduParts(ev);
+  if (!files.length) return null;
   const pictures = eduPictures(ev);
   return h('div', { class: 'edufiles' }, files.map((f, i) => {
+    if (typeof f?.url !== 'string' && f?.src) {
+      if (f.state === 'failed') {
+        return h('a', { class: 'mfile', href: f.src, target: '_blank', rel: 'noopener noreferrer', title: T('Weft ju nevedel načítať, otvorí sa na EduPage.') }, icon('file'), f.name);
+      }
+      if (EDU_PICTURE.test(f.name)) {
+        if (!f.state) eduAttFetch(f.src);
+        return h('span', { class: 'mimg', title: f.name }, h('span', { class: 'mwait' }));
+      }
+      return h('button', {
+        class: 'mfile', disabled: f.state === 'loading',
+        onclick: () => eduAttFetch(f.src).then((got) => (got ? download(got.url, got.name) : alert(T('Prílohu sa nepodarilo načítať. Otvor ju na EduPage.')))),
+      }, icon('file'), f.name);
+    }
     if (typeof f?.url !== 'string') return f?.name ? h('span', { class: 'mfile' }, icon('file'), f.name) : null; // still uploading
     const picture = pictures.find((p) => p.event_id === `${ev.event_id}#${i}`);
     if (!picture) return h('button', { class: 'mfile', onclick: () => download(f.url, f.name) }, icon('file'), f.name || T('Súbor'));
@@ -5712,7 +5758,7 @@ function detailView(t) {
         h('div', {}, h('b', {}, titleOf(t)), h('small', {}, `${dayLabel(root.origin_server_ts)} ${timeLabel(root.origin_server_ts)}`))),
       h('div', { class: 'text' },
         notice ? null : [h('b', {}, nameOf(root.sender)), to ? [' → ', h('b', {}, to)] : null, ': '],
-        signinCard(root) || linkified(bodyOf(root), findIn(root)), eduFiles(root), eduActions(root)),
+        signinCard(root) || linkified(eduParts(root).text, findIn(root)), eduFiles(root), eduActions(root)),
       h('div', { class: 'replies' }, t.replies.map((r) => {
         const bot = r.content[MARK] === 0;
         const color = mix(colorOf(r.sender), 0.5);
@@ -5722,7 +5768,7 @@ function detailView(t) {
           style: bot ? {} : { background: `color-mix(in srgb, ${colorOf(r.sender)} 14%, var(--panel))` },
         },
         bot ? null : h('div', { class: 'sq', style: { background: color, color: textOn(color) } }, initials(r.sender)),
-        h('div', { class: 'rt' }, bot ? null : [h('b', {}, nameOf(r.sender)), ': '], linkified(bodyOf(r), findIn(r)), eduFiles(r), eduActions(r)),
+        h('div', { class: 'rt' }, bot ? null : [h('b', {}, nameOf(r.sender)), ': '], linkified(eduParts(r).text, findIn(r)), eduFiles(r), eduActions(r)),
         h('div', { class: 'rd' }, r.pending ? 'odosielam' : `${shortDate(r.origin_server_ts)} ${timeLabel(r.origin_server_ts)}`));
       })),
       notice ? null : composeView(t.id, root)));
@@ -7254,8 +7300,8 @@ function carouselStrip(r, ev, c) {
 const openViewer = (r, eventId) => openOverlay('image', { room: r.id, event: eventId, zoom: 1, x: 0, y: 0 });
 /** Pictures a teacher pinned to an EduPage homework, as the viewer's picture events `<notice id>#<n>`. */
 function eduPictures(ev) {
-  const files = ev?.content[EDU_FILES];
-  if (!Array.isArray(files)) return [];
+  if (!ev) return [];
+  const { files } = eduParts(ev);
   return files.flatMap((f, i) => (typeof f?.url === 'string' && String(f.mimetype).startsWith('image/') ? [{
     event_id: `${ev.event_id}#${i}`, sender: ev.sender, origin_server_ts: ev.origin_server_ts,
     content: { msgtype: 'm.image', url: f.url, body: f.name, info: { w: f.w, h: f.h, mimetype: f.mimetype } },

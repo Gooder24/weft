@@ -899,6 +899,9 @@ a.rnote.rlink { color: var(--link); text-decoration: none; }
 .edufiles { display: grid; gap: 10px; margin-top: 16px; white-space: normal; }
 .edufiles .mimg { width: 100%; max-width: 800px; }
 .edufiles .mfile { justify-self: start; }
+/* A message's picture while the bridge copies it from EduPage. */
+.edufiles span.mimg { aspect-ratio: 4 / 3; max-width: 320px; cursor: default; }
+.edufiles .mfile:disabled { opacity: .6; cursor: progress; }
 /* EduPage's announcement types, each in its own colour as on edupage.org; plain notices stay green. */
 .icon.k-signin { background: var(--info); }
 .icon.k-znamka { background: var(--warning); }

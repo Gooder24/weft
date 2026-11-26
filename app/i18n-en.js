@@ -164,6 +164,8 @@ export default {
   "Len {}": "Only {}",
   "Všetkým": "Everyone",
   "Odpoveď uvidí len {}.": "Only {} will see the reply.",
+  "Weft ju nevedel načítať, otvorí sa na EduPage.": "Weft could not load it; it opens on EduPage.",
+  "Prílohu sa nepodarilo načítať. Otvor ju na EduPage.": "The attachment could not be loaded. Open it on EduPage.",
   "Odpoveď sa neodoslala: {}": "The reply was not sent: {}",
   "Odoslať": "Send",
   "Odobrať": "Remove",

@@ -26,6 +26,7 @@ import collections
 import hashlib
 import html
 import json
+import mimetypes
 import os
 import queue
 import re
@@ -386,7 +387,9 @@ def reply_recipient(root_item: dict | None, user_id: str, reply_to: str) -> str:
 
 
 def same_text(a, b) -> bool:
-    return " ".join(str(a or "").split()) == " ".join(str(b or "").split())
+    """EduPage keeps a text HTML-escaped (`&quot;`) and its own line breaks; the words decide."""
+    norm = lambda t: " ".join(html.unescape(str(t or "")).split())
+    return norm(a) == norm(b)
 
 
 def own_item(items: list, user_id: str, text: str, root: int | None, known: set[int], since: str = "") -> int | None:
@@ -410,6 +413,10 @@ class Rooms:
         self.db = db
         # Sends EduPage took without naming them; the poll links the item it finds instead of posting it again.
         db.execute("CREATE TABLE IF NOT EXISTS unnamed (event_id TEXT PRIMARY KEY, root INTEGER, text TEXT NOT NULL, since TEXT NOT NULL)")
+        # A send not seen in a day never will be (the poll reads a week); its row must not take a later same text.
+        day = (datetime.now(LOCAL) - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+        db.execute("DELETE FROM unnamed WHERE since < ?", (day,))
+        db.commit()
 
     def ghost(self, item: dict) -> str:
         owner = item.get("vlastnik") or ""
@@ -817,6 +824,8 @@ def upload_file(edu: Edupage, base: str, file: dict) -> dict | None:
     mimetype = {"image/x-png": "image/png", "image/pjpeg": "image/jpeg"}.get(mimetype, mimetype)
     if mimetype == "text/html":
         raise ValueError("login page instead of a file")
+    if mimetype in ("application/octet-stream", "application/force-download", ""):  # elearning links say this for any file
+        mimetype = mimetypes.guess_type(str(file.get("name") or ""))[0] or "application/octet-stream"
     if len(resp.content) > MAX_FILE_BYTES:
         return None
     name = str(file.get("name") or "subor")
@@ -832,6 +841,52 @@ def upload_file(edu: Edupage, base: str, file: dict) -> dict | None:
     if size:
         out.update(w=size[0], h=size[1])
     return out
+
+
+def message_attachment(db: sqlite3.Connection, url: str) -> dict:
+    """One attachment of an EduPage message, copied into the Matrix media store when Weft shows it (a picture when
+    its message is opened, a file when it is clicked), never all at once. Only an address that a kept message names
+    as its attachment is read; the copy is kept, so a second look reads nothing from EduPage."""
+    with ACCOUNT.lock:
+        creds, edu = ACCOUNT.creds, ACCOUNT.edu
+    if not creds:
+        raise ApiError(409, "SK.KARCHI.NO_LOGIN", "EduPage nie je pripojený.")
+    base = f"https://{creds['school']}.edupage.org"
+    db.execute("CREATE TABLE IF NOT EXISTS attachments (url TEXT PRIMARY KEY, file TEXT NOT NULL)")
+    row = db.execute("SELECT file FROM attachments WHERE url = ?", (url,)).fetchone()
+    if row:
+        return json.loads(row[0])
+    name = None
+    for (item,) in db.execute("SELECT item FROM raw WHERE typ = 'sprava'"):
+        attachments = item_data(json.loads(item)).get("attachements")
+        if isinstance(attachments, dict):
+            name = next((str(n) for path, n in attachments.items() if urllib.parse.urljoin(base, path) == url), None)
+            if name:
+                break
+    if not name:
+        raise ApiError(404, "M_NOT_FOUND", "Takú prílohu žiadna správa nemá.")
+
+    def fetch(e: Edupage) -> dict | None:
+        return upload_file(e, base, {"src": url, "name": name})
+    try:
+        if edu is None:
+            edu = ACCOUNT.connect(creds)
+        try:
+            file = fetch(edu)
+        except ValueError:  # the session ended: EduPage answered with its login page
+            edu = ACCOUNT.connect({**creds, "session": ""})
+            file = fetch(edu)
+            with ACCOUNT.lock:
+                if ACCOUNT.creds and ACCOUNT.creds.get("login_id") == creds.get("login_id"):
+                    ACCOUNT.keep_session(edu)
+    except (requests.RequestException, ValueError, NeedsLogin, urllib.error.URLError) as err:
+        log("attachment failed:", type(err).__name__)
+        raise ApiError(502, "SK.KARCHI.EDUPAGE", "EduPage prílohu teraz nedal.") from None
+    if file is None:
+        raise ApiError(413, "M_TOO_LARGE", "Príloha je väčšia ako 25 MB, otvor ju na EduPage.")
+    db.execute("INSERT OR REPLACE INTO attachments VALUES (?, ?)", (url, json.dumps(file, ensure_ascii=False)))
+    db.commit()
+    return file
 
 
 def image_size(data: bytes) -> tuple[int, int] | None:
@@ -1046,7 +1101,9 @@ def sent_id(edu: Edupage, data, user_id: str, text: str, root: int | None, known
         if (isinstance(change, dict) and str(change.get("timelineid") or "").isdigit()
                 and int(change["timelineid"]) not in known
                 and (not change.get("vlastnik") or is_mine(change, user_id))
-                and ("text" not in change or same_text(change.get("text"), text))):
+                and ("text" not in change or same_text(change.get("text"), text))
+                and ("reakcia_na" not in change or int(change.get("reakcia_na") or 0) == (root or 0))
+                and (not since or "cas_pridania" not in change or str(change["cas_pridania"]) >= since)):
             return int(change["timelineid"])
     inner = data.get("data") if isinstance(data.get("data"), dict) else {}
     replies = [*(data.get("reakcie") or []), *(inner.get("reakcie") or [])]
@@ -2135,6 +2192,12 @@ def route(method: str, parts: list[str], body: dict) -> dict:
             }
         case "GET", ["login", "flows"]:
             return {"flows": [FLOW]}
+        case "POST", ["attachment"]:
+            url = body.get("url")
+            if not isinstance(url, str) or not url.startswith("https://"):
+                raise ApiError(400, "M_INVALID_PARAM", "")
+            with closing(sqlite3.connect(STATE_DIR / "edupage.db", timeout=30)) as db:
+                return message_attachment(db, url)
         case "GET", ["contacts"]:
             with ACCOUNT.lock:
                 return {"contacts": list(ACCOUNT.teachers), **ACCOUNT.recipients}
