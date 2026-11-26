@@ -15097,7 +15097,7 @@ function microsoftFeatures(app) {
   return [
     h('h4', {}, T('Čo smie Weft')),
     r.failed ? h('p', { class: 'hint' }, T('Most Microsoftu neodpovedá, výber sa možno neuložil.'), ' ',
-      h('button', { class: 'linkbtn', type: 'button', onclick: () => { for (const a of LINKS) if (a.flow === 'microsoft') delete all[a.id]; render(); } }, T('Skontrolovať znova'))) : null,
+      h('button', { class: 'linkbtn', type: 'button', onclick: () => { delete all[app.id]; render(); } }, T('Skontrolovať znova'))) : null,
     h('p', { class: 'hint' }, T('Platí pre Outlook aj Teams. Prihlásenie a odkaz pre správcu pýtajú len zaškrtnuté; vypnuté Weft nepoužije.')),
     h('label', { class: 'bcheck' }, h('input', { type: 'checkbox', checked: true, disabled: true }), T('pošta, chaty a súbory (vždy)')),
     (r.choices || []).map((c) => h('label', { class: 'bcheck', 'data-key': `feat:${c.id}` },
