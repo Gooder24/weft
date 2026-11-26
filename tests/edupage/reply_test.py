@@ -197,6 +197,9 @@ posted = []
 b.matrix = lambda method, path, body=None, **k: posted.append(path) or {"event_id": f"$posted{len(posted)}"}
 check("an older reply of the same text is posted, not taken for it",
       Rooms(db).sync([older], "skola", ME) == 1 and db.execute("SELECT 1 FROM unnamed").fetchall() == [(1,)])
+db.execute("INSERT INTO unnamed VALUES ('$stale', 14, 'Staré', '2020-01-01 00:00:00')")
+check("a day-old unmatched send never takes a new item",
+      Rooms(db).sync([{"timelineid": "61", "typ": "sprava", "reakcia_na": "14", "vlastnik": ME, "text": "Staré", "cas_pridania": now}], "skola", ME) == 1)
 check("the poll (also after a restart) links it instead of posting it again",
       Rooms(db).sync([{"timelineid": "60", "typ": "sprava", "reakcia_na": "14", "vlastnik": ME, "text": "Ešte  niečo", "cas_pridania": now}], "skola", ME) == 0
       and db.execute("SELECT root, event_id FROM items WHERE id = 60").fetchone() == (14, "$r3")

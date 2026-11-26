@@ -667,7 +667,9 @@ class Rooms:
                 row = self.db.execute("SELECT root FROM items WHERE id = ?", (parent,)).fetchone()
                 root = row[0] if row else parent
             if is_mine(item, user_id):
-                match = next((ev for ev, r, text, since in self.db.execute("SELECT event_id, root, text, since FROM unnamed")
+                day = (datetime.now(LOCAL) - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+                match = next((ev for ev, r, text, since in self.db.execute(
+                                  "SELECT event_id, root, text, since FROM unnamed WHERE since >= ?", (day,))
                               if r == (root if parent else None) and same_text(text, item.get("text"))
                               and str(item.get("cas_pridania") or "") >= since), None)
                 if match:  # written in Weft, already in the room: only its id was missing
@@ -818,7 +820,16 @@ def upload_file(edu: Edupage, base: str, file: dict) -> dict | None:
     url = urllib.parse.urljoin(base + "/", str(file["src"]))
     if urllib.parse.urlsplit(url).netloc != urllib.parse.urlsplit(base).netloc:
         return None
-    resp = edu.session.get(url, timeout=60)
+    # Redirects are followed by hand and only on the school's own site: a file never comes from elsewhere.
+    for _ in range(4):
+        resp = edu.session.get(url, timeout=60, allow_redirects=False)
+        if resp.status_code not in (301, 302, 303, 307, 308):
+            break
+        url = urllib.parse.urljoin(url, resp.headers.get("Location") or "")
+        if urllib.parse.urlsplit(url).netloc != urllib.parse.urlsplit(base).netloc:
+            raise requests.RequestException("a redirect off the school's site")
+    else:
+        raise requests.RequestException("too many redirects")
     resp.raise_for_status()
     mimetype = resp.headers.get("Content-Type", "application/octet-stream").split(";")[0].strip()
     mimetype = {"image/x-png": "image/png", "image/pjpeg": "image/jpeg"}.get(mimetype, mimetype)
@@ -1106,7 +1117,7 @@ def sent_id(edu: Edupage, data, user_id: str, text: str, root: int | None, known
                 and int(change["timelineid"]) not in known
                 and (not change.get("vlastnik") or is_mine(change, user_id))
                 and ("text" not in change or same_text(change.get("text"), text))
-                and ("reakcia_na" not in change or int(change.get("reakcia_na") or 0) == (root or 0))
+                and ("reakcia_na" not in change or str(change.get("reakcia_na") or 0) == str(root or 0))
                 and (not since or "cas_pridania" not in change or str(change["cas_pridania"]) >= since)):
             return int(change["timelineid"])
     inner = data.get("data") if isinstance(data.get("data"), dict) else {}

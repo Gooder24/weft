@@ -41,15 +41,22 @@ JPEG = b"\xff\xd8\xff\xc0\x00\x11\x08\x00\x20\x00\x40" + b"\x00" * 64
 
 
 class Resp:
-    def __init__(self, content, ctype): self.content, self.headers = content, {"Content-Type": ctype}
+    def __init__(self, content, ctype, status=200, location=""):
+        self.content, self.status_code = content, status
+        self.headers = {"Content-Type": ctype, **({"Location": location} if location else {})}
     def raise_for_status(self): pass
 
 
 class Session:
     def __init__(self, login=False): self.gets, self.login, self.cookies = [], login, {}
 
-    def get(self, url, timeout=None):
+    def get(self, url, timeout=None, allow_redirects=True):
+        assert allow_redirects is False
         self.gets.append(url)
+        if "away" in url:
+            return Resp(b"", "text/html", 302, "https://127.0.0.1/secret")
+        if "moved" in url:
+            return Resp(b"", "text/html", 302, "/elearning/abcimg?z%3Aplagat")
         if self.login:
             return Resp(b"<html>login</html>", "text/html; charset=utf-8")
         if "big" in url:
@@ -101,6 +108,16 @@ try:
     check("over 25 MB: said, not copied", False, "no error")
 except b.ApiError as err:
     check("over 25 MB: said, not copied", err.status == 413 and len(uploads) == 2, (err.status, uploads))
+
+for key, name in (("/elearning/away", "von.pdf"), ("/elearning/moved", "presun.jpg")):
+    db.execute("INSERT INTO raw VALUES (?, 'sprava', 0, ?)", (len(key), json.dumps({**item, "timelineid": len(key), "data": json.dumps({"attachements": {key: name}})})))
+try:
+    b.message_attachment(db, BASE + "/elearning/away")
+    check("a redirect off the school's site is not followed", False, "no error")
+except b.ApiError as err:
+    check("a redirect off the school's site is not followed", err.status == 502 and not any("127.0.0.1" in g for g in b.ACCOUNT.edu.session.gets), err.status)
+moved = b.message_attachment(db, BASE + "/elearning/moved")
+check("a redirect within the school's site is followed", moved["mimetype"] == "image/jpeg" and b.ACCOUNT.edu.session.gets[-1].endswith("abcimg?z%3Aplagat"), moved)
 
 # The session ended: EduPage answers with its login page; the bridge signs in again once and keeps that session.
 signed = []
