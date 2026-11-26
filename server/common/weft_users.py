@@ -41,7 +41,7 @@ def namespaces(folder):
     for f in sorted(glob.glob(os.path.join(folder, "*.yaml"))):
         # A file that is not a registration (half written, a note) is skipped: the homeserver ignores it too.
         try: reg = yaml.safe_load(open(f, encoding="utf-8"))
-        except (OSError, yaml.YAMLError): continue
+        except (OSError, ValueError, yaml.YAMLError): continue  # ValueError: not UTF-8
         if not isinstance(reg, dict): continue
         if reg.get("sender_localpart"): bots.add(str(reg["sender_localpart"]))
         users = (reg.get("namespaces") or {}).get("users") if isinstance(reg.get("namespaces"), dict) else None

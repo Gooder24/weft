@@ -532,6 +532,7 @@ class Reader:
                 ttl = TTL_OK if out["status"] in ("ok", "partial", "not_found", "private", "unsupported", "blocked") else TTL_FAIL
                 self.cache[key] = (self.clock() + ttl, out)
                 if out["image"]:
+                    self.images.pop((person, out["image"]), None)  # renewed goes to the end: the newest are kept
                     self.images[(person, out["image"])] = self.clock() + TTL_OK
                     # Expired ones go, and each side keeps at most CACHE_MAX (others' never push out the owner's).
                     now = self.clock()

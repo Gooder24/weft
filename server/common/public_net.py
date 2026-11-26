@@ -14,13 +14,14 @@ def public_socket(host, port, timeout):
         raise ValueError("that address is not on the internet")
     error = None
     for family, kind, proto, _, addr in infos:  # every address was checked: the next one when one does not answer
-        sock = socket.socket(family, kind, proto)
+        sock = None
         try:
+            sock = socket.socket(family, kind, proto)  # may fail too (no IPv6 here): then the next address
             if timeout is not socket._GLOBAL_DEFAULT_TIMEOUT: sock.settimeout(timeout)
             sock.connect(addr)
             return sock
         except OSError as e:
-            sock.close()
+            if sock: sock.close()
             error = e
     raise error
 

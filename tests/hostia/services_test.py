@@ -52,6 +52,15 @@ with Server() as hs:
     r = urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{port}/_links/resolve?url=https://example.org/x", headers={"Authorization": f"Bearer {hs.anna[1]}"}))
     ok("links: answers vary by account, so a shared browser never shows one account another's", r.headers.get("Vary") == "Authorization")
 
+    imgs = {"a": "https://i.org/x.png", "b": "https://i.org/y.png", "c": "https://i.org/x.png", "d": "https://i.org/z.png"}
+    def pic(url, cap=None, accept=None, connect=None):
+        return url, 200, "text/html", f'<meta property="og:title" content="t"><meta property="og:image" content="{imgs[url.rstrip("/").rsplit("/", 1)[-1]]}">'.encode()
+    keep, links.CACHE_MAX = links.CACHE_MAX, 2
+    r = links.Reader(fetcher=pic)
+    for k in "abcd": r.get(f"https://p.org/{k}")
+    links.CACHE_MAX = keep
+    ok("links: an image a new card names again stays allowed", r.image_ok("https://i.org/x.png") and not r.image_ok("https://i.org/y.png"))
+
     # ---- the plan judge
     mport = free_port()
     threading.Thread(target=ThreadingHTTPServer(("127.0.0.1", mport), FakeModel).serve_forever, daemon=True).start()
@@ -119,6 +128,7 @@ u = weft_users.Users("http://unused", "@owner:x.test", appservice_dir=d)
 ok("people: exclusive written before regex still owns its puppets", not u.human("@ab_1:x.test") and not u.human("@abot:x.test") and u.human("@ann:x.test"))
 for name, text in (("broken.yaml", "id: [unclosed"), ("list.yaml", "- a\n- b\n"), ("odd.yaml", "namespaces:\n  users: ['@x_.*']\n")):
     with open(os.path.join(d, name), "w") as f: f.write(text)
+with open(os.path.join(d, "latin.yaml"), "wb") as f: f.write(b"id: \xff\xfe\n")
 ok("people: a file that is no registration is skipped, the others still count", not u.human("@ab_2:x.test") and u.human("@ann2:x.test"))
 ok("people: any localpart the homeserver registers is a person", u.human("@.alice:x.test") and u.human("@alice+qa:x.test"))
 base = tempfile.mkdtemp()
@@ -140,13 +150,14 @@ finally:
 ok("downloads: a name that turns into asus's own address is refused at the connection", refused is True)
 tried = []
 class FakeSocket:
-    def __init__(self, *a): pass
+    def __init__(self, family=None, *a):
+        if family == socket.AF_INET6: raise OSError(97, "Address family not supported")
     def settimeout(self, t): pass
     def close(self): pass
     def connect(self, addr):
         tried.append(addr[0])
         if addr[0] == "93.184.215.14": raise OSError("unreachable")
-two = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.215.14", 443)), (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.215.15", 443))]
+two = [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2606:2800:21f:cb07:6820:80da:af6b:8b2c", 443, 0, 0)), (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.215.14", 443)), (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.215.15", 443))]
 real_socket, socket.getaddrinfo, socket.socket = socket.socket, lambda *a, **k: two, FakeSocket
 try: got = public_net.public_socket("two.example", 443, 2)
 finally: socket.getaddrinfo, socket.socket = real, real_socket

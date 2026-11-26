@@ -1146,7 +1146,6 @@ function applySync(data, first = false) {
   for (const ev of data.account_data?.events || []) {
     if (ev.type === WINDOW) takeWindow(ev.content);
     else if (!(ev.type in accountOut()) && !accountSending.has(ev.type)) S.account[ev.type] = ev.content;
-    if (ev.type === LATER) helloIfWaiting(); // a fresh device learns of waiting messages only here
     if (ev.type === NICKS) namesChanged();
     if (ev.type === CALLS) ringRecheck(); // chosen on another device: what rings now follows it
     if (ev.type === CAL_PREFS) calRemindCheck(); // reminders switched on here or elsewhere ring what is due now
@@ -1203,6 +1202,7 @@ function applySync(data, first = false) {
   }
   prefetchSoon();
   checkStash();
+  helloIfWaiting();
   autoMergeSoon();
   keepSoon();
   refresh();
@@ -3275,14 +3275,18 @@ const laterItems = () => S.account[LATER]?.items || [];
 let laterChain = Promise.resolve();
 // The service learns once per session that this account schedules messages: it then sends them as this account
 // (every person of the server, not only the owner). Failing is harmless: the next change says it again.
-let laterHello = null;
-// Also at start while something of this account still waits: an earlier hello may not have reached the service.
-const helloIfWaiting = () => { if (laterItems().some((it) => !it.sent && !it.failed)) sayLaterHello(); };
+let laterHello = null, laterHelloFailed = 0;
+// Also after each sync while something of this account still waits (a fresh device learns of it only there), and
+// again a minute after a hello that did not get through.
+const helloIfWaiting = () => {
+  if (laterHello !== S.userId && Date.now() - laterHelloFailed > 60000 && laterItems().some((it) => !it.sent && !it.failed)) sayLaterHello();
+};
 function sayLaterHello() {
   if (laterHello === S.userId) return;
   laterHello = S.userId;
+  const failed = () => { laterHello = null; laterHelloFailed = Date.now(); };
   fetch('/_sendlater/hello', { method: 'POST', headers: { Authorization: `Bearer ${S.token}` } })
-    .then((res) => { if (!res.ok) laterHello = null; }, () => { laterHello = null; });
+    .then((res) => { if (!res.ok) failed(); }, failed);
 }
 /** Changes the list as it stands on the server now: the service marks what it sent in the same list. `change` may
  *  be async (it may read other account data just before the write). */
