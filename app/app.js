@@ -3274,15 +3274,15 @@ function mentionText(parts, find) {
 const laterItems = () => S.account[LATER]?.items || [];
 let laterChain = Promise.resolve();
 // The service learns once per session that this account schedules messages: it then sends them as this account
-// (every person of the server, not only the owner). Failing is harmless: the next change says it again.
-let laterHello = null, laterHelloFailed = 0;
-// Also after each sync while something of this account still waits (a fresh device learns of it only there), and
-// again a minute after a hello that did not get through.
+// (every person of the server, not only the owner). A hello that did not get through is said again at most once a
+// minute, by the next change or the next sync while something still waits.
+let laterHello = null, laterHelloFailed = -Infinity;
+// After each sync while something of this account still waits (a fresh device learns of it only there).
 const helloIfWaiting = () => {
-  if (laterHello !== S.userId && Date.now() - laterHelloFailed > 60000 && laterItems().some((it) => !it.sent && !it.failed)) sayLaterHello();
+  if (laterItems().some((it) => !it.sent && !it.failed)) sayLaterHello();
 };
 function sayLaterHello() {
-  if (laterHello === S.userId) return;
+  if (laterHello === S.userId || Date.now() - laterHelloFailed <= 60000) return;
   laterHello = S.userId;
   const failed = () => { laterHello = null; laterHelloFailed = Date.now(); };
   fetch('/_sendlater/hello', { method: 'POST', headers: { Authorization: `Bearer ${S.token}` } })
