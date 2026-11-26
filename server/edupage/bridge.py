@@ -1731,6 +1731,12 @@ class Account:
         creds["session"] = session_id(edu)
         return edu
 
+    def current(self, gen: int) -> bool:
+        """Whether the sign-in that began some work (its `gen`) is still the one in place: work of an earlier one
+        writes nothing more."""
+        with self.lock:
+            return bool(self.creds) and self.gen == gen
+
     def poll(self, rooms: Rooms) -> None:
         with self.lock:
             creds = dict(self.creds) if self.creds else None  # connect() writes the new session into this copy
@@ -1745,6 +1751,8 @@ class Account:
             try:
                 items = fetch_timeline(edu, since)
             except SessionExpired:
+                if not self.current(gen):
+                    return  # never sign in again for an account that is gone or was replaced
                 creds = {**creds, "session": ""}
                 edu = self.connect(creds)
                 items = fetch_timeline(edu, since)
@@ -1779,6 +1787,8 @@ class Account:
         rooms.keep(items)
         self.nudge_timetable(items, rooms.db)
         rooms.fetch_materials(edu, items)
+        if not self.current(gen):
+            return
         try:
             posted = rooms.sync(items, creds["school"], creds["user_id"], settle_before)
             prefs = read_prefs()
@@ -1799,7 +1809,11 @@ class Account:
             self.grades_at = 0.0  # a new grade: Ctrl+G shows it now, not up to GRADES_EVERY later
             log("new grade: reading the grade book now")
         self.grade_marks = marks
+        if not self.current(gen):
+            return
         self.sync_grades(edu, [row[0] for row in rooms.db.execute("SELECT mxid FROM ghosts")], rooms.db)
+        if not self.current(gen):
+            return
         try:
             people = {**school_people(edu), "groups": (self.facts or {}).get("groups") or []}
             changed = sync_tests(rooms.db, people, mine=mine_subjects(self.facts, read_account(RULES_TYPE)))
@@ -2000,6 +2014,7 @@ class Account:
                 try:
                     item_id = send(edu)
                 except SessionExpired:
+                    still_signed_in()  # never sign in again for an account that is gone or was replaced
                     edu = self.connect({**creds, "session": ""})
                     item_id = send(edu)
                 if item_id is None:
