@@ -9987,7 +9987,7 @@ function remoteAsk(app, text) {
   }
   if (app === 'whatsapp') {
     const n = t.replace(/^(?:https?:\/\/)?(?:api\.)?wa\.me\//i, '+').replace(/[\s\-().\/]/g, '');
-    const m = n.match(/^(?:\+|00)(\d{8,15})$/);
+    const m = n.match(/^(?:\+|00)([1-9]\d{7,14})$/); // no country code starts with 0
     if (m) return { kind: 'id', value: m[1] };
     // A number written as at home (0900 123 456) is a Slovak one.
     const home = n.match(/^0([1-9]\d{7,9})$/);
@@ -10013,10 +10013,12 @@ function remoteTargets() {
 }
 const targetKey = (t) => `${t.app.id}|${t.login?.id || ''}`;
 
+/** `app`: the network Karchi chose; it stays chosen when it is disconnected (the mode then says so), only the last
+ *  used one gives way to a network that works. */
 function openRemote(o, app) {
   const all = remoteTargets();
   const want = app || remoteLast;
-  const t = all.find((x) => x.app.id === want && !x.down) || all.find((x) => !x.down) || all[0];
+  const t = all.find((x) => x.app.id === want && !x.down) || (app && all.find((x) => x.app.id === app)) || all.find((x) => !x.down) || all[0];
   o.remote = { target: targetKey(t), seq: 0, state: 'idle', results: [], asked: '' };
   o.index = 0;
   render();
@@ -10399,7 +10401,7 @@ const ONLY_ASK = { edupage: () => T('Ktorému učiteľovi na EduPage?'), discord
 function startNets(o, query, mailTo) {
   const hidden = hiddenApps();
   const accounts = mailAccounts();
-  const linked = (id) => id === 'edupage' ? S.eduPeople.size > 0 || threads().length > 0 : !!S.links[id]?.length;
+  const linked = (id) => id === 'edupage' ? S.logins.length > 0 : !!S.links[id]?.length;
   return START_NETS.filter((n) => !hidden.has(n.id) && linked(n.id)
     && (n.mail ? accounts.some((l) => l.app.id === n.id) && (!query || mailTo || nameScore(n.words, query) >= 0) : !query || nameScore(n.words, query) >= 0))
     .map((n) => {
