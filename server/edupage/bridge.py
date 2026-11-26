@@ -119,7 +119,7 @@ SIGNIN_KEY = "sk.karchi.edupage.signin"
 # Each homework's material is read once; a handful per poll keeps a fresh login's backfill gentle.
 MATERIALS_PER_POLL = 5
 MAX_FILE_BYTES = 25 * 1024 * 1024
-EDUPAGE_FILES = re.compile(r"cloud(-\d+)?\.edupage\.org")
+EDUPAGE_FILES = re.compile(r"cloud(-[a-z0-9]+)?\.edupage\.org")
 WEEKDAYS = ["pondelok", "utorok", "streda", "štvrtok", "piatok", "sobota", "nedeľa"]
 # Content key on everything the bridge posts, so its own events are never sent back to EduPage.
 MARK = "sk.karchi.edupage"
@@ -821,7 +821,7 @@ def upload_file(edu: Edupage, base: str, file: dict) -> dict | None:
     url = urllib.parse.urljoin(base + "/", str(file["src"]))
     if urllib.parse.urlsplit(url).netloc != urllib.parse.urlsplit(base).netloc:
         return None
-    # Redirects are followed by hand, only to the school's site or EduPage's file store (cloud-N.edupage.org, where
+    # Redirects are followed by hand, only to the school's site or EduPage's file store (cloud-2 or cloud-b.edupage.org, where
     # an elearning address sends its file): a file never comes from elsewhere.
     school_host = urllib.parse.urlsplit(base).netloc
     for _ in range(4):
