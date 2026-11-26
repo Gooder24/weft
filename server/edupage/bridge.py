@@ -81,6 +81,11 @@ ACTIONS_KEY = "sk.karchi.edupage.actions"
 TO_KEY = "sk.karchi.edupage.to"
 # Content key on a new message the admin starts in Matrix: the ghost mxid of the one person it goes to.
 RECIPIENT_KEY = "sk.karchi.edupage.recipient"
+# Content keys on a new message from Weft's "Komu" list: EduPage's own ids of everyone it goes to (each one of
+# GET /contacts "recipients", or its "parents" id), and for a teacher {"important": bool, "replies": "all" |
+# "author" | "none"} as edupage.org's form sets them.
+RECIPIENTS_KEY = "sk.karchi.edupage.recipients"
+OPTIONS_KEY = "sk.karchi.edupage.options"
 # Content key on a reply the admin writes: "all" sends it to everyone the thread went to, anything else only to its
 # author. Weft asks only in threads REPLIES_TYPE marks "all"; elsewhere EduPage has one answer anyway.
 REPLY_TO_KEY = "sk.karchi.edupage.reply_to"
@@ -860,6 +865,84 @@ def teacher_contacts(edu: Edupage) -> list[dict]:
     return sorted(out, key=lambda c: c["name"])
 
 
+def ghost_of(user: str) -> str:
+    """The ghost a person's own messages come from (Rooms.ghost names it the same way)."""
+    return f"@edupage_{re.sub(r'[^a-z0-9]', '', user.lower())}:{SERVER_NAME}"
+
+
+def school_recipients(edu: Edupage) -> dict:
+    """Whom Karchi can start an EduPage message to, by his role, from the school's own data:
+    {"role": "student" | "teacher" | "parent", "recipients": [...]}.
+
+    A recipient is {"id", "name", "kind"} with "parents": the id that also reaches their parents (StudentOnly12 is
+    the pupil alone, Student12 with parents; StudTrieda/Trieda a class, StudPlan/Plan a subject group). A pupil gets
+    his class, his subject groups, his classmates and the teachers (a pupil at his school has written to each kind
+    there); a teacher every class, their groups, every pupil, every parent, the teachers, all teachers and all
+    pupils; a parent the teachers. What the school does not allow EduPage refuses, and Weft says it did not go."""
+    dbi = edu.data.get("dbi") or {}
+    table = lambda name: {str(k): v for k, v in (dbi.get(name) or {}).items() if isinstance(v, dict)} \
+        if isinstance(dbi.get(name), dict) else {}
+    teachers, students, classes, parents = table("teachers"), table("students"), table("classes"), table("parents")
+    subjects, plans = table("subjects"), table("plans")
+    today = date.today().isoformat()
+    current = lambda p: not p.get("isOut") and not (p.get("dateto") and str(p["dateto"]) < today)
+    name = lambda p: " ".join(str(p.get(k) or "").strip() for k in ("firstname", "lastname")).strip()
+    match = re.match(r"([A-Za-z]+?)(?:Only)?(-?\d+)$", edu.get_user_id() or "")
+    role = {"Ucitel": "teacher", "Rodic": "parent"}.get(match.group(1) if match else "", "student")
+    me = match.group(2) if match else ""
+    short = lambda cid: str((classes.get(str(cid)) or {}).get("short") or (classes.get(str(cid)) or {}).get("name") or "")
+    out: list[dict] = []
+
+    def add(**r):
+        if r.get("name"):
+            out.append({k: v for k, v in r.items() if v not in (None, "", [])})
+
+    for tid, t in teachers.items():
+        if current(t) and not (role == "teacher" and tid == me):
+            led = [short(cid) for cid, c in classes.items() if tid in (str(c.get("teacherid")), str(c.get("teacher2id")))]
+            add(id=f"Ucitel{tid}", name=name(t), kind="teacher", ghost=ghost_of(f"Ucitel{tid}"),
+                classTeacherOf=[c for c in led if c], gender=t.get("gender"))
+    if role == "parent":
+        return {"role": role, "recipients": sorted(out, key=lambda r: r["name"])}
+    mine = str((students.get(me) or {}).get("classid") or "") if role == "student" else ""
+    for cid, c in classes.items():
+        if role == "teacher" or cid == mine:
+            add(id=f"StudTrieda{cid}", parents=f"Trieda{cid}", name=short(cid), kind="class",
+                count=sum(1 for st in students.values() if current(st) and str(st.get("classid")) == cid),
+                own=role == "teacher" and me in (str(c.get("teacherid")), str(c.get("teacher2id"))))
+    for pid, plan in plans.items():  # named as EduPage names them: "III. A · Slovenský jazyk a literatúra - Literatúra"
+        subject = str(plan.get("predmetMeno") or plan.get("nazov") or (subjects.get(str(plan.get("predmetid"))) or {}).get("name") or "").strip()
+        part = str(plan.get("zlozka") or "").strip()
+        cls = str(plan.get("triedaMeno") or short(plan.get("triedaid"))).strip()
+        title = " · ".join(x for x in (cls, f"{subject} - {part}" if subject and part else subject) if x)
+        teacher = str(plan.get("menaUcitelov") or name(teachers.get(str(plan.get("ucitelid"))) or {})).strip()
+        add(id=f"StudPlan{pid}", parents=f"Plan{pid}", name=title if subject else "", kind="group",
+            count=len(plan["students"]) if isinstance(plan.get("students"), list) else None,
+            teacher=teacher if role == "student" else None)
+    for sid, st in students.items():
+        if current(st) and sid != me and (role == "teacher" or (mine and str(st.get("classid")) == mine)):
+            add(id=f"StudentOnly{sid}", parents=f"Student{sid}", name=name(st), kind="student",
+                ghost=ghost_of(f"StudentOnly{sid}"), classid=str(st.get("classid") or ""), cls=short(st.get("classid")))
+    if role == "teacher":
+        for rid, parent in parents.items():
+            kids = [students[str(k)] for k in parent.get("studentids") or [] if str(k) in students]
+            add(id=f"Rodic{rid}", name=name(parent), kind="parent", ghost=ghost_of(f"Rodic{rid}"),
+                children=[name(k) for k in kids], classid=str((kids[0] if kids else {}).get("classid") or ""))
+        add(id="Ucitel*", name="Všetci učitelia", kind="all")
+        add(id="StudentOnly*", parents="Student*", name="Všetci žiaci školy", kind="all")
+    order = {"class": 0, "group": 1, "teacher": 2, "student": 3, "parent": 4, "all": 5}
+    return {"role": role, "recipients": sorted(out, key=lambda r: (order[r["kind"]], not r.get("own"), r["name"]))}
+
+
+def message_flags(options: dict | None) -> dict:
+    """createItem's fields for a teacher's choices: a read receipt, and replies to everyone, the author alone or none."""
+    options = options or {}
+    replies = options.get("replies") if options.get("replies") in ("all", "author", "none") else "all"
+    return {"receipt": "1" if options.get("important") is True else "0",
+            "repliesDisabled": "1" if replies == "none" else "0",
+            "repliesToAllDisabled": "1" if replies != "all" else "0"}
+
+
 class AttachmentRefused(Exception):
     """EduPage would not take a file (its type or size); the message is not sent without it."""
 
@@ -899,14 +982,14 @@ def upload_attachment(edu: Edupage, name: str, mimetype: str, data: bytes) -> tu
 
 
 def send_message(edu: Edupage, recipient: str, text: str, attachments: dict | None = None,
-                 user_id: str = "", known: set[int] | None = None, since: str = "") -> int | None:
-    """Starts a new message to one person the way edupage.org's "Nová správa" does; returns its timeline id.
-    attachments maps each uploaded file's EduPage path to its name."""
+                 user_id: str = "", known: set[int] | None = None, since: str = "", flags: dict | None = None) -> int | None:
+    """Starts a new message the way edupage.org's "Nová správa" does; returns its timeline id. recipient is one id
+    or several joined by ";", attachments maps each uploaded file's EduPage path to its name, flags message_flags."""
     resp = edu.session.post(
         f"https://{edu.subdomain}.edupage.org/timeline/?=&akcia=createItem&eqav=1&maxEqav=7",
         data=RequestData.encode_request_body(
             {"selectedUser": recipient, "text": text, "attachements": json.dumps(attachments or {}),
-             "receipt": "0", "typ": "sprava"}
+             "receipt": "0", "typ": "sprava", **(flags or {})}
         ),
         headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
@@ -1461,10 +1544,12 @@ class Account:
         self.message = ""
         # (room_id, event_id, replied-to event_id, text, recipient ghost, files, reply_to) written by the admin in
         # Matrix, sent by the poller thread: a reply when it answers a message, else a new message to the
-        # recipient. files is the FILES_KEY list of the message, reply_to its REPLY_TO_KEY.
-        self.outbox: queue.Queue[tuple[str, str, str, str, str, list, str]] = queue.Queue()
+        # recipient: a ghost (RECIPIENT_KEY), or {"to": RECIPIENTS_KEY ids, "options": OPTIONS_KEY}. files is the
+        # FILES_KEY list of the message, reply_to its REPLY_TO_KEY.
+        self.outbox: queue.Queue[tuple[str, str, str, str, str | dict, list, str]] = queue.Queue()
         # Teachers Karchi can start a message to, from the school's data at the last poll.
         self.teachers: list[dict] = []
+        self.recipients: dict = {"role": "", "recipients": []}  # school_recipients
         self.grades_at = 0.0
         self.grade_marks: set[str] | None = None  # timeline ids of the grade notices at the last poll
         # nudge_timetable: a refresh on its way, the notice mark it finished well, and tries per mark.
@@ -1581,11 +1666,12 @@ class Account:
         settle_before = int((time.time() - SETTLE_AFTER_DAYS * 86400) * 1000) if backfill else None
         try:
             teachers = teacher_contacts(edu)
+            recipients = school_recipients(edu)
         except Exception as err:  # the school's data is optional; messages keep working without it
             log("teachers failed:", type(err).__name__)
         else:
             with self.lock:
-                self.teachers = teachers
+                self.teachers, self.recipients = teachers, recipients
         rooms.keep(items)
         self.nudge_timetable(items, rooms.db)
         rooms.fetch_materials(edu, items)
@@ -1745,12 +1831,23 @@ class Account:
             if room_id != rooms.school_room()[0]:
                 continue
             root = rooms.root_of(answers) if answers else None
-            with self.lock:
-                teacher = any(t["id"] == recipient for t in self.teachers)
-            known = teacher or (rooms.db.execute("SELECT 1 FROM ghosts WHERE mxid = ?", (recipient,)).fetchone() if recipient else None)
-            to = recipient_id(recipient) if known and not answers else None
+            flags = None
+            if isinstance(recipient, dict):  # Weft's "Komu" list: EduPage ids, each one GET /contacts offers
+                with self.lock:
+                    offered = {i for r in self.recipients["recipients"] for i in (r["id"], r.get("parents")) if i}
+                    teacher_role = self.recipients["role"] == "teacher"
+                ids = list(dict.fromkeys(recipient["to"]))
+                to = ";".join(ids) if ids and not answers and all(i in offered for i in ids) else None
+                flags = message_flags(recipient.get("options")) if teacher_role else None
+            else:
+                with self.lock:
+                    teacher = any(t["id"] == recipient for t in self.teachers)
+                known = teacher or (rooms.db.execute("SELECT 1 FROM ghosts WHERE mxid = ?", (recipient,)).fetchone() if recipient else None)
+                to = recipient_id(recipient) if known and not answers else None
             if root is None and to is None:
-                rooms.say(room_id, "Neodoslané: EduPage nevie poslať správu bez adresáta. Odpovedz na konkrétnu správu.", event_id)
+                rooms.say(room_id, "Neodoslané: niektorého adresáta EduPage teraz neponúka. Vyber adresátov v Ctrl+N znova."
+                          if isinstance(recipient, dict) else
+                          "Neodoslané: EduPage nevie poslať správu bez adresáta. Odpovedz na konkrétnu správu.", event_id)
                 continue
             with self.lock:
                 creds, edu = (dict(self.creds) if self.creds else None), self.edu
@@ -1773,7 +1870,7 @@ class Account:
                     attachments = dict(upload_attachment(e, *blob) for blob in blobs)
                     if root is not None:
                         return send_reply(e, root, text, attachments, to_whom, user_id, known, since)
-                    return send_message(e, to, text, attachments, user_id, known, since)
+                    return send_message(e, to, text, attachments, user_id, known, since, flags)
                 try:
                     item_id = send(edu)
                 except SessionExpired:
@@ -1956,6 +2053,10 @@ class Handler(BaseHTTPRequestHandler):
                     text = re.sub(r"^(> .*\n)+\n", "", content["body"])  # drop a Matrix reply quote
                     answers = ((content.get("m.relates_to") or {}).get("m.in_reply_to") or {}).get("event_id")
                     recipient = content.get(RECIPIENT_KEY) if isinstance(content.get(RECIPIENT_KEY), str) else ""
+                    many = content.get(RECIPIENTS_KEY)
+                    if isinstance(many, list) and many and all(isinstance(i, str) for i in many):
+                        options = content.get(OPTIONS_KEY)
+                        recipient = {"to": many[:200], "options": options if isinstance(options, dict) else {}}
                     reply_to = content.get(REPLY_TO_KEY) if isinstance(content.get(REPLY_TO_KEY), str) else ""
                     ACCOUNT.outbox.put((event["room_id"], event["event_id"], str(answers or ""), text.strip(), recipient, files, reply_to))
                     ACCOUNT.wake.set()
@@ -2013,7 +2114,7 @@ def route(method: str, parts: list[str], body: dict) -> dict:
             return {"flows": [FLOW]}
         case "GET", ["contacts"]:
             with ACCOUNT.lock:
-                return {"contacts": list(ACCOUNT.teachers)}
+                return {"contacts": list(ACCOUNT.teachers), **ACCOUNT.recipients}
         case "POST", ["login", "start", "password"]:
             process_id = uuid.uuid4().hex
             PROCESSES[process_id] = {"created": time.time()}

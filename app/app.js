@@ -31,6 +31,9 @@ const BOT_LOCALPART = 'edupagebot';
 const MARK = 'sk.karchi.edupage';
 const TO_KEY = 'sk.karchi.edupage.to';
 const RECIPIENT_KEY = 'sk.karchi.edupage.recipient'; // a new EduPage message: the ghost of the person it goes to
+// A new EduPage message from the „Komu“ list: EduPage's ids of everyone it goes to, and a teacher's choices.
+const RECIPIENTS_KEY = 'sk.karchi.edupage.recipients';
+const OPTIONS_KEY = 'sk.karchi.edupage.options';
 const REPLY_TO_KEY = 'sk.karchi.edupage.reply_to'; // a reply: 'all' goes to everyone the thread went to, else its author alone
 // Written by the bridge: { [thread root event id]: 'all' | 'author' } for threads that did not go to Karchi alone.
 const EDU_REPLIES = 'sk.karchi.edupage.replies';
@@ -128,6 +131,8 @@ const S = {
   eduTo: new Map(), // thread root id -> 'all' when Karchi chose to answer everyone; its author alone otherwise
   eduNote: null, // EduPage thread or new message where a file could not be taken: it gets a short note
   eduPeople: new Map(), // teachers from the EduPage bridge, mxid -> name, for new messages
+  eduSchool: { role: '', recipients: [] }, // whom a new EduPage message can go to (bridge GET /contacts)
+  eduNew: null, // the new EduPage message's „Komu“ list and options (eduNew()), kept per device
   historyDone: false,
   readSent: '',
   showAll: localStorage.getItem('ep_show_all') === '1', // false: only unread threads, like Beeper's Unread inbox
@@ -5987,7 +5992,8 @@ function closeOverlay(back = false) {
     remoteDrop(o);
     if (back) { o.remote = null; o.index = 0; render(); return; }
   }
-  if (o?.kind === 'new' && o.only && back) { Object.assign(o, { only: null, index: 0 }); render(); return; }
+  if (o?.kind === 'new' && o.eduClass && back) { Object.assign(o, { eduClass: null, query: '', index: 0 }); render(); return; }
+  if (o?.kind === 'new' && o.only && !o.eduAdd && back) { Object.assign(o, { only: null, index: 0 }); render(); return; }
   if (o?.kind === 'new' && o.group && back) {
     if (o.group.state !== 'creating') { Object.assign(o, { group: null, query: '', index: 0 }); render(); }
     return; // Esc while the group is being made waits for its answer
@@ -6253,14 +6259,15 @@ function mainView() {
   const unread = mine.filter((e) => e.unread && inBox('inbox')(e) && !(quiet && e.app === 'edupage')).length;
   scheduleBatch();
   const pendingRoom = !open && (S.selected?.startsWith('!') || (S.selected && S.selected === S.justSent));
-  const newEdu = S.selected?.startsWith('edu:') ? S.selected.slice(4) : null;
+  if (S.selected?.startsWith('edu:@')) eduFromGhost(S.selected.slice(4)); // an older window's one-person message
+  const newEdu = S.selected === EDU_NEW;
   // The window title names the open chat as its header does ("(3) Name · Weft"): x270's work log reads it.
   const named = open?.kind === 'room' ? (open.merged && groupOf(open.room.id) ? open.title : roomTitle(open.room))
-    : newEdu ? eduName(newEdu) : open ? titleOf(open.thread) : '';
+    : newEdu ? eduToLabel(eduNew().to) || T('Nová správa') : open ? titleOf(open.thread) : '';
   document.title = `${unread ? `(${unread}) ` : ''}${named ? `${named} · ` : ''}Weft`;
   const message = open?.kind === 'room' ? chatView(open.room, open)
     : S.selected === MAIL ? mailView()
-    : newEdu ? newEduView(newEdu)
+    : newEdu ? newEduView()
       : pendingRoom ? h('div', { class: 'detail' }, h('div', { class: 'empty' }, T('Otváram chat…')))
         : open ? detailView(open.thread) : null;
   // An open conversation takes the whole workspace; the calendar fills it only when nothing is open. The feed
@@ -9507,29 +9514,214 @@ function useSlash(r, [name]) {
   render();
 }
 
-/** A new EduPage message to one person; once sent it becomes a thread like any other. */
-function newEduView(mxid) {
-  const name = eduName(mxid);
-  const key = `edu:${mxid}`;
+// ------------------------------------------------------------------ new EduPage message („Komu“)
+
+const EDU_NEW = 'edu:new'; // S.selected and the draft's key for the new EduPage message
+const EDU_GROUPS = new Set(['class', 'group', 'all']);
+
+/** Whom a new EduPage message can go to, from the bridge (by Karchi's role at school), and the teachers by ghost. */
+async function loadEduSchool() {
+  try {
+    const data = await bridge('GET', '/contacts');
+    for (const c of data.contacts || []) if (typeof c?.id === 'string' && typeof c.name === 'string') S.eduPeople.set(c.id, c.name);
+    if (Array.isArray(data.recipients)) {
+      S.eduSchool = { role: data.role || 'student', recipients: data.recipients.filter((r) => typeof r?.id === 'string' && typeof r.name === 'string') };
+    }
+  } catch { /* an older bridge, or EduPage offline: Ctrl+N lists the teachers by ghost as before */ }
+}
+
+/** The new message's „Komu“ list ({ id, name, kind, parents?, withParents } from the school's list, or { ghost, name }
+ *  for someone who wrote and is not in it) and a teacher's options; kept on this device until it is sent. */
+function eduNew() {
+  if (!S.eduNew) {
+    let v = null;
+    try { v = JSON.parse(localStorage.getItem(`ep_edu_new:${S.userId}`) || 'null'); } catch { /* a broken copy starts empty */ }
+    S.eduNew = {
+      to: Array.isArray(v?.to) ? v.to.filter((c) => typeof c?.name === 'string' && (typeof c.id === 'string' || typeof c.ghost === 'string')) : [],
+      important: v?.important === true,
+      replies: ['all', 'author', 'none'].includes(v?.replies) ? v.replies : 'all',
+    };
+  }
+  return S.eduNew;
+}
+const saveEduNew = () => { try { localStorage.setItem(`ep_edu_new:${S.userId}`, JSON.stringify(S.eduNew)); } catch { /* full storage: kept in memory */ } };
+const eduChip = (r) => ({ id: r.id, name: r.name, kind: r.kind, ...(r.parents ? { parents: r.parents } : {}), withParents: false });
+const eduSame = (a, b) => (a.id ? a.id === b.id : a.ghost === b.ghost);
+/** Someone who wrote to Karchi on EduPage: their entry in the school's list, else that ghost alone. */
+function eduChipOfGhost(mxid) {
+  const r = S.eduSchool.recipients.find((x) => x.ghost === mxid);
+  return r ? eduChip(r) : { ghost: mxid, name: eduName(mxid), kind: 'person' };
+}
+/** Whom the message goes to, in words: „III. A a rodičia, Jana Nová“. */
+const eduToLabel = (to) => to.map((c) => (c.withParents && c.parents ? T`${c.name} a rodičia` : c.name)).join(', ');
+
+/** An older window's one-person message (`edu:@ghost`) becomes the „Komu“ list, with its draft and files. */
+function eduFromGhost(mxid) {
+  const old = `edu:${mxid}`;
+  const n = eduNew();
+  n.to = [eduChipOfGhost(mxid)];
+  saveEduNew();
+  if (S.drafts.get(old) && !S.drafts.get(EDU_NEW)) setDraft(EDU_NEW, S.drafts.get(old));
+  if (S.drafts.has(old)) deleteDraft(old);
+  if (S.attach.has(old)) { S.attach.set(EDU_NEW, [...(S.attach.get(EDU_NEW) || []), ...S.attach.get(old)]); S.attach.delete(old); }
+  S.selected = EDU_NEW;
+}
+
+/** Ctrl+N's pick: a new message to it, or (from „Pridať“) one more in the „Komu“ list. Someone outside the school's
+ *  list gets a message alone: the bridge sends those by their ghost. */
+function eduPick(chip, add) {
+  const n = eduNew();
+  const keep = add && chip.id ? n.to.filter((c) => c.id) : [];
+  n.to = keep.some((c) => eduSame(c, chip)) ? keep : [...keep, chip];
+  saveEduNew();
+  S.overlay = null;
+  if (S.selected !== EDU_NEW) select(EDU_NEW);
+  S.focusComposer = true;
+  render();
+}
+function eduAddMore() {
+  openOverlay('new', { contacts: [], only: 'edupage', eduAdd: true });
+  const o = S.overlay;
+  loadEduSchool().then(() => { if (S.overlay === o) render(); });
+}
+function eduRemove(chip) {
+  const n = eduNew();
+  n.to = n.to.filter((c) => !eduSame(c, chip));
+  saveEduNew();
+  render();
+}
+function eduParents(chip) {
+  const c = eduNew().to.find((x) => eduSame(x, chip));
+  if (c) c.withParents = !c.withParents;
+  saveEduNew();
+  render();
+}
+
+const pupils = (n) => (n === 1 ? T('1 žiak') : n >= 2 && n <= 4 ? T`${n} žiaci` : T`${n} žiakov`);
+/** One line under a row of the EduPage list: who it is or who is in it. */
+function eduWho(r) {
+  const female = r.gender === 'F';
+  switch (r.kind) {
+    case 'teacher': return r.classTeacherOf?.length
+      ? (female ? T`Triedna učiteľka ${r.classTeacherOf.join(', ')}` : T`Triedny učiteľ ${r.classTeacherOf.join(', ')}`)
+      : (female ? T('Učiteľka') : T('Učiteľ'));
+    case 'student': return r.cls ? T`Žiak · ${r.cls}` : T('Žiak');
+    case 'parent': return r.children?.length ? T`Rodič · ${r.children.join(', ')}` : T('Rodič');
+    case 'class': return r.count ? T`Trieda · ${pupils(r.count)}` : T('Trieda');
+    case 'group': return [r.teacher, r.count ? pupils(r.count) : ''].filter(Boolean).join(' · ') || T('Skupina');
+    case 'all': return T('Celá škola');
+    default: return T('Písal(a) ti na EduPage');
+  }
+}
+
+/** Ctrl+N narrowed to EduPage: classes (Enter opens one: the whole class or someone in it), teachers with the ones
+ *  who wrote lately on top, subject groups, and for a teacher the whole school; typing searches everyone. From the
+ *  message's „Pridať“ (o.eduAdd) a pick joins its „Komu“ list. */
+function eduPickView(o) {
+  const query = norm(o.query).trim();
+  const { role, recipients } = S.eduSchool;
+  const lastBy = new Map();
+  for (const t of threads()) lastBy.set(t.root.sender, Math.max(lastBy.get(t.root.sender) || 0, t.last));
+  const recent = (r) => (r.ghost && lastBy.get(r.ghost)) || 0;
+  const listed = new Set(recipients.map((r) => r.ghost).filter(Boolean));
+  const others = [...S.names].filter(([id]) => /^@edupage_(ucitel|student|rodic)/.test(id) && !listed.has(id))
+    .map(([id, name]) => ({ ghost: id, name, kind: 'person' }));
+  const everyone = [...recipients, ...others];
+  const matching = (list) => (query
+    ? list.map((r) => ({ r, score: nameScore(r.name, query) })).filter((x) => x.score >= 0)
+      .sort((a, b) => a.score - b.score || recent(b.r) - recent(a.r)).map((x) => x.r)
+    : list);
+  const inClass = o.eduClass && recipients.find((r) => r.id === o.eduClass);
+  let sections;
+  if (inClass) {
+    const cid = inClass.id.replace(/^StudTrieda/, '');
+    sections = [
+      [inClass.name, query ? [] : [{ ...inClass, whole: true }]],
+      [role === 'teacher' ? T('Žiaci') : T('Spolužiaci'), matching(everyone.filter((r) => r.kind === 'student' && r.classid === cid))],
+      [T('Rodičia'), matching(everyone.filter((r) => r.kind === 'parent' && r.classid === cid))],
+    ];
+  } else if (query) {
+    sections = [[T('Na EduPage'), matching(everyone).slice(0, 200)]];
+  } else {
+    const teachers = everyone.filter((r) => r.kind === 'teacher' || r.kind === 'person')
+      .sort((a, b) => recent(b) - recent(a) || a.name.localeCompare(b.name, 'sk'));
+    sections = [
+      [role === 'teacher' ? T('Triedy') : T('Tvoja trieda'), everyone.filter((r) => r.kind === 'class')],
+      [T('Učitelia'), teachers],
+      [T('Skupiny predmetov'), everyone.filter((r) => r.kind === 'group')],
+      [T('Celá škola'), everyone.filter((r) => r.kind === 'all')],
+    ];
+  }
+  sections = sections.filter(([, list]) => list.length);
+  const inList = new Set(o.eduAdd ? eduNew().to.map((c) => c.id || c.ghost) : []);
+  const go = (r) => (r.kind === 'class' && !r.whole && !inClass
+    ? () => { Object.assign(o, { eduClass: r.id, query: '', index: 0 }); render(); }
+    : () => eduPick(r.kind === 'person' ? { ghost: r.ghost, name: r.name, kind: 'person' } : eduChip(r), o.eduAdd));
+  o.flat = sections.flatMap(([, list]) => list.map(go));
+  if (o.index >= o.flat.length) o.index = 0;
+  const badge = h('img', { class: 'badge', src: '/edupage.png', alt: '' });
+  let i = 0;
+  return [
+    cmdInput(o, inClass ? T`Komu v ${inClass.name}?` : o.eduAdd ? T('Koho ešte pridať do správy?') : ONLY_ASK.edupage()),
+    h('div', { class: 'results', ...listScroll(o) },
+      sections.map(([title, list]) => [h('div', { class: 'rsec' }, title), list.map((r) => resultRow(o, r, i++, [
+        h('div', { class: 'avwrap' }, EDU_GROUPS.has(r.kind) ? h('div', { class: 'icon grpicon' }, icon('users')) : avatar('', r.name, 40), badge),
+        h('div', { class: 'rmeta' },
+          h('b', {}, r.whole ? T`Celá trieda ${r.name}` : highlighted(r.name, o.query)),
+          h('small', {}, r.whole ? T`${pupils(r.count || 0)} · aj rodičom zapneš v správe`
+            : r.kind === 'class' && !inClass ? T`${eduWho(r)} · Enter: celá trieda alebo niekto z nej`
+              : r.parents ? T`${eduWho(r)} · aj rodičom zapneš v správe` : eduWho(r))),
+        inList.has(r.id || r.ghost) ? h('span', { class: 'grpcheck' }, icon('check')) : null,
+      ]))]),
+      sections.length ? null : h('div', { class: 'empty' }, T('Nikoho takého na EduPage nepoznám.')),
+      h('div', { class: 'rnote dim' }, inClass ? T('Esc sa vráti ku všetkým na EduPage.') : o.eduAdd ? T('Esc sa vráti k správe.') : T('Esc sa vráti ku všetkým sieťam.'))),
+  ];
+}
+
+/** The new EduPage message: „Komu“ (people, classes and groups, each pupil, class or group with or without their
+ *  parents), a teacher's options, then text and files. Once sent it becomes a thread like any other. */
+function newEduView() {
+  const n = eduNew();
+  const key = EDU_NEW;
+  const teacher = S.eduSchool.role === 'teacher';
+  const one = n.to.length === 1 && !EDU_GROUPS.has(n.to[0].kind) ? n.to[0] : null;
   const area = h('textarea', {
     rows: 3,
     value: S.drafts.get(key) || '',
-    placeholder: T`Správa pre ${name}… (Enter odošle, Shift+Enter nový riadok)`,
+    placeholder: n.to.length ? T('Správa… (Enter odošle, Shift+Enter nový riadok)') : T('Najprv pridaj, komu správa pôjde'),
     'data-root': key,
     oninput: (e) => { setDraft(key, e.target.value); autosize(e.target); },
-    onkeydown: (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.altKey) { e.preventDefault(); sendEdu(mxid); } },
+    onkeydown: (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.altKey) { e.preventDefault(); sendEdu(); } },
   });
   return h('div', { class: 'detail chat' },
     h('div', { class: 'chead' },
       h('button', { class: 'back', title: T('Späť'), onclick: closeThread }, '‹'),
-      avatar('', name, 36),
-      h('div', { class: 'ctitle' }, h('b', {}, T`Nová správa: ${name}`), h('small', {}, h('img', { src: '/edupage.png', alt: '' }), 'EduPage'))),
-    h('div', { class: 'msgs' }, h('div', { class: 'cstart' }, T('Správa pôjde cez EduPage len tomuto človeku.'))),
+      one ? avatar('', one.name, 36) : h('div', { class: 'icon grpicon' }, icon('users')),
+      h('div', { class: 'ctitle' }, h('b', {}, one ? T`Nová správa: ${one.name}` : T('Nová správa')), h('small', {}, h('img', { src: '/edupage.png', alt: '' }), 'EduPage'))),
+    h('div', { class: 'eduto' },
+      h('span', { class: 'dim' }, T('Komu:')),
+      n.to.map((c) => h('span', { class: 'chip on educhip', 'data-key': c.id || c.ghost },
+        h('span', {}, c.name),
+        c.parents ? h('button', {
+          class: `parents${c.withParents ? ' on' : ''}`, 'aria-pressed': String(!!c.withParents),
+          title: c.withParents ? T`Pôjde aj rodičom: ${c.name}. Klik ich odoberie.` : T`Pôjde len žiakom, nie rodičom: ${c.name}. Klik pridá rodičov.`,
+          onclick: () => eduParents(c),
+        }, c.withParents ? icon('check') : null, T('aj rodičom')) : null,
+        h('button', { class: 'x', title: T`Odobrať: ${c.name}`, onclick: () => eduRemove(c) }, icon('close')))),
+      n.to.every((c) => c.id) ? h('button', { class: 'chip', title: T('Pridať ďalšieho adresáta: triedu, skupinu alebo človeka'), onclick: eduAddMore }, icon('plus'), T('Pridať')) : null),
+    teacher && n.to.length ? h('div', { class: 'eduopts' },
+      h('label', {}, h('input', { type: 'checkbox', checked: n.important, onchange: (e) => { n.important = e.target.checked; saveEduNew(); render(); } }),
+        T('Dôležitá · EduPage ukáže, kto si ju prečítal')),
+      h('label', {}, T('Odpovede:'), h('select', { onchange: (e) => { n.replies = e.target.value; saveEduNew(); render(); } },
+        [['all', T('všetkým')], ['author', T('len mne')], ['none', T('bez odpovedí')]].map(([v, label]) => h('option', { value: v, selected: n.replies === v }, label))))) : null,
+    h('div', { class: 'msgs' }, h('div', { class: 'cstart' }, n.to.length
+      ? T`Pôjde cez EduPage: ${eduToLabel(n.to)}.`
+      : T('Pridaj, komu správa pôjde: triedu, skupinu predmetu, spolužiaka alebo učiteľa.'))),
     h('div', { class: 'ccompose' }, eduNote(key), eduAtts(key), h('div', { class: 'crow' },
       h('input', { type: 'file', multiple: true, hidden: true, onchange: (e) => { const files = [...e.target.files]; e.target.value = ''; takeFiles(files); } }),
       h('button', { class: 'attach', title: T('Pridať prílohu (aj Ctrl+V alebo pretiahnutím)'), onclick: (e) => e.currentTarget.parentNode.querySelector('input[type=file]').click() }, icon('plus')),
       area,
-      h('button', { class: 'send', title: T('Odoslať (Enter)'), onclick: () => sendEdu(mxid) }, icon('arrow-up')))));
+      h('button', { class: 'send', title: T('Odoslať (Enter)'), disabled: !n.to.length, onclick: () => sendEdu() }, icon('arrow-up')))));
 }
 
 /** EduPage carries text only: a picture offered to it is turned down here, not lost on the way. */
@@ -9539,13 +9731,21 @@ const eduNote = (key) => (S.eduNote === `big:${key}`
 /** A person's name for a new EduPage message: from their messages, else from the school's teacher list. */
 const eduName = (mxid) => S.names.get(mxid) || S.eduPeople.get(mxid) || mxid;
 
-async function sendEdu(mxid) {
-  const key = `edu:${mxid}`;
+async function sendEdu() {
+  const key = EDU_NEW;
+  const n = eduNew();
   const text = (S.drafts.get(key) || '').trim();
   const files = S.attach.get(key) || [];
-  if ((!text && !files.length) || !S.roomId) return;
+  if ((!text && !files.length) || !S.roomId || !n.to.length) return;
   const txn = `ep${Date.now()}${Math.random().toString(36).slice(2, 8)}`;
-  const content = { msgtype: 'm.text', body: text || files.map((f) => f.name).join(', '), [TO_KEY]: eduName(mxid), [RECIPIENT_KEY]: mxid };
+  const content = { msgtype: 'm.text', body: text || files.map((f) => f.name).join(', '), [TO_KEY]: eduToLabel(n.to) };
+  if (n.to.every((c) => c.id)) {
+    content[RECIPIENTS_KEY] = n.to.map((c) => (c.withParents && c.parents ? c.parents : c.id));
+    if (S.eduSchool.role === 'teacher') content[OPTIONS_KEY] = { important: n.important, replies: n.replies };
+    // One teacher also by ghost, which an older bridge sends by.
+    const ghost = n.to.length === 1 && n.to[0].kind === 'teacher' && S.eduSchool.recipients.find((r) => r.id === n.to[0].id)?.ghost;
+    if (ghost) content[RECIPIENT_KEY] = ghost;
+  } else content[RECIPIENT_KEY] = n.to[0].ghost;
   S.pending.set(txn, { event_id: txn, pending: true, sender: S.userId, origin_server_ts: Date.now(), content: { ...content, [EDU_FILES]: files.map((f) => ({ name: f.name })) } });
   deleteDraft(key);
   S.attach.delete(key);
@@ -9553,6 +9753,8 @@ async function sendEdu(mxid) {
   try {
     if (files.length) content[EDU_FILES] = await eduUpload(files);
     const { event_id: id } = await call('PUT', `/rooms/${q(S.roomId)}/send/m.room.message/${txn}`, content);
+    Object.assign(n, { to: [], important: false, replies: 'all' });
+    saveEduNew();
     S.justSent = id;
     select(id);
   } catch {
@@ -10050,10 +10252,7 @@ async function loadContacts(o) {
     o.contacts.push(...rows);
     if (rows.length && S.overlay === o) render();
   });
-  bridge('GET', '/contacts').then((data) => {
-    for (const c of data.contacts || []) if (typeof c?.id === 'string' && typeof c.name === 'string') S.eduPeople.set(c.id, c.name);
-    if (S.overlay === o) render();
-  }).catch(() => {});
+  loadEduSchool().then(() => { if (S.overlay === o) render(); });
   await refreshLinks();
   for (const app of LINKS.filter((a) => !a.legacy && !a.noContactList && S.links[a.id]?.length)) {
     prov(app, 'GET', '/contacts').then((data) => {
@@ -10468,6 +10667,7 @@ async function startChat(x) {
   // Picked for an old chat's "Hľadať inak" (writeOther): the old history goes with the chosen one's chat.
   const link = S.overlay?.link;
   const known = x.key || x.contact?.dm_room_mxid;
+  if (known?.startsWith('edu:@')) return eduPick(eduChipOfGhost(known.slice(4)), false);
   const id = known || `${x.app}:${x.contact?.id}`;
   if (chatOpening === id) return;
   remoteDrop(S.overlay);
@@ -10498,7 +10698,7 @@ async function startChat(x) {
  * field empty (or when what is typed names the network): EduPage and Discord narrow the list to their people, the
  * networks that look people up open their network mode, Gmail and Outlook a new mail from that app's account. */
 const START_NETS = [
-  { id: 'edupage', words: 'edupage skola ucitel', title: () => T('Správa na EduPage'), note: () => T('Učiteľovi zo školy, aj so súbormi') },
+  { id: 'edupage', words: 'edupage skola ucitel trieda rodicia', title: () => T('Správa na EduPage'), note: () => T('Triede, skupine, spolužiakovi aj rodičom alebo učiteľovi') },
   { id: 'whatsapp', words: 'whatsapp cislo telefon', title: () => T('Nové číslo na WhatsAppe'), note: () => T('Napíš číslo, napr. 0900 123 456') },
   { id: 'teams', words: 'teams microsoft skola praca', title: () => T('Chat v Teams'), note: () => T('Človek zo školy alebo firmy, podľa mena alebo e-mailu') },
   { id: 'messenger', words: 'messenger facebook', title: () => T('Človek na Messengeri'), note: () => T('Podľa mena alebo ID profilu') },
@@ -10508,7 +10708,7 @@ const START_NETS = [
   { id: 'outlook', mail: true, words: 'outlook novy mail email microsoft', title: () => T('Nový mail z Outlooku'), note: () => T('Z tvojho účtu Outlook') },
 ];
 // The list narrowed to one network's people (o.only): what its field asks.
-const ONLY_ASK = { edupage: () => T('Ktorému učiteľovi na EduPage?'), discord: () => T('Ktorému priateľovi na Discorde?') };
+const ONLY_ASK = { edupage: () => T('Komu na EduPage? Trieda, skupina, spolužiak alebo učiteľ'), discord: () => T('Ktorému priateľovi na Discorde?') };
 
 function startNets(o, query, mailTo) {
   const hidden = hiddenApps();
@@ -10537,6 +10737,7 @@ function startNets(o, query, mailTo) {
 function newChatView(o) {
   if (o.remote) return remoteView(o);
   if (o.group) return groupView(o);
+  if (o.only === 'edupage' && S.eduSchool.recipients.length) return eduPickView(o);
   const query = norm(o.query).trim();
   const people = contactList(o)
     .filter((x) => !o.only || x.app === o.only)

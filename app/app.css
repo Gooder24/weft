@@ -1645,3 +1645,17 @@ button.prof-status:hover { background: var(--hover); }
 .board-acts svg { width: 16px; height: 16px; }
 .boardpop .board-row { justify-content: flex-end; }
 .boardpop-text { max-height: calc(var(--lh) * 5); }
+
+/* A new EduPage message: „Komu“ as chips, each pupil, class or group with its „aj rodičom“ switch; a teacher's options. */
+.eduto { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 16px; border-bottom: 1px solid var(--line); }
+.eduto .dim { color: var(--muted); }
+.eduto .chip { display: inline-flex; align-items: center; gap: 4px; }
+.educhip { cursor: default; padding: 2px 4px 2px 11px; }
+.educhip button { display: inline-flex; align-items: center; gap: 2px; border: 0; border-radius: var(--radius-s); padding: 2px 6px; background: none; color: var(--muted); font: inherit; font-size: var(--fs); cursor: pointer; }
+.educhip button:hover { background: var(--hover); color: var(--text); }
+.educhip .parents { border: 1px solid var(--line); font-weight: 400; }
+.educhip .parents.on { border-color: var(--link); color: var(--link); }
+.educhip .x { padding: 2px; }
+.eduopts { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; padding: 6px 16px; border-bottom: 1px solid var(--line); color: var(--muted); }
+.eduopts label { display: inline-flex; align-items: center; gap: 6px; }
+.eduopts select { font: inherit; font-size: var(--fs); color: var(--text); background: var(--soft); border: var(--bw) solid var(--line); border-radius: var(--radius-s); padding: 2px 6px; }

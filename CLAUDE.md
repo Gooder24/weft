@@ -82,7 +82,11 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   and signing stays on EduPage. Which subjects and notices are Karchi's comes from EduPage's own data (bridge → account data
   `sk.karchi.edupage.facts`); Settings → EduPage (`sk.karchi.edupage.rules`) sets per notice type inbox/quiet/hidden,
   colour and mark, and overrides subjects; Weft, `weft read/search` and the Testy calendar follow it, and grades wear
-  their subject's calendar colour (check: `overenie/edupage-rules/`). Ctrl+N reaches every current teacher (bridge `GET /contacts`), and messages and
+  their subject's calendar colour (check: `overenie/edupage-rules/`). A new message (Ctrl+N → EduPage) goes to a „Komu“ list
+  from the school's data by Karchi's role (bridge `GET /contacts` `recipients`): a pupil's class, subject groups,
+  classmates and teachers, a teacher's every class, pupil and parent too, all teachers and pupils and the options
+  Dôležitá and who may reply; each pupil, class or group with or without parents (EduPage's StudentOnly/Student,
+  StudTrieda/Trieda, StudPlan/Plan ids), several in one message (check: `overenie/edupage-komu/`). Messages and
   replies carry files (uploaded to EduPage like its own form, 25 MB each). A reply in a thread that did not go to Karchi alone asks „Len <autor> / Všetkým“ (author by default;
   bridge account data `sk.karchi.edupage.replies`). Upcoming tests (exam events, homework titled as a test) go into the calendar „Testy“ at their lesson (uid `edupage-test-*`; the bridge writes through the calendar as Karchi's double puppet); a test naming pupils only when it names Karchi. Checks: `overenie/edupage-send/`, `overenie/run.sh --edupage`, `tests/edupage/reply_test.py`. Each successful poll logs counts and stores a `last_success` heartbeat. A new substitution or school event notice in the timeline makes the bridge ask the timetable backend to read EduPage again at once (`nudge_timetable`).
 - `server/gmail/` is the Gmail bridge (deployed to asus `~/matrix-spike/gmail/`, unit `matrix-spike-gmail`,
@@ -178,7 +182,7 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   the rooms' newest messages from the homeserver); in a group it is Karchi's own chat with that person. Its name opens
   the profile. Check: `overenie/profil-karta/run.sh` (`stats_test.py`, `ui.cjs`).
 - New chats (Ctrl+N, or „Nová“ in the inbox head): with the field empty, one row per connected network says where to
-  start on it (`START_NETS`: EduPage and Discord narrow the list to their people, WhatsApp, Teams, Messenger and
+  start on it (`START_NETS`: EduPage narrows the list to classes, groups and people, Discord to its friends, WhatsApp, Teams, Messenger and
   Instagram open their network mode, Gmail and Outlook a new mail from that account), then recent people; a typed number
   goes to WhatsApp at once (0900 123 456 is read as +421), and „Hľadať mimo
   kontaktov“ asks one network (Messenger and Instagram by name, WhatsApp by number, Teams in the directory).
