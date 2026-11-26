@@ -15045,14 +15045,15 @@ const MS_FEATURES = {
   channel_read: T('čítanie kanálov a ľudia v tímoch'), chat_members: T('pridávanie ľudí do chatov'),
   recordings: T('prepisy a nahrávky stretnutí'), base: T('pošta, chaty a súbory'),
 };
-/** pending: ticks not yet saved; seq: the newest consent refresh, so an older answer that comes late is dropped. */
-const msFeat = { pending: {}, chain: Promise.resolve(), seq: 0 };
+/** pending: ticks not yet saved; seq: each row's newest consent request, so an older answer that comes late is dropped. */
+const msFeat = { pending: {}, chain: Promise.resolve(), seq: {} };
+const msAsk = (id) => (msFeat.seq[id] = (msFeat.seq[id] || 0) + 1);
 function microsoftFeatures(app) {
   const all = (S.msConsent ||= {});
   if (all[app.id] === undefined) {
     all[app.id] = 'loading';
-    const seq = msFeat.seq; // a save after this asks again, and its answer wins
-    prov(app, 'GET', '/consent').then((r) => { if (seq === msFeat.seq) all[app.id] = r; }, () => { if (seq === msFeat.seq) all[app.id] = null; })
+    const seq = msAsk(app.id); // a later save or retry asks again, and its answer wins
+    prov(app, 'GET', '/consent').then((r) => { if (seq === msFeat.seq[app.id]) all[app.id] = r; }, () => { if (seq === msFeat.seq[app.id]) all[app.id] = null; })
       .then(() => { if (S.panel === 'settings') render(); });
   }
   let r = all[app.id];
@@ -15078,11 +15079,11 @@ function microsoftFeatures(app) {
       try { res = await prov(app, 'POST', '/features', { changes: { [id]: on } }); } catch { alert(T('Nastavenie sa neuložilo.')); }
       if (msFeat.pending[id] === mine) delete msFeat.pending[id];
       if (Object.keys(msFeat.pending).length) return;
-      const seq = ++msFeat.seq;
       for (const a of LINKS.filter((x) => x.flow === 'microsoft')) {
+        const seq = msAsk(a.id);
         if (all[a.id] && all[a.id] !== 'loading') all[a.id] = { ...all[a.id], ...(res?.choices ? { choices: res.choices } : {}), stale: true, failed: false };
-        prov(a, 'GET', '/consent').then((x) => { if (seq === msFeat.seq && !Object.keys(msFeat.pending).length) all[a.id] = x; },
-          () => { if (seq !== msFeat.seq) return; if (all[a.id]?.stale) all[a.id] = { ...all[a.id], failed: true }; else if (all[a.id] === 'loading') all[a.id] = null; })
+        prov(a, 'GET', '/consent').then((x) => { if (seq === msFeat.seq[a.id] && !Object.keys(msFeat.pending).length) all[a.id] = x; },
+          () => { if (seq !== msFeat.seq[a.id]) return; if (all[a.id]?.stale) all[a.id] = { ...all[a.id], failed: true }; else if (all[a.id] === 'loading') all[a.id] = null; })
           .then(() => { if (S.panel === 'settings') render(); });
       }
       render();
