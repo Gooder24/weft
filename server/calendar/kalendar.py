@@ -4,7 +4,9 @@
 The file keeps Kalendarix's layout (docs/calendars-json.md in github.com/Gooder24/kalendarix-archive), so the
 same data shows in Weft, in Kalendarix on x270 and in its desktop widget. Two ways in:
 
-  HTTP on 127.0.0.1:29327 behind Caddy /_calendar/ (Karchi's Matrix token):
+  HTTP on 127.0.0.1:29327 behind Caddy /_calendar/ (a Matrix token of any person of this server; each person has a
+  calendars.json of their own: the owner's in data/, everyone else's in data/users/<localpart>/; the timetable
+  mirror and the merge CLI are the owner's only):
     GET  /_calendar/doc            -> {"version", "doc"}  (doc is null until the first change or timetable round)
     POST /_calendar/ops {"ops": [...]}, applied all or nothing, each one of:
       {"op": "put", "cal": id, "event": {...}} | {"op": "del", "cal": id, "uid": uid}
@@ -37,21 +39,28 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "common"))
+import weft_users
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.environ.get("CALENDAR_DATA", os.path.join(HERE, "data"))
 MASTER = os.path.join(DATA, "calendars.json")
 HS = os.environ.get("HS", "http://127.0.0.1:8008")
 OWNER = os.environ.get("OWNER", "")  # the owner's Matrix ID, from ~/.config/weft/weft.env on asus; the HTTP service needs it
 PORT = int(os.environ.get("PORT", "29327"))
+MAX_OPS = 20 * 1024 * 1024  # one request of a person other than the owner: an imported .ics with years of events
+MAX_DOC = int(os.environ.get("CALENDAR_MAX_DOC", 50 * 1024 * 1024))  # one person's calendars.json (not the owner's)
 
 
 # ------------------------------------------------------------------ the file
 
 class locked:
     """One writer at a time: the HTTP service and a merge from x270 may run together."""
+    def __init__(self, folder=None):
+        self.folder = folder or DATA
     def __enter__(self):
-        os.makedirs(DATA, exist_ok=True)
-        self.f = open(os.path.join(DATA, ".lock"), "w")
+        os.makedirs(self.folder, exist_ok=True)
+        self.f = open(os.path.join(self.folder, ".lock"), "w")
         fcntl.flock(self.f, fcntl.LOCK_EX)
         return self
     def __exit__(self, *a):
@@ -509,14 +518,10 @@ def mirror_loop():
 
 # ------------------------------------------------------------------ HTTP
 
-def whoami(token, user=None):
-    # user: an appservice token (the EduPage bridge's double puppet) acting as that user; the homeserver checks it.
-    query = "?" + urllib.parse.urlencode({"user_id": user}) if user else ""
-    req = urllib.request.Request(HS + "/_matrix/client/v3/account/whoami" + query, headers={"Authorization": f"Bearer {token}"})
-    with urllib.request.urlopen(req, timeout=10) as r: return json.load(r)["user_id"]
+USERS = weft_users.Users(HS, OWNER)
+FETCHES = weft_users.Limit(60, 3600)  # .ics downloads per person an hour: subscriptions refresh every 30 minutes
 
 class Api(BaseHTTPRequestHandler):
-    tokens = {}
 
     def log_message(self, *a): pass
 
@@ -529,29 +534,25 @@ class Api(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def karchi(self):
+    def caller(self):
+        """The folder of the calling person's calendar, or None. user_id: an appservice token (the EduPage bridge's
+        double puppet) acting as that person; the homeserver checks it."""
         token = (self.headers.get("Authorization") or "").removeprefix("Bearer ").strip()
-        if not token: return False
-        user = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("user_id", [None])[0]
-        key = (token, user)
-        now = time.time()
-        for t, at in list(self.tokens.items()):
-            if now - at >= 60: self.tokens.pop(t, None)
-        if key in self.tokens: return True
-        try: ok = whoami(token, user) == OWNER
-        except Exception: return False
-        if ok: self.tokens[key] = now
-        return ok
+        as_user = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("user_id", [None])[0]
+        self.user = USERS.who(token, as_user)
+        return self.user and weft_users.home(DATA, self.user, OWNER)
 
     def do_GET(self):
-        if not self.karchi(): return self.send(401, {"error": "Karchi's token only"})
+        folder = self.caller()
+        if not folder: return self.send(401, {"error": "a token of this server's people only"})
         if self.path.split("?")[0] == "/_calendar/fetch":
+            if self.user != OWNER and not FETCHES.take(self.user): return self.send(429, {"error": "too many downloads, try again later"})
             url = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("url", [""])[0]
             try: return self.send(200, {"text": fetch_ics(url)})
             except ValueError as e: return self.send(400, {"error": str(e)})
             except Exception as e: return self.send(422, {"error": f"{type(e).__name__}: {e}"})  # the feed's fault: not "offline" in Weft
         if self.path.split("?")[0] != "/_calendar/doc": return self.send(404, {"error": "not found"})
-        doc = read(MASTER)
+        doc = read(os.path.join(folder, "calendars.json"))
         v = version(doc)
         have = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("have", [None])[0]
         # A client polling for changes gets the whole file only when it differs from what it has.
@@ -559,13 +560,18 @@ class Api(BaseHTTPRequestHandler):
         self.send(200, {"version": v, "doc": doc})
 
     def do_POST(self):
-        if not self.karchi(): return self.send(401, {"error": "Karchi's token only"})
+        folder = self.caller()
+        if not folder: return self.send(401, {"error": "a token of this server's people only"})
         if self.path.split("?")[0] != "/_calendar/ops": return self.send(404, {"error": "not found"})
         try:
-            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
-            with locked():
-                doc = apply_ops(read(MASTER) or empty(), body.get("ops") or [])
-                write(MASTER, doc)
+            size = int(self.headers.get("Content-Length") or 0)
+            if folder != DATA and size > MAX_OPS: return self.send(413, {"error": "too large"})
+            body = json.loads(self.rfile.read(size) or b"{}")
+            master = os.path.join(folder, "calendars.json")
+            with locked(folder):
+                doc = apply_ops(read(master) or empty(), body.get("ops") or [])
+                if folder != DATA and len(dump(doc)) > MAX_DOC: return self.send(413, {"error": "calendar too large"})
+                write(master, doc)
             self.send(200, {"version": version(doc), "doc": doc})
         except (ValueError, KeyError, TypeError, AttributeError) as e:
             self.send(400, {"error": str(e)})

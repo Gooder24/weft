@@ -7,7 +7,9 @@
 The bridgev2 bridges (Messenger and Instagram on mautrix-meta, WhatsApp) log „Sent typing event“ after the
 network accepted it and „Failed to bridge Matrix typing event“ when it refused; this service follows their journal
 (`journalctl --user -f`) and keeps the latest line per chat in memory. Legacy Discord logs success only at debug
-level, so its chats stay „unknown“. Karchi's token only (whoami against the homeserver, cached 5 minutes).
+level, so its chats stay „unknown“. Every person of this server asks about their own typing only (whoami against the
+homeserver, cached 5 minutes): the owner's bridges and the invited people's (*-guests) are followed alike, and each
+line counts only for the person it names.
 """
 import json
 import os
@@ -20,10 +22,15 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "common"))
+import weft_users
+
 PORT = int(os.environ.get("TYPING_PORT", "29334"))
 HS = os.environ.get("TYPING_HS", "http://127.0.0.1:8008")
 OWNER = os.environ.get("TYPING_OWNER") or os.environ.get("OWNER", "")  # Karchi's Matrix ID, ~/.config/weft/weft.env
-UNITS = {"matrix-spike-messenger": "messenger", "matrix-spike-instagram": "instagram", "matrix-spike-whatsapp": "whatsapp"}
+UNITS = {"matrix-spike-messenger": "messenger", "matrix-spike-instagram": "instagram", "matrix-spike-whatsapp": "whatsapp",
+         "matrix-spike-messenger-guests": "messenger", "matrix-spike-instagram-guests": "instagram",
+         "matrix-spike-whatsapp-guests": "whatsapp"}
 WAIT = 8.0     # seconds a request waits for the bridge
 FRESH = 2.0    # Weft asks as it starts typing, so an answer older than this belongs to an earlier start
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
@@ -31,37 +38,38 @@ FIELD = re.compile(r'(\w+)=("(?:[^"\\]|\\.)*"|\S*)')
 
 
 def parse(line):
-    """A bridge log line about Karchi's typing as (room, typing, error) or None. typing is None on a failure."""
+    """A bridge log line about someone's typing as (user, room, typing, error) or None. typing is None on a failure."""
     line = ANSI.sub("", line)
     sent = "Sent typing event" in line
     if not sent and "Failed to bridge Matrix typing event" not in line:
         return None
     f = {k: v[1:-1].replace('\\"', '"') if v.startswith('"') else v for k, v in FIELD.findall(line)}
     room = f.get("portal_mxid", "")
-    if not room.startswith("!") or (OWNER and f.get("user_id") != OWNER):
+    user = f.get("user_id", "")
+    if not room.startswith("!") or not user.startswith("@"):
         return None
     if sent:
-        return room, f.get("typing") == "true", None
-    return room, None, f.get("error") or "failed"
+        return user, room, f.get("typing") == "true", None
+    return user, room, None, f.get("error") or "failed"
 
 
 class Reports:
     def __init__(self):
         self.cond = threading.Condition()
-        self.last = {}  # room -> {"at", "typing", "error", "net"}
+        self.last = {}  # (user, room) -> {"at", "typing", "error", "net"}
 
-    def add(self, room, typing, error, net):
+    def add(self, user, room, typing, error, net):
         with self.cond:
-            self.last[room] = {"at": time.monotonic(), "typing": typing, "error": error, "net": net}
+            self.last[(user, room)] = {"at": time.monotonic(), "typing": typing, "error": error, "net": net}
             if len(self.last) > 2000:
                 for old in sorted(self.last, key=lambda r: self.last[r]["at"])[:1000]:
                     self.last.pop(old, None)
             self.cond.notify_all()
 
-    def wait(self, room, started):
-        """The bridge's answer to typing that started at `started` (monotonic), or None after WAIT."""
+    def wait(self, user, room, started):
+        """The bridge's answer to user's typing that started at `started` (monotonic), or None after WAIT."""
         def answer():
-            x = self.last.get(room)
+            x = self.last.get((user, room))
             # A failure before this request was an earlier stop's; Weft asks before it sends the start.
             if x and (x["typing"] and x["at"] >= started - FRESH or x["error"] and x["at"] >= started):
                 return x
@@ -98,14 +106,10 @@ def follow():
         time.sleep(2)
 
 
-def whoami(token):
-    req = urllib.request.Request(HS + "/_matrix/client/v3/account/whoami", headers={"Authorization": f"Bearer {token}"})
-    with urllib.request.urlopen(req, timeout=10) as r:
-        return json.load(r)["user_id"]
+USERS = weft_users.Users(HS, OWNER, ttl=300)
 
 
 class Api(BaseHTTPRequestHandler):
-    tokens = {}
 
     def log_message(self, *a):
         pass
@@ -119,23 +123,6 @@ class Api(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def karchi(self):
-        token = (self.headers.get("Authorization") or "").removeprefix("Bearer ").strip()
-        if not token:
-            return False
-        now = time.time()
-        for t, at in list(self.tokens.items()):
-            if now - at >= 300:
-                self.tokens.pop(t, None)
-        if token in self.tokens:
-            return True
-        try:
-            ok = whoami(token) == OWNER
-        except Exception:
-            return False
-        if ok:
-            self.tokens[token] = now
-        return ok
 
     def do_GET(self):
         started = time.monotonic()
@@ -143,11 +130,12 @@ class Api(BaseHTTPRequestHandler):
         room = urllib.parse.parse_qs(u.query).get("room", [""])[0]
         if u.path != "/_typing/wait":
             return self.send(404, {"error": "not found"})
-        if not self.karchi():
-            return self.send(401, {"error": "Karchi's token only"})
+        user = USERS.who((self.headers.get("Authorization") or "").removeprefix("Bearer ").strip())
+        if not user:
+            return self.send(401, {"error": "a token of this server's people only"})
         if not room.startswith("!") or len(room) > 255:
             return self.send(400, {"error": "room missing"})
-        x = REPORTS.wait(room, started)
+        x = REPORTS.wait(user, room, started)
         if not x:
             return self.send(200, {"state": "unknown"})
         if x["error"]:

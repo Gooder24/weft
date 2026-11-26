@@ -23,6 +23,9 @@ import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "common"))
+import weft_users
+
 PORT = int(os.environ.get("WHEN_PORT", "29331"))
 LLM = os.environ.get("WHEN_LLM", "http://127.0.0.1:29332")
 HS = os.environ.get("WHEN_HS", "http://127.0.0.1:8008")
@@ -85,8 +88,10 @@ class Judge:
         self.model = threading.Lock()     # one question to the model at a time
         self.asked = []
 
-    def get(self, text, when):
-        key = hashlib.sha256(f"{when}\n{text}".encode()).hexdigest()
+    def get(self, text, when, person=""):
+        # person: "" for the owner (his verdicts keep their keys), anyone else's Matrix ID, so a kept verdict never
+        # tells one person what another person's messages said.
+        key = hashlib.sha256(f"{person}\n{when}\n{text}".encode() if person else f"{when}\n{text}".encode()).hexdigest()
         with self.lock:
             row = self.db.execute("select plan from verdicts where key = ?", (key,)).fetchone()
         if row:   # the title is not kept: the device falls back to its own
@@ -100,7 +105,8 @@ class Judge:
                 return {"plan": bool(row[0]), "title": None}
             now = time.time()
             self.asked = [t for t in self.asked if now - t < 60]
-            if len(self.asked) >= PER_MINUTE:
+            # A third of the model's minute stays the owner's, however many others ask.
+            if len(self.asked) >= (PER_MINUTE if not person else max(1, PER_MINUTE * 2 // 3)):
                 return None
             self.asked.append(now)
             try:
@@ -115,10 +121,8 @@ class Judge:
             self.model.release()
 
 
-def whoami(token):
-    req = urllib.request.Request(HS + "/_matrix/client/v3/account/whoami", headers={"Authorization": f"Bearer {token}"})
-    with urllib.request.urlopen(req, timeout=10) as r:
-        return json.load(r)["user_id"]
+USERS = weft_users.Users(HS, OWNER)
+ASKS = weft_users.Limit(120, 3600)  # questions an hour of one person other than the owner: the model is shared
 
 
 class Api(BaseHTTPRequestHandler):
@@ -134,20 +138,17 @@ class Api(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def karchi(self):
-        token = (self.headers.get("Authorization") or "").removeprefix("Bearer ").strip()
-        if not token:
-            return False
-        try:
-            return whoami(token) == OWNER
-        except Exception:
-            return False
+    def person(self):
+        """"" for the owner, the Matrix ID of anyone else of this server, None for everyone else."""
+        user = USERS.who((self.headers.get("Authorization") or "").removeprefix("Bearer ").strip())
+        return None if user is None else "" if user == OWNER else user
 
     def do_POST(self):
         if self.path != "/_when/judge":
             return self.send(404, {"error": "not found"})
-        if not self.karchi():
-            return self.send(401, {"error": "Karchi's token only"})
+        person = self.person()
+        if person is None:
+            return self.send(401, {"error": "a token of this server's people only"})
         try:
             size = int(self.headers.get("Content-Length") or 0)
             body = json.loads(self.rfile.read(min(size, 8192)) or b"{}")
@@ -156,7 +157,9 @@ class Api(BaseHTTPRequestHandler):
             return self.send(400, {"error": "text and when, please"})
         if not text.strip() or len(text) > 500 or len(when) > 60:
             return self.send(400, {"error": "text missing or too long"})
-        out = JUDGE.get(text, when)
+        if person and not ASKS.take(person):
+            return self.send(503, {"error": "the model is busy or down"})
+        out = JUDGE.get(text, when, person)
         if out is None:
             return self.send(503, {"error": "the model is busy or down"})
         self.send(200, out)
