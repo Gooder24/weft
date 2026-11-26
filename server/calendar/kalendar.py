@@ -40,7 +40,7 @@ from zoneinfo import ZoneInfo
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "common"))
-import weft_users
+import public_net, weft_users
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.environ.get("CALENDAR_DATA", os.path.join(HERE, "data"))
@@ -418,7 +418,7 @@ def public_url(url):
 def fetch_ics(url):
     url = re.sub(r"^webcal://", "https://", url.strip(), flags=re.I)
     req = urllib.request.Request(public_url(url), headers={"User-Agent": "Weft calendar", "Accept": "text/calendar, */*"})
-    with urllib.request.build_opener(PublicOnly).open(req, timeout=20) as r:
+    with public_net.opener(PublicOnly).open(req, timeout=20) as r:  # each connection checked again
         data = r.read(FETCH_MAX + 1)
     if len(data) > FETCH_MAX: raise ValueError("the calendar is larger than 10 MB")
     return data.decode("utf-8", "replace")

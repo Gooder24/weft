@@ -87,6 +87,7 @@ class Judge:
         self.lock = threading.Lock()      # the database
         self.model = threading.Lock()     # one question to the model at a time
         self.asked = []
+        self.owner_waiting = 0            # the owner's questions waiting for the model: others then wait their turn
 
     def get(self, text, when, person=""):
         # person: "" for the owner (his verdicts keep their keys), anyone else's Matrix ID, so a kept verdict never
@@ -96,8 +97,16 @@ class Judge:
             row = self.db.execute("select plan from verdicts where key = ?", (key,)).fetchone()
         if row:   # the title is not kept: the device falls back to its own
             return {"plan": bool(row[0]), "title": None}
-        if not self.model.acquire(timeout=WAIT):
-            return None
+        # The owner waits for the model; anyone else asks only while it is free, so at most one of their questions
+        # (a few seconds) is ever ahead of his.
+        if person:
+            if self.owner_waiting or not self.model.acquire(blocking=False): return None
+        else:
+            with self.lock: self.owner_waiting += 1
+            try: got = self.model.acquire(timeout=WAIT)
+            finally:
+                with self.lock: self.owner_waiting -= 1
+            if not got: return None
         try:
             with self.lock:   # asked meanwhile by another window
                 row = self.db.execute("select plan from verdicts where key = ?", (key,)).fetchone()

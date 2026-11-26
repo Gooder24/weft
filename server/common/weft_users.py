@@ -14,7 +14,10 @@ by default ~/matrix-spike/appservices), read again when that folder changes.
 """
 import glob, json, os, re, threading, time, urllib.parse, urllib.request
 
-LOCALPART = re.compile(r"^[a-z0-9_=\-][a-z0-9._=\-]*$")
+import yaml
+
+# What a homeserver may register (the spec's historical user id grammar: printable ASCII without a colon).
+LOCALPART = re.compile(r"^[\x21-\x39\x3b-\x7e]+$")
 
 
 def localpart(user):
@@ -26,7 +29,8 @@ def home(base, user, owner):
     if user == owner: return base
     lp = localpart(user)
     if not LOCALPART.match(lp): raise ValueError(f"not a user id: {user!r}")
-    path = os.path.join(base, "users", lp)
+    # One folder name per localpart, never "." or "..": every character but a-z 0-9 _ = - is written as %xx.
+    path = os.path.join(base, "users", "".join(c if re.match(r"[a-z0-9_=\-]", c) else f"%{ord(c):02x}" for c in lp))
     os.makedirs(path, mode=0o700, exist_ok=True)
     return path
 
@@ -35,15 +39,11 @@ def namespaces(folder):
     """The exclusive user patterns and bot ids of every appservice registration in folder."""
     patterns, bots = [], set()
     for f in sorted(glob.glob(os.path.join(folder, "*.yaml"))):
-        text = open(f, encoding="utf-8").read()
-        m = re.search(r"^sender_localpart:\s*['\"]?([^'\"\s]+)", text, re.M)
-        if m: bots.add(m.group(1))
-        # The users: block lists `- regex: ...` / `exclusive: ...` pairs; a registration without exclusive users
-        # (the double puppet's @.*) owns nobody.
-        block = re.search(r"^\s*users:\s*\n((?:\s+.*\n?)*?)(?=^\s*(?:aliases|rooms):|\Z)", text, re.M)
-        if not block: continue
-        for rx, excl in re.findall(r"regex:\s*['\"]?(.+?)['\"]?\s*\n\s*exclusive:\s*(\w+)", block.group(1)):
-            if excl.lower() == "true": patterns.append(re.compile(rx))
+        reg = yaml.safe_load(open(f, encoding="utf-8")) or {}
+        if reg.get("sender_localpart"): bots.add(str(reg["sender_localpart"]))
+        # A registration without exclusive users (the double puppet's @.*) owns nobody.
+        for ns in ((reg.get("namespaces") or {}).get("users") or []):
+            if ns.get("exclusive") is True and ns.get("regex"): patterns.append(re.compile(str(ns["regex"])))
     return patterns, bots
 
 

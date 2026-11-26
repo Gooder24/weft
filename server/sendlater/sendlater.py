@@ -272,6 +272,12 @@ def puppet(user):
     return Puppet(open(DOUBLEPUPPET).read().strip(), user)
 
 
+def again(user):
+    """The double puppet's token after a refusal, read again a minute later (it may have been replaced)."""
+    time.sleep(60)
+    return puppet(user), user
+
+
 class People:
     """The people besides the owner whose lists this watches, each in a thread of its own."""
     def __init__(self, owner):
@@ -280,6 +286,7 @@ class People:
         except (FileNotFoundError, ValueError): self.known = set()
 
     def start(self, user):
+        token = puppet(user)  # before it counts as running: a token that cannot be read is tried again next hello
         with self.lock:
             if user == self.owner or user in self.running: return
             self.running.add(user)
@@ -288,7 +295,7 @@ class People:
                 fd = os.open(PEOPLE_FILE + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IRUSR | stat.S_IWUSR)
                 with os.fdopen(fd, "w") as f: json.dump(sorted(self.known), f)
                 os.replace(PEOPLE_FILE + ".tmp", PEOPLE_FILE)
-        threading.Thread(target=watch, args=(puppet(user), user, lambda: (puppet(user), user)), daemon=True).start()
+        threading.Thread(target=watch, args=(token, user, lambda: again(user)), daemon=True).start()
 
 
 def serve(people, users):
@@ -297,7 +304,9 @@ def serve(people, users):
         def do_POST(self):
             user = users.who((self.headers.get("Authorization") or "").removeprefix("Bearer ").strip())
             code = 404 if self.path != "/_sendlater/hello" else 401 if not user else 200
-            if code == 200: people.start(user)
+            if code == 200:
+                try: people.start(user)
+                except OSError: code = 503
             body = b"{}"
             self.send_response(code)
             self.send_header("Content-Type", "application/json")
@@ -311,7 +320,9 @@ def main():
     token, user = login()
     if os.path.exists(DOUBLEPUPPET):
         people = People(user)
-        for other in sorted(people.known): people.start(other)
+        for other in sorted(people.known):
+            try: people.start(other)
+            except OSError as e: print(f"error: {other}: {e}", flush=True)
         threading.Thread(target=serve, args=(people, weft_users.Users(BASE, user)), daemon=True).start()
     watch(token, user, login)
 

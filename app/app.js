@@ -3275,6 +3275,8 @@ let laterChain = Promise.resolve();
 // The service learns once per session that this account schedules messages: it then sends them as this account
 // (every person of the server, not only the owner). Failing is harmless: the next change says it again.
 let laterHello = null;
+// Also at start while something of this account still waits: an earlier hello may not have reached the service.
+const helloIfWaiting = () => { if (laterItems().some((it) => !it.sent && !it.failed)) sayLaterHello(); };
 function sayLaterHello() {
   if (laterHello === S.userId) return;
   laterHello = S.userId;
@@ -15568,7 +15570,7 @@ function render() {
   // The box Karchi typed in is gone, no longer has the keys (another chat, the network switch) or is under a panel or
   // overlay (Ctrl+, keeps its focus behind the veil): he stopped typing there.
   if (typingOut && (document.activeElement?.dataset?.root !== typingOut.room || S.panel || S.overlay || S.offline)) typingStop();
-  if (S.view === 'main') { markRead(); if (!S.homeReady) { S.homeReady = true; cal.view = calDefault(); queueMicrotask(() => { loadCalendar(); probeAutomations(); if (S.surface === 'feed') feed.enter(); else feed.load(); }); } }
+  if (S.view === 'main') { markRead(); if (!S.homeReady) { S.homeReady = true; cal.view = calDefault(); queueMicrotask(() => { loadCalendar(); probeAutomations(); helloIfWaiting(); if (S.surface === 'feed') feed.enter(); else feed.load(); }); } }
 }
 
 // Never reload an active conversation's unsent work or an open native login window.

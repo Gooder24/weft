@@ -36,7 +36,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'common'))
-import weft_users
+import public_net, weft_users
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.environ.get('FEED_DATA', os.path.join(HERE, 'data'))
@@ -62,7 +62,7 @@ DEFAULTS = {'sources': [], 'instagram': True, 'daily': True, 'limitOnce': True, 
 # Every person of this server has a feed of their own: the owner's in DATA, anyone else's in DATA/users/<localpart>/,
 # each with its own reading windows, sources, Instagram session and locks. A request sets whose it is (CTX).
 CTX = threading.local()
-USERS = weft_users.Users(lambda: HS, OWNER)
+USERS = weft_users.Users(lambda: HS, OWNER, ttl=0)  # asked every time: a logout ends access at once
 _LOCKS, _LOCKS_LOCK = {}, threading.Lock()
 
 
@@ -139,7 +139,7 @@ def public_bytes(url, cookie=None):
     headers = {'User-Agent': 'Weft feed/1.0', 'Accept': 'application/rss+xml, application/atom+xml, */*'}
     if cookie: headers['Cookie'] = cookie
     req = urllib.request.Request(safe_url(url), headers=headers)
-    with urllib.request.build_opener(PublicRedirect()).open(req, timeout=20) as r:
+    with public_net.opener(PublicRedirect()).open(req, timeout=20) as r:  # each connection checked again
         data = r.read(MAX_BYTES + 1)
         if len(data) > MAX_BYTES: raise ValueError('Zdroj je priveľký (maximum 8 MB).')
         return data

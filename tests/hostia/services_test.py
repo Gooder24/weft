@@ -7,11 +7,12 @@ from harness import Server, call, ok, done, free_port
 from services_test_lib import load, serve
 
 class FakeModel(BaseHTTPRequestHandler):
-    asked = 0
+    asked, delay = 0, 0
     def log_message(self, *a): pass
     def do_POST(self):
         self.rfile.read(int(self.headers.get("Content-Length") or 0))
         FakeModel.asked += 1
+        time.sleep(FakeModel.delay)
         body = json.dumps({"choices": [{"message": {"content": json.dumps({"plan": True, "title": "Tréning"})}}]}).encode()
         self.send_response(200); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
 
@@ -42,8 +43,14 @@ with Server() as hs:
     ghost_tok = call("POST", f"{hs.url}/_matrix/client/v3/login", {"type": "m.login.application_service", "identifier": {"type": "m.id.user", "user": "net_ghost"}}, token=hs.as_token)[1].get("access_token")
     s, _ = res(ghost_tok) if ghost_tok else (401, None)
     ok("links: a bridge's ghost gets nothing", s == 401, s)
+    same = [res(hs.boris[1], f"https://same.org/{i}")[1].get("status") for i in range(9)]
+    ok("links: a friend's links of one site never limit the owner's of it", same.count("limited") >= 1 and res(hs.owner[1], "https://same.org/owner")[1].get("status") == "ok", same)
     many = [res(hs.boris[1], f"https://ex{i}.org/")[1].get("status") for i in range(12)]
     ok("links: one friend cannot use up the reading of all", many.count("limited") >= 2 and res(hs.owner[1], "https://owner.org/o")[1].get("status") == "ok", many)
+
+    import urllib.request
+    r = urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{port}/_links/resolve?url=https://example.org/x", headers={"Authorization": f"Bearer {hs.anna[1]}"}))
+    ok("links: answers vary by account, so a shared browser never shows one account another's", r.headers.get("Vary") == "Authorization")
 
     # ---- the plan judge
     mport = free_port()
@@ -63,6 +70,20 @@ with Server() as hs:
     ok("when: the owner's second ask comes from his kept verdict", s == 200 and FakeModel.asked == before + 2, FakeModel.asked)
     s, _ = judge("nope")
     ok("when: a bad token gets nothing", s == 401, s)
+    # A slow model (7–12 s on asus): friends' questions never make the owner's wait past his limit.
+    FakeModel.delay = 1.5
+    when.WAIT = 2.5
+    results = {}
+    def ask_as(name, who, t):
+        results[name] = judge(who, t)[0]
+    threads = [threading.Thread(target=ask_as, args=(f"b{i}", hs.boris[1], f"piatok {i} o 18:00")) for i in range(4)]
+    for t in threads: t.start()
+    time.sleep(0.2)
+    ask_as("owner", hs.owner[1], "sobota o 9:00 výlet")
+    for t in threads: t.join()
+    ok("when: the owner is answered while a friend's questions are asked", results["owner"] == 200, results)
+    ok("when: only one friend question at a time reaches the model", sum(1 for k, v in results.items() if k != "owner" and v == 200) <= 1, results)
+    FakeModel.delay = 0
 
     # ---- „píše…“
     typing = load("seen", "server/typing/seen.py", {**common, "TYPING_HS": hs.url, "TYPING_OWNER": hs.owner[0]})
@@ -83,4 +104,32 @@ with Server() as hs:
     s, _ = call("GET", f"http://127.0.0.1:{port}/_typing/wait?room=!r:weft.test", token="nope")
     ok("typing: a bad token gets nothing", s == 401, s)
     ok("typing: guest bridges are followed", "matrix-spike-whatsapp-guests" in typing.UNITS)
+
+# ---- who is a person, and their folders (no server needed)
+import tempfile
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "server", "common"))
+import weft_users, public_net
+d = tempfile.mkdtemp()
+with open(os.path.join(d, "a.yaml"), "w") as f:
+    f.write("id: a\nsender_localpart: abot\nnamespaces:\n  users:\n  - exclusive: true\n    regex: '@ab_.*:x\\.test'\n")
+u = weft_users.Users("http://unused", "@owner:x.test", appservice_dir=d)
+ok("people: exclusive written before regex still owns its puppets", not u.human("@ab_1:x.test") and not u.human("@abot:x.test") and u.human("@ann:x.test"))
+ok("people: any localpart the homeserver registers is a person", u.human("@.alice:x.test") and u.human("@alice+qa:x.test"))
+base = tempfile.mkdtemp()
+folders = {weft_users.home(base, f"@{lp}:x.test", "@owner:x.test") for lp in (".alice", "alice+qa", "..", "alice")}
+ok("people: every localpart has its own folder inside users/", len(folders) == 4 and all(os.path.dirname(f) == os.path.join(base, "users") for f in folders), folders)
+
+# ---- downloads reach only the internet, also when a name changes its answer between check and connection
+import socket
+real = socket.getaddrinfo
+answers = iter([[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.215.14", 443))], [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 443))]])
+socket.getaddrinfo = lambda *a, **k: next(answers)
+kal = load("kalendar", "server/calendar/kalendar.py", {"OWNER": "@owner:x.test"})
+try:
+    try: kal.fetch_ics("https://rebind.example/cal.ics"); refused = False  # checked public, then asus at the connection
+    except ValueError: refused = True
+    except Exception as e: refused = "not on the internet" in str(e)  # urllib wraps it
+finally:
+    socket.getaddrinfo = real
+ok("downloads: a name that turns into asus's own address is refused at the connection", refused is True)
 done()

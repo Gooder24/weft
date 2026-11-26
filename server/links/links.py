@@ -45,7 +45,8 @@ IMAGE_CAP = 3_000_000
 TTL_OK, TTL_FAIL = 24 * 3600, 1800
 CACHE_MAX = 2000
 RATE_ALL, RATE_HOST = 30, 8   # fetch starts per minute
-RATE_PERSON = 10              # fetch starts per minute of one person other than the owner, so nobody uses up RATE_ALL
+RATE_PERSON = 10              # fetch starts per minute of one person other than the owner
+# The owner's RATE_ALL and RATE_HOST count only his own starts: everyone else shares a budget of the same size.
 
 
 class Refused(Exception):
@@ -497,7 +498,8 @@ class Reader:
     def allowed(self, host, person=""):
         now = self.clock()
         self.starts = [(t, h, p) for t, h, p in self.starts if now - t < 60]
-        if len(self.starts) >= RATE_ALL or sum(1 for _, h, _ in self.starts if h == host) >= RATE_HOST:
+        mine = [(h, p) for _, h, p in self.starts if bool(p) == bool(person)]
+        if len(mine) >= RATE_ALL or sum(1 for h, _ in mine if h == host) >= RATE_HOST:
             return False
         if person and sum(1 for _, _, p in self.starts if p == person) >= RATE_PERSON:
             return False
@@ -531,8 +533,10 @@ class Reader:
                 self.cache[key] = (self.clock() + ttl, out)
                 if out["image"]:
                     self.images[(person, out["image"])] = self.clock() + TTL_OK
-                while len(self.cache) > CACHE_MAX:
-                    self.cache.pop(next(iter(self.cache)))
+                # The owner's cards and everyone else's are kept apart, so others' links never push his out.
+                same = [k for k in self.cache if bool(k[0]) == bool(person)]
+                for old in same[:max(0, len(same) - CACHE_MAX)]:
+                    self.cache.pop(old)
             return out
         finally:
             with self.lock:
@@ -562,6 +566,7 @@ class Api(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", cache)
+        self.send_header("Vary", "Authorization")  # one browser, two accounts: each gets only what it asked for
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(data)
