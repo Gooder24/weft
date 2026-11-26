@@ -5883,7 +5883,7 @@ function openTools() {
   render();
 }
 /** Esc or a click beside an overlay: Ctrl+J's goes back to what was under it. */
-/** `back`: Esc, which first steps Ctrl+N's network mode back to Karchi's own people (the field keeps the cursor and
+/** `back`: Esc, which first steps Ctrl+N's network mode (or its list of one network's people) back to Karchi's own people (the field keeps the cursor and
  *  what is typed); a click beside the overlay closes it whole. */
 function closeOverlay(back = false) {
   const o = S.overlay;
@@ -5891,6 +5891,7 @@ function closeOverlay(back = false) {
     remoteDrop(o);
     if (back) { o.remote = null; o.index = 0; render(); return; }
   }
+  if (o?.kind === 'new' && o.only && back) { Object.assign(o, { only: null, index: 0 }); render(); return; }
   if (o?.kind === 'new' && o.group && back) {
     if (o.group.state !== 'creating') { Object.assign(o, { group: null, query: '', index: 0 }); render(); }
     return; // Esc while the group is being made waits for its answer
@@ -6040,9 +6041,9 @@ function sideHead() {
     // Messages that wait come in with one click, never by themselves; no count, so nothing draws the eye.
     batchPrefs().mode !== 'live' ? windowButton() : null,
     h('button', { class: 'filter', title: T('Hľadať (Ctrl+K)'), onclick: () => openSearch() }, icon('search')),
-    // New chat is Ctrl+Shift+K on a keyboard; the button is there only for touch screens.
+    // A new chat on any network (also Ctrl+N), with its word: the pencil alone said nothing.
+    h('button', { class: 'filter word', title: T('Nová správa (Ctrl+N)'), onclick: openNewChat }, icon('pencil'), h('span', {}, T('Nová'))),
     h('button', { class: 'filter', title: T('Nastavenia (Ctrl+,)'), 'aria-label': T('Nastavenia'), onclick: () => togglePanel('settings') }, icon('sliders')),
-    h('button', { class: 'filter touchonly', title: T('Nová správa'), onclick: openNewChat }, icon('pencil')),
     S.menu ? h('div', { class: 'menu', onclick: (e) => e.stopPropagation() },
       BOXES.map(([id, label]) => h('button', { class: 'mi', onclick: () => setBox(id) }, h('span', { class: 'check' }, S.box === id ? '✓' : ''), label)),
       h('hr'),
@@ -9959,10 +9960,11 @@ async function loadContacts(o) {
  *                          no username or phone lookup, no friend or follow requests.
  *   WhatsApp:            only a full phone number (lookup_phone, resolve_identifier), new DM; no search.
  *   Teams (server/microsoft): people of Karchi's school or work directory by name or mail, a full address, new DM. */
+const HOME_CC = '421'; // the country code of a number typed without one
 const REMOTE = {
   instagram: { hint: T('Meno, @používateľ alebo odkaz na profil'), note: T('Kto ťa nesleduje, dostane správu ako žiadosť o správu. Sledovať ho Weft nevie: to sa dá iba v Instagrame.') },
   messenger: { hint: T('Meno na Facebooku alebo číselné ID profilu'), note: T('Kto nie je tvoj priateľ, dostane správu ako žiadosť o správu, ak ju jeho súkromie pustí. Žiadosť o priateľstvo Weft poslať nevie: to sa dá iba na Facebooku.') },
-  whatsapp: { hint: T('Celé číslo s predvoľbou, napr. +421 900 123 456'), note: T('WhatsApp nájde človeka iba podľa celého čísla; mená a priateľstvá tu nie sú.') },
+  whatsapp: { hint: T('Celé číslo, napr. 0900 123 456 alebo +421 900 123 456'), note: T('WhatsApp nájde človeka iba podľa celého čísla; mená a priateľstvá tu nie sú.') },
   teams: { hint: T('Meno alebo e-mail v škole či firme'), note: T('Teams nájde ľudí z adresára tvojej školy alebo firmy; ľudí mimo nej Weft nepridá.') },
 };
 // The same notes when profiles open in Weft's follow window (Settings → Prístupnosť).
@@ -9986,7 +9988,10 @@ function remoteAsk(app, text) {
   if (app === 'whatsapp') {
     const n = t.replace(/^(?:https?:\/\/)?(?:api\.)?wa\.me\//i, '+').replace(/[\s\-().\/]/g, '');
     const m = n.match(/^(?:\+|00)(\d{8,15})$/);
-    return m ? { kind: 'id', value: m[1] } : { error: T('WhatsApp nájde človeka iba podľa celého čísla s predvoľbou krajiny, napr. +421 900 123 456.') };
+    if (m) return { kind: 'id', value: m[1] };
+    // A number written as at home (0900 123 456) is a Slovak one.
+    const home = n.match(/^0([1-9]\d{7,9})$/);
+    return home ? { kind: 'id', value: `${HOME_CC}${home[1]}` } : { error: T('WhatsApp nájde človeka iba podľa celého čísla, napr. 0900 123 456 alebo +421 900 123 456.') };
   }
   const fb = t.match(/^(?:https?:\/\/)?(?:[a-z]+\.)?(?:facebook\.com\/profile\.php\?(?:.*&)?id=|messenger\.com\/t\/|m\.me\/)(\d+)/i);
   if (app === 'messenger' && fb) return { kind: 'id', value: fb[1] };
@@ -10375,64 +10380,92 @@ async function startChat(x) {
   }
 }
 
+/* Ctrl+N's rows that start on one network, one per connected network, so where to begin on each is in sight with the
+ * field empty (or when what is typed names the network): EduPage and Discord narrow the list to their people, the
+ * networks that look people up open their network mode, Gmail and Outlook a new mail from that app's account. */
+const START_NETS = [
+  { id: 'edupage', words: 'edupage skola ucitel', title: () => T('Správa na EduPage'), note: () => T('Učiteľovi zo školy, aj so súbormi') },
+  { id: 'whatsapp', words: 'whatsapp cislo telefon', title: () => T('Nové číslo na WhatsAppe'), note: () => T('Napíš číslo, napr. 0900 123 456') },
+  { id: 'teams', words: 'teams microsoft skola praca', title: () => T('Chat v Teams'), note: () => T('Človek zo školy alebo firmy, podľa mena alebo e-mailu') },
+  { id: 'messenger', words: 'messenger facebook', title: () => T('Človek na Messengeri'), note: () => T('Podľa mena alebo ID profilu') },
+  { id: 'instagram', words: 'instagram ig', title: () => T('Človek na Instagrame'), note: () => T('Podľa mena alebo @používateľa') },
+  { id: 'discord', words: 'discord', title: () => T('Priateľ na Discorde'), note: () => T('Z tvojich priateľov') },
+  { id: 'gmail', mail: true, words: 'gmail novy mail email google', title: () => T('Nový mail z Gmailu'), note: () => T('Z tvojho účtu Gmail') },
+  { id: 'outlook', mail: true, words: 'outlook novy mail email microsoft', title: () => T('Nový mail z Outlooku'), note: () => T('Z tvojho účtu Outlook') },
+];
+// The list narrowed to one network's people (o.only): what its field asks.
+const ONLY_ASK = { edupage: () => T('Ktorému učiteľovi na EduPage?'), discord: () => T('Ktorému priateľovi na Discorde?') };
+
+function startNets(o, query, mailTo) {
+  const hidden = hiddenApps();
+  const accounts = mailAccounts();
+  const linked = (id) => id === 'edupage' ? S.eduPeople.size > 0 || threads().length > 0 : !!S.links[id]?.length;
+  return START_NETS.filter((n) => !hidden.has(n.id) && linked(n.id)
+    && (n.mail ? accounts.some((l) => l.app.id === n.id) && (!query || mailTo || nameScore(n.words, query) >= 0) : !query || nameScore(n.words, query) >= 0))
+    .map((n) => {
+      const app = APPS.find((a) => a.id === n.id) || LINKS.find((a) => a.id === n.id);
+      const go = n.mail ? () => openMail(mailTo, '', accounts.find((l) => l.app.id === n.id).key)
+        : ONLY_ASK[n.id] ? () => { Object.assign(o, { only: n.id, query: '', index: 0 }); render(); }
+        : () => openRemote(o, n.id);
+      return {
+        go,
+        av: [h('div', { class: `icon ${n.mail ? 'mailicon' : 'grpicon'}` }, icon(n.mail ? 'mail' : 'pencil')), h('img', { class: 'badge', src: app.icon, alt: '' })],
+        title: n.mail && mailTo ? T`Nový mail pre ${mailTo}` : n.title(),
+        note: n.mail && mailTo ? n.title() : n.note(),
+      };
+    });
+}
+
 function newChatView(o) {
   if (o.remote) return remoteView(o);
   if (o.group) return groupView(o);
   const query = norm(o.query).trim();
   const people = contactList(o)
+    .filter((x) => !o.only || x.app === o.only)
     .map((x) => ({ x, score: query ? nameScore(x.name, query) : 0 }))
     .filter((p) => p.score >= 0)
     .sort((a, b) => a.score - b.score || b.x.sortTs - a.x.sortTs)
-    .slice(0, 30);
+    .slice(0, o.only ? 200 : 30);
   // Mail (Gmail, Outlook): a new mail, to the address being typed when it is one.
   const mailTo = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(o.query.trim()) ? o.query.trim() : '';
-  const mail = !o.link && mailAccounts().length && (!query || mailTo || nameScore('novy mail email gmail outlook', query) >= 0);
-  const mailApps = [...new Set(mailAccounts().map((l) => l.app))];
   // The last row leaves Weft's own people for one network's search (ArrowUp from the top reaches it).
   const outside = () => openRemote(o, o.link && S.rooms.get(o.link)?.archiveTo?.app);
-  // WhatsApp: a new group, and a full number typed here asks WhatsApp for it at once (the network mode, one Enter).
+  // WhatsApp: a new group, and a number typed here asks WhatsApp for it at once (the network mode, one Enter).
   const wa = !!S.links.whatsapp?.length && !hiddenApps().has('whatsapp');
   const waAsk = remoteAsk('whatsapp', o.query);
-  const number = wa && waAsk.kind === 'id' ? waAsk.value : '';
-  const group = wa && !o.link && (!query || nameScore('nova skupina whatsapp group', query) >= 0);
+  const number = wa && !o.only && waAsk.kind === 'id' ? waAsk.value : '';
+  const group = wa && !o.link && !o.only && (!query || nameScore('nova skupina whatsapp group', query) >= 0);
   // Matrix: a chat with @name:server or a room by #alias:server, typed whole.
-  const mx = matrixAsk(o);
-  const top = [
-    ...(number ? [() => { openRemote(o, 'whatsapp'); remoteSearch(o); }] : []),
-    ...(mail ? [() => openMail(mailTo)] : []),
-    ...(group ? [() => openGroup(o)] : []),
-    ...(mx ? [() => matrixStart(o, mx)] : []),
-  ];
-  o.flat = [...top, ...people.map(({ x }) => () => startChat(x)), outside];
-  if (o.index >= o.flat.length) o.index = 0;
-  const shift = top.length;
+  const mx = o.only ? null : matrixAsk(o);
   const waIcon = LINKS.find((a) => a.id === 'whatsapp').icon;
   const mxApp = LINKS.find((a) => a.id === 'matrix');
+  const top = [
+    ...(number ? [{ go: () => { openRemote(o, 'whatsapp'); remoteSearch(o); },
+      av: [h('div', { class: 'icon grpicon' }, icon('search')), h('img', { class: 'badge', src: waIcon, alt: '' })],
+      title: T`Napísať na WhatsApp +${number}`, note: T('WhatsApp najprv overí, či toto číslo má') }] : []),
+    ...(o.link || o.only ? [] : startNets(o, query, mailTo)),
+    ...(group ? [{ go: () => openGroup(o),
+      av: [h('div', { class: 'icon grpicon' }, icon('users')), h('img', { class: 'badge', src: waIcon, alt: '' })],
+      title: T('Nová skupina na WhatsAppe'), note: T('Vyber ľudí a názov · WhatsApp im to hneď oznámi') }] : []),
+    ...(mx ? [{ go: () => matrixStart(o, mx),
+      av: [h('div', { class: 'icon grpicon' }, icon(mx.room ? 'users' : 'plus')), h('img', { class: 'badge', src: mxApp.icon, alt: '' })],
+      title: mx.user ? T`Nový chat na Matrixe s ${mx.user}` : mx.room ? T`Vstúpiť do ${mx.room}` : T('Nový chat na Matrixe'),
+      note: mx.user || mx.room ? appLabel(mxApp) : T('Napíš @meno:server alebo #miestnosť:server') }] : []),
+  ];
+  o.flat = [...top.map((t) => t.go), ...people.map(({ x }) => () => startChat(x)), ...(o.only ? [] : [outside])];
+  if (o.index >= o.flat.length) o.index = 0;
+  const shift = top.length;
+  const onlyApp = o.only && APPS.find((a) => a.id === o.only);
   return [
-    cmdInput(o, o.link ? T`Kto je ${S.rooms.get(o.link)?.bridgeName || 'to'}? Jeho stará história pôjde s ním` : T('Komu chceš napísať?')),
+    cmdInput(o, o.link ? T`Kto je ${S.rooms.get(o.link)?.bridgeName || 'to'}? Jeho stará história pôjde s ním` : o.only ? ONLY_ASK[o.only]() : T('Komu chceš napísať?')),
     h('div', { class: 'results', ...listScroll(o) },
-      number ? resultRow(o, null, 0, [
-        h('div', { class: 'avwrap' }, h('div', { class: 'icon grpicon' }, icon('search')), h('img', { class: 'badge', src: waIcon, alt: '' })),
-        h('div', { class: 'rmeta' }, h('b', {}, T`Napísať na WhatsApp +${number}`), h('small', {}, T('WhatsApp najprv overí, či toto číslo má'))),
-      ]) : null,
-      mail ? resultRow(o, null, number ? 1 : 0, [
-        h('div', { class: 'avwrap' }, h('div', { class: 'icon mailicon' }, icon('mail')), h('img', { class: 'badge', src: (mailFrom()?.app || mailApps[0]).icon, alt: '' })),
-        h('div', { class: 'rmeta' }, h('b', {}, mailTo ? T`Nový mail pre ${mailTo}` : T('Nový mail')), h('small', {}, mailApps.map(appLabel).join(' alebo '))),
-      ]) : null,
-      group ? resultRow(o, null, shift - 1 - (mx ? 1 : 0), [
-        h('div', { class: 'avwrap' }, h('div', { class: 'icon grpicon' }, icon('users')), h('img', { class: 'badge', src: waIcon, alt: '' })),
-        h('div', { class: 'rmeta' }, h('b', {}, T('Nová skupina na WhatsAppe')), h('small', {}, T('Vyber ľudí a názov · WhatsApp im to hneď oznámi'))),
-      ]) : null,
-      mx ? resultRow(o, null, shift - 1, [
-        h('div', { class: 'avwrap' }, h('div', { class: 'icon grpicon' }, icon(mx.room ? 'users' : 'plus')), h('img', { class: 'badge', src: mxApp.icon, alt: '' })),
-        h('div', { class: 'rmeta' }, h('b', {}, mx.user ? T`Nový chat na Matrixe s ${mx.user}` : mx.room ? T`Vstúpiť do ${mx.room}` : T('Nový chat na Matrixe')),
-          h('small', {}, mx.user || mx.room ? appLabel(mxApp) : T('Napíš @meno:server alebo #miestnosť:server'))),
-      ]) : null,
-      people.length ? [h('div', { class: 'rsec' }, query ? T('Ľudia') : T('Nedávni')), people.map(({ x }, i) => resultRow(o, x, i + shift, [
+      top.length && !query ? h('div', { class: 'rsec' }, T('Začať nový chat')) : null,
+      top.map((t, i) => resultRow(o, null, i, [h('div', { class: 'avwrap' }, t.av), h('div', { class: 'rmeta' }, h('b', {}, t.title), h('small', {}, t.note))])),
+      people.length ? [h('div', { class: 'rsec' }, onlyApp ? onlyApp.name : query ? T('Ľudia') : T('Nedávni')), people.map(({ x }, i) => resultRow(o, x, i + shift, [
         h('div', { class: 'avwrap' }, avatar(x.avatar, x.name, 40), APPS.find((a) => a.id === x.app) ? h('img', { class: 'badge', src: APPS.find((a) => a.id === x.app).icon, alt: '' }) : null),
         h('div', { class: 'rmeta' }, h('b', {}, highlighted(x.name, o.query)), h('small', {}, [APPS.find((a) => a.id === x.app)?.name || '', x.note].filter(Boolean).join(' · '))),
       ]))] : h('div', { class: 'empty' }, T('Nikoho takého nepoznám.')),
-      resultRow(o, null, o.flat.length - 1, [
+      o.only ? h('div', { class: 'rnote dim' }, T('Esc sa vráti ku všetkým sieťam.')) : resultRow(o, null, o.flat.length - 1, [
         h('div', { class: 'avwrap' }, h('div', { class: 'icon outside' }, icon('search'))),
         h('div', { class: 'rmeta' }, h('b', {}, o.query.trim() ? T`Hľadať „${o.query.trim()}“ mimo kontaktov` : T('Hľadať mimo kontaktov')),
           h('small', {}, T('Instagram, Messenger, WhatsApp alebo Teams · jedna sieť, až po Enter'))),
@@ -13888,7 +13921,8 @@ const signedOut = (l) => {
  *  takes its own login back (its chats stay) and another account becomes a second login. */
 const signInAgain = (app, login) => startLink(app, app.flow, app.guardsRelogin ? login : null, login || {});
 
-const linkStartPath = (flow, login) => `/login/start/${flow}${login ? `?login_id=${q(login.id)}` : ''}`;
+/** `full`: Outlook and Teams ask for every feature ticked even right after a refused or closed full sign-in. */
+const linkStartPath = (flow, login, full) => `/login/start/${flow}${login ? `?login_id=${q(login.id)}` : full ? '?full=1' : ''}`;
 
 function startLink(app, flow = app.flow, relogin = null, again = null) {
   S.panel = 'link';
@@ -13896,7 +13930,7 @@ function startLink(app, flow = app.flow, relogin = null, again = null) {
   render();
   if (!window.desktop && !app.anywhere) return;
   if (app.legacy) return discordLogin(l);
-  prov(app, 'POST', linkStartPath(flow, relogin))
+  prov(app, 'POST', linkStartPath(flow, relogin, again?.full))
     .then((step) => { if (S.link === l) { l.id = step.login_id; advance(step); } })
     .catch((err) => { if (S.link === l) { l.error = err.message; l.busy = false; render(); } });
 }
@@ -15001,6 +15035,7 @@ const MS_FEATURES = {
   channel_read: T('čítanie kanálov a ľudia v tímoch'), chat_members: T('pridávanie ľudí do chatov'),
   recordings: T('prepisy a nahrávky stretnutí'),
 };
+const msFeat = { off: null, chain: Promise.resolve() };
 function microsoftFeatures(app) {
   const all = (S.msConsent ||= {});
   if (all[app.id] === undefined) {
@@ -15014,17 +15049,25 @@ function microsoftFeatures(app) {
   const here = new Set((S.links[app.id] || []).map((l) => l.id));
   r = { ...r, logins: (r.logins || []).filter((l) => here.has(l.id)) };
   const waiting = r.logins.filter((l) => l.missing?.length);
-  const choose = async (e, id) => {
-    const on = e.currentTarget.checked;
-    const off = (r.choices || []).filter((c) => (c.id === id ? !on : !c.on)).map((c) => c.id);
-    let res;
-    try { res = await prov(app, 'POST', '/features', { off }); } catch { alert(T('Nastavenie sa neuložilo.')); }
-    // The list stays in place while both rows ask again what now waits for consent.
-    for (const a of LINKS.filter((x) => x.flow === 'microsoft')) {
-      if (res?.choices && all[a.id] && all[a.id] !== 'loading') all[a.id] = { ...all[a.id], choices: res.choices };
-      prov(a, 'GET', '/consent').then((x) => { all[a.id] = x; if (S.panel === 'settings') render(); }, () => {});
-    }
+  const askAll = (id) => startLink(app, app.flow, null, { ...(S.links[app.id]?.find((x) => x.id === id) || {}), full: true });
+  // Ticks show at once; saves go one after another and only the newest choice is sent, so quick clicks add up.
+  const isOn = (c) => (msFeat.off ? !msFeat.off.has(c.id) : c.on);
+  const choose = (e, id) => {
+    const off = new Set((r.choices || []).filter((c) => !isOn(c)).map((c) => c.id));
+    if (e.currentTarget.checked) off.delete(id); else off.add(id);
+    msFeat.off = off;
     render();
+    msFeat.chain = msFeat.chain.then(async () => {
+      if (msFeat.off !== off) return; // a newer click sends its own list
+      let res;
+      try { res = await prov(app, 'POST', '/features', { off: [...off] }); } catch { alert(T('Nastavenie sa neuložilo.')); }
+      for (const a of LINKS.filter((x) => x.flow === 'microsoft')) {
+        if (res?.choices && all[a.id] && all[a.id] !== 'loading') all[a.id] = { ...all[a.id], choices: res.choices };
+        prov(a, 'GET', '/consent').then((x) => { if (!msFeat.off) all[a.id] = x; if (S.panel === 'settings') render(); }, () => {});
+      }
+      if (msFeat.off === off) msFeat.off = null;
+      render();
+    });
   };
   const copy = async (e) => {
     const b = e.currentTarget;
@@ -15036,15 +15079,15 @@ function microsoftFeatures(app) {
     h('p', { class: 'hint' }, T('Platí pre Outlook aj Teams. Prihlásenie a odkaz pre správcu pýtajú len zaškrtnuté; vypnuté Weft nepoužije.')),
     h('label', { class: 'bcheck' }, h('input', { type: 'checkbox', checked: true, disabled: true }), T('pošta, chaty a súbory (vždy)')),
     (r.choices || []).map((c) => h('label', { class: 'bcheck', 'data-key': `feat:${c.id}` },
-      h('input', { type: 'checkbox', checked: c.on, 'data-focus': `feat:${c.id}`, onchange: (e) => choose(e, c.id) }),
+      h('input', { type: 'checkbox', checked: isOn(c), 'data-focus': `feat:${c.id}`, onchange: (e) => choose(e, c.id) }),
       h('span', {}, MS_FEATURES[c.id] || c.name, c.admin ? h('small', {}, T('povolí len správca')) : c.work ? h('small', {}, T('len pracovný alebo školský účet')) : null))),
     r.logins.length ? h('h4', {}, T('Funkcie Microsoftu')) : null,
     (r.logins || []).map((l) => h('p', { class: 'hint', 'data-key': `ms:${l.id}` }, l.error ? `${l.name}: ${l.error}`
       : l.missing?.length ? T`${l.name}: čaká na súhlas: ${l.missing.map((m) => m.what).join(', ')}` : T`${l.name}: všetko vybrané je povolené`,
-      waiting.length > 1 && l.missing?.length ? [' ', h('button', { class: 'linkbtn', type: 'button', onclick: () => signInAgain(app, S.links[app.id]?.find((x) => x.id === l.id) || l) }, T('Povoliť vybrané'))] : null)),
+      waiting.length > 1 && l.missing?.length ? [' ', h('button', { class: 'linkbtn', type: 'button', onclick: () => askAll(l.id) }, T('Povoliť vybrané'))] : null)),
     waiting.length ? h('p', { class: 'hint' }, T('Povoliť vybrané ťa prihlási znova a Microsoft sa spýta na všetko zaškrtnuté naraz. Ak to škola alebo firma nedovolí, jej správca to povolí pre všetkých jedným odkazom.')) : null,
     waiting.length ? h('div', { class: 'row' },
-      waiting.length === 1 ? h('button', { class: 'primary', type: 'button', onclick: () => signInAgain(app, S.links[app.id]?.find((x) => x.id === waiting[0].id) || waiting[0]) }, T('Povoliť vybrané')) : null,
+      waiting.length === 1 ? h('button', { class: 'primary', type: 'button', onclick: () => askAll(waiting[0].id) }, T('Povoliť vybrané')) : null,
       h('button', { class: 'ghost', type: 'button', onclick: copy }, T('Kopírovať odkaz pre správcu')),
       h('button', { class: 'ghost', type: 'button', onclick: () => { delete all[app.id]; render(); } }, T('Skontrolovať znova'))) : null,
   ];

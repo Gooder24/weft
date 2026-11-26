@@ -110,8 +110,7 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
 .filter:hover { background: var(--hover); }
 .filter.on { border-color: var(--link); }
 .filter.on svg { color: var(--link); }
-.touchonly { display: none; }
-@media (max-width: 700px) and (hover: none) { .touchonly { display: flex; } }
+.filter.word { width: auto; gap: 4px; padding: 0 6px; color: var(--muted); font: inherit; font-size: var(--fs); }
 .menu {
   position: absolute; top: 38px; right: 10px; z-index: 5; min-width: 230px; padding: 6px;
   display: flex; flex-direction: column; background: var(--panel); border: var(--bw) solid var(--line-strong); border-radius: var(--radius-l);

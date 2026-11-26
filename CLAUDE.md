@@ -156,8 +156,12 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   over the whole archive and every network of a merged chat (archive `GET /_archive/stats?room=…`, which first copies
   the rooms' newest messages from the homeserver); in a group it is Karchi's own chat with that person. Its name opens
   the profile. Check: `overenie/profil-karta/run.sh` (`stats_test.py`, `ui.cjs`).
-- New chats (Ctrl+N): Weft's own people first; a full number typed there goes to WhatsApp at once, and „Hľadať mimo
-  kontaktov“ asks one network (Messenger and Instagram by name, WhatsApp by number, Teams in the directory). „Nová
+- New chats (Ctrl+N, or „Nová“ in the inbox head): with the field empty, one row per connected network says where to
+  start on it (`START_NETS`: EduPage and Discord narrow the list to their people, WhatsApp, Teams, Messenger and
+  Instagram open their network mode, Gmail and Outlook a new mail from that account), then recent people; a typed number
+  goes to WhatsApp at once (0900 123 456 is read as +421), and „Hľadať mimo
+  kontaktov“ asks one network (Messenger and Instagram by name, WhatsApp by number, Teams in the directory).
+  Check: `overenie/nova-sprava/run.sh`. „Nová
   skupina na WhatsAppe“ (also Ctrl+J) makes a group through the bridge's `POST /v3/create_group/group` after Karchi
   confirms; whom WhatsApp would not add gets the bridge's invitation in their chat only on a second yes. Check:
   `overenie/whatsapp-skupina/run.sh` (the bridge faked). Following on Instagram and friend requests on Facebook have
