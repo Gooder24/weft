@@ -43,5 +43,10 @@ as the author's user string unless the reply says `sk.karchi.edupage.reply_to: a
 without its id (no `changes`); the bridge then finds the item among the thread's replies or the message tab, so it
 is never reported as failed nor imported twice. Check: `tests/edupage/reply_test.py` (bridge venv).
 
+A message's attachments stay „Prílohy:“ lines in its text, which Weft shows as files. `POST /attachment {url}`
+copies one into Matrix when Weft shows it (a picture when its message is opened, a file when clicked): only an
+address a kept message names, read with the bridge's session, kept in table `attachments`, so EduPage is read once
+per file and never in bulk. Check: `tests/edupage/attachment_test.py`.
+
 Run `overenie/run.sh --edupage` for fake regression cases and read-only source-to-Matrix comparisons.
 Those local checks live in the globally ignored `overenie/` directory, per the verification skill.
