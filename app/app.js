@@ -13940,8 +13940,8 @@ function startLink(app, flow = app.flow, relogin = null, again = null) {
   if (app.legacy) return discordLogin(l);
   // Outlook and Teams sign in only once the feature choice being saved is on the bridge, whichever button started it.
   (app.flow === 'microsoft' ? msFeat.chain : Promise.resolve())
-    .then(() => prov(app, 'POST', linkStartPath(flow, relogin, again?.full)))
-    .then((step) => { if (S.link === l) { l.id = step.login_id; advance(step); } })
+    .then(() => (S.link === l ? prov(app, 'POST', linkStartPath(flow, relogin, again?.full)) : null)) // closed while waiting: no sign-in
+    .then((step) => { if (step && S.link === l) { l.id = step.login_id; advance(step); } })
     .catch((err) => { if (S.link === l) { l.error = err.message; l.busy = false; render(); } });
 }
 
@@ -15057,7 +15057,8 @@ function microsoftFeatures(app) {
   }
   let r = all[app.id];
   if (r === 'loading') return h('p', { class: 'hint' }, T('Zisťujem, čo Microsoft Weftu dovolil…'));
-  if (!r) return h('p', { class: 'hint' }, T('Most Microsoftu neodpovedá.'));
+  if (!r) return h('p', { class: 'hint' }, T('Most Microsoftu neodpovedá.'), ' ',
+    h('button', { class: 'linkbtn', type: 'button', onclick: () => { delete all[app.id]; render(); } }, T('Skontrolovať znova')));
   // An account signed out since the bridge answered is no longer listed.
   const here = new Set((S.links[app.id] || []).map((l) => l.id));
   r = { ...r, logins: (r.logins || []).filter((l) => here.has(l.id)) };
@@ -15081,7 +15082,7 @@ function microsoftFeatures(app) {
       for (const a of LINKS.filter((x) => x.flow === 'microsoft')) {
         if (all[a.id] && all[a.id] !== 'loading') all[a.id] = { ...all[a.id], ...(res?.choices ? { choices: res.choices } : {}), stale: true, failed: false };
         prov(a, 'GET', '/consent').then((x) => { if (seq === msFeat.seq && !Object.keys(msFeat.pending).length) all[a.id] = x; },
-          () => { if (seq === msFeat.seq && all[a.id]?.stale) all[a.id] = { ...all[a.id], failed: true }; })
+          () => { if (seq !== msFeat.seq) return; if (all[a.id]?.stale) all[a.id] = { ...all[a.id], failed: true }; else if (all[a.id] === 'loading') all[a.id] = null; })
           .then(() => { if (S.panel === 'settings') render(); });
       }
       render();
