@@ -9013,7 +9013,8 @@ async function openIgThread(r) {
         room = (await call('POST', `/create_dm/${q(`thread:${igThreadOf(r)}`)}?login_id=${q(login.id)}&user_id=${q(S.userId)}`, {}, app.base, AbortSignal.timeout(60e3))).dm_room_mxid;
         if (room) break;
       } catch (err) {
-        if (err.status === 404 && logins.length > 1) { missing = err; continue; } // the other account may have it
+        // Another account may have it (Instagram may refuse one that is not in the group with any error).
+        if (err.name !== 'TimeoutError' && login !== logins.at(-1)) { missing = err; continue; }
         throw err;
       }
     }

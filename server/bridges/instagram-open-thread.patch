@@ -1,4 +1,4 @@
-From 8c59601b819186635c1302153d76445e664caaf2 Mon Sep 17 00:00:00 2001
+From f9fdea1e50e18f90a2da1ac41b3dd5110ae53672 Mon Sep 17 00:00:00 2001
 From: Gooder24 <162874774+Gooder24@users.noreply.github.com>
 Date: Thu, 26 Nov 2026 08:24:39 +0100
 Subject: [PATCH] igconnector: open an existing thread by its FBID through
@@ -10,17 +10,17 @@ so it could not be written to again from Matrix.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- pkg/igconnector/openthread.go | 57 +++++++++++++++++++++++++++++++++++
+ pkg/igconnector/openthread.go | 95 +++++++++++++++++++++++++++++++++++
  pkg/igconnector/startchat.go  |  3 ++
- 2 files changed, 60 insertions(+)
+ 2 files changed, 98 insertions(+)
  create mode 100644 pkg/igconnector/openthread.go
 
 diff --git a/pkg/igconnector/openthread.go b/pkg/igconnector/openthread.go
 new file mode 100644
-index 0000000..5cf88c7
+index 0000000..27ef886
 --- /dev/null
 +++ b/pkg/igconnector/openthread.go
-@@ -0,0 +1,57 @@
+@@ -0,0 +1,95 @@
 +package igconnector
 +
 +import (
@@ -28,9 +28,11 @@ index 0000000..5cf88c7
 +	"fmt"
 +	"strconv"
 +	"strings"
++	"time"
 +
 +	"maunium.net/go/mautrix"
 +	"maunium.net/go/mautrix/bridgev2"
++	"maunium.net/go/mautrix/id"
 +
 +	"go.mau.fi/mautrix-meta/pkg/instameow/slidetypes"
 +)
@@ -50,6 +52,13 @@ index 0000000..5cf88c7
 +		if err != nil {
 +			return nil, fmt.Errorf("failed to get existing portal: %w", err)
 +		} else if portal != nil && portal.MXID != "" {
++			// Provisioning deletes a room the user is not in and makes a new one (CleanupOrphanedDM). A room being
++			// created right now (another open of the same thread) gets the user in a moment: wait for that, and
++			// never let a lookup (GET) delete a room.
++			if !createChat && !ic.userInRoom(ctx, portal.MXID) {
++				return nil, nil
++			}
++			ic.waitUserInRoom(ctx, portal.MXID) // still not in after it: provisioning makes a new room
 +			return &bridgev2.ResolveIdentifierResponse{Chat: &bridgev2.CreateChatResponse{PortalKey: portal.PortalKey, Portal: portal}}, nil
 +		}
 +	}
@@ -69,10 +78,39 @@ index 0000000..5cf88c7
 +	if err = ic.saveThreadMappings(ctx, thread); err != nil {
 +		return nil, fmt.Errorf("failed to save thread mappings: %w", err)
 +	}
++	key := ic.makePortalKey(thread.ThreadKey, thread.IsGroup)
++	// Another open made the room meanwhile: that one, once the user is in it.
++	if portal, err := ic.Main.Bridge.GetExistingPortalByKey(ctx, key); err == nil && portal != nil && portal.MXID != "" {
++		ic.waitUserInRoom(ctx, portal.MXID)
++		return &bridgev2.ResolveIdentifierResponse{Chat: &bridgev2.CreateChatResponse{PortalKey: key, Portal: portal}}, nil
++	}
 +	return &bridgev2.ResolveIdentifierResponse{Chat: &bridgev2.CreateChatResponse{
-+		PortalKey:  ic.makePortalKey(thread.ThreadKey, thread.IsGroup),
++		PortalKey:  key,
 +		PortalInfo: ic.wrapChatInfo(thread),
 +	}}, nil
++}
++
++func (ic *IGClient) userInRoom(ctx context.Context, roomID id.RoomID) bool {
++	members, err := ic.Main.Bridge.Matrix.GetMembers(ctx, roomID)
++	if err != nil {
++		return false
++	}
++	member, ok := members[ic.UserLogin.UserMXID]
++	return ok && member.Membership.IsInviteOrJoin()
++}
++
++// waitUserInRoom waits up to ten seconds for the user to get into a room that is being created.
++func (ic *IGClient) waitUserInRoom(ctx context.Context, roomID id.RoomID) {
++	for range 20 {
++		if ic.userInRoom(ctx, roomID) {
++			return
++		}
++		select {
++		case <-time.After(500 * time.Millisecond):
++		case <-ctx.Done():
++			return
++		}
++	}
 +}
 +
 +func cutThreadIdentifier(identifier string) (string, bool) {
