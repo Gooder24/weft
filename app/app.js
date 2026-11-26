@@ -8831,6 +8831,7 @@ function archiveCompose(r) {
   const to = r.archiveTo;
   const app = to && APPS.find((a) => a.id === to.app);
   if (!app && r.app === 'discord') return discordCompose(r);
+  if (!to && igThreadOf(r)) return igThreadCompose(r);
   if (!app) return h('div', { class: 'cnote' }, T('Uložená história · iba na čítanie'));
   if (MAIL_APPS.includes(to.app)) {
     // Only from the app the thread came to: an Outlook thread is never answered from Gmail.
@@ -8976,6 +8977,56 @@ async function openDiscord(x, archived = null) {
     alert(T`Chat sa nepodarilo otvoriť: ${err.message}`);
   } finally {
     dc.opening.delete(x.channel);
+    render();
+  }
+}
+
+/** The thread an old Instagram chat of the export is: its folder ends with the thread's id, which Instagram's own
+ *  address /direct/t/<id>/ carries too. Its people need no search: the bridge opens that very thread. */
+const igThreadOf = (r) => r.app === 'instagram' && /^archive:instagram:(?:inbox|message_requests)\/[^/]*_(\d{6,20})$/.exec(r.id)?.[1] || '';
+
+/** Under an old Instagram group (or a chat whose person the export does not name): open that thread as a live chat. */
+function igThreadCompose(r) {
+  const busy = !!r.reaching;
+  return h('div', { class: 'reach' },
+    h('small', {}, T('Starý chat z Instagramu. Otvorením sa z neho stane živý chat s poslednými správami.')),
+    h('div', { class: 'row' },
+      h('button', { class: 'primary', disabled: busy, onclick: () => openIgThread(r) }, busy ? T('Otváram chat…') : T('Otvoriť chat')),
+      h('a', { class: 'linkbtn', href: `https://www.instagram.com/direct/t/${igThreadOf(r)}/`, target: '_blank', rel: 'noopener noreferrer' }, T('Otvoriť na Instagrame ↗'))));
+}
+
+/** The bridge opens the thread by its id (POST /v3/create_dm/thread:<id>, server/bridges/instagram-open-thread.patch),
+ *  with the first account that has it; the old history then belongs to that room. */
+async function openIgThread(r) {
+  if (r.reaching) return;
+  const app = LINKS.find((a) => a.id === 'instagram');
+  r.reaching = T('Otváram chat…');
+  render();
+  try {
+    if (S.links.instagram === undefined) await refreshLinks();
+    const logins = (S.links.instagram || []).filter((l) => ['CONNECTED', 'CONNECTING', 'BACKFILLING'].includes(l.state?.state_event || 'CONNECTED'));
+    if (!logins.length) throw new Error(T`${app.name} je odpojený. Pripoj ho v Nastaveniach → Účty.`);
+    let room = '';
+    let missing = null;
+    for (const login of logins) {
+      try {
+        room = (await call('POST', `/create_dm/${q(`thread:${igThreadOf(r)}`)}?login_id=${q(login.id)}&user_id=${q(S.userId)}`, {}, app.base, AbortSignal.timeout(60e3))).dm_room_mxid;
+        if (room) break;
+      } catch (err) {
+        if (err.status === 404 && logins.length > 1) { missing = err; continue; } // the other account may have it
+        throw err;
+      }
+    }
+    if (!room) throw missing || new Error(T('most nevrátil chat'));
+    const linked = await linkArchived(r.id, room);
+    if (linked !== room) alert(T('Táto stará história už bola pripojená k inému chatu (napr. v inom okne), otváram ten.'));
+  } catch (err) {
+    alert(T`Chat sa nepodarilo otvoriť: ${err.name === 'TimeoutError' ? T('most neodpovedá')
+      : err.status === 404 ? T('Instagram tento chat nenašiel, možno si zo skupiny odišiel')
+      : err.status === 400 ? T('most je starší a chat otvoriť nevie')
+      : err.message}`);
+  } finally {
+    r.reaching = null;
     render();
   }
 }

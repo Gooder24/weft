@@ -187,6 +187,10 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   (`server/bridges/instagram-carousel.patch`, asus build/meta branch `weft-ig-carousel` on `weft-archive-ig`). The bubble
   shows each small under the large one and the viewer pages through them; the bridge's fill-in edit never waits for a
   reading window. Posts resolved before 2026-11-20 keep one photo. Check: `overenie/ig-carousel/ui.cjs`.
+  The bridge syncs only the first page of Instagram's inbox, so an old chat of the export (a group, or one whose
+  person it does not name) may have no live room: under it „Otvoriť chat“ opens that very thread by the id its export
+  folder ends with (`POST /v3/create_dm/thread:<id>`, `server/bridges/instagram-open-thread.patch`, asus build/meta-carousel
+  branch `weft-ig-open-thread`) and moves the old history into it. Check: `overenie/ig-group/ui.cjs`.
   A shared reel or story is its video alone, without the page's card or address; Preposlať (the hover bar, a right
   click on it, the viewer) shows the address without Instagram's tracking parameters and puts it into a picked chat's
   message box, unsent; „Kopírovať odkaz“ copies it. Check: `overenie/reels/ui.cjs`.
