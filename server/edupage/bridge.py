@@ -909,12 +909,17 @@ def school_recipients(edu: Edupage) -> dict:
     if role == "parent":
         return {"role": role, "recipients": sorted(out, key=lambda r: r["name"])}
     mine = str((students.get(me) or {}).get("classid") or "") if role == "student" else ""
+    # A pupil's groups are only those his account belongs to (EduPage's userGroups, else the plan's pupils).
+    member = set(edu.data.get("userGroups") or [])
     for cid, c in classes.items():
         if role == "teacher" or cid == mine:
             add(id=f"StudTrieda{cid}", parents=f"Trieda{cid}", name=short(cid), kind="class",
                 count=sum(1 for st in students.values() if current(st) and str(st.get("classid")) == cid),
                 own=role == "teacher" and me in (str(c.get("teacherid")), str(c.get("teacher2id"))))
     for pid, plan in plans.items():  # named as EduPage names them: "III. A · Slovenský jazyk a literatúra - Literatúra"
+        pupils_of = {str(x) for x in plan.get("students") or []}
+        if role == "student" and (f"StudPlan{pid}" not in member if member else pupils_of and me not in pupils_of):
+            continue
         subject = str(plan.get("predmetMeno") or plan.get("nazov") or (subjects.get(str(plan.get("predmetid"))) or {}).get("name") or "").strip()
         part = str(plan.get("zlozka") or "").strip()
         cls = str(plan.get("triedaMeno") or short(plan.get("triedaid"))).strip()
@@ -1601,6 +1606,7 @@ class Account:
             same = self.creds and self.creds.get("login_id") == creds["login_id"]
             creds["backfilled"] = bool(same and self.creds.get("backfilled"))
             self.edu, self.creds = edu, creds
+            self.teachers, self.recipients = [], {"role": "", "recipients": []}  # the next poll reads this login's
             self.state, self.message = ("CONNECTED" if creds["backfilled"] else "BACKFILLING"), ""
             self.save()
         self.wake.set()
@@ -1610,6 +1616,7 @@ class Account:
             if not self.creds or self.creds["login_id"] != login_id:
                 return False
             edu, self.edu, self.creds = self.edu, None, None
+            self.teachers, self.recipients = [], {"role": "", "recipients": []}
             ACCOUNT_FILE.unlink(missing_ok=True)
         if edu:
             try:
@@ -1677,7 +1684,8 @@ class Account:
             log("teachers failed:", type(err).__name__)
         else:
             with self.lock:
-                self.teachers, self.recipients = teachers, recipients
+                if self.creds and self.creds["login_id"] == creds["login_id"]:  # not a login replaced meanwhile
+                    self.teachers, self.recipients = teachers, recipients
         rooms.keep(items)
         self.nudge_timetable(items, rooms.db)
         rooms.fetch_materials(edu, items)
@@ -1838,22 +1846,16 @@ class Account:
                 continue
             root = rooms.root_of(answers) if answers else None
             flags = None
-            if isinstance(recipient, dict):  # Weft's "Komu" list: EduPage ids, each one GET /contacts offers
-                with self.lock:
-                    offered = {i for r in self.recipients["recipients"] for i in (r["id"], r.get("parents")) if i}
-                    teacher_role = self.recipients["role"] == "teacher"
-                ids = list(dict.fromkeys(recipient["to"]))
-                to = ";".join(ids) if ids and not answers and all(i in offered for i in ids) else None
-                flags = message_flags(recipient.get("options")) if teacher_role else None
+            many = isinstance(recipient, dict)  # Weft's "Komu" list: checked once connected, against that login's school
+            if many:
+                to = None
             else:
                 with self.lock:
                     teacher = any(t["id"] == recipient for t in self.teachers)
                 known = teacher or (rooms.db.execute("SELECT 1 FROM ghosts WHERE mxid = ?", (recipient,)).fetchone() if recipient else None)
                 to = recipient_id(recipient) if known and not answers else None
-            if root is None and to is None:
-                rooms.say(room_id, "Neodoslané: niektorého adresáta EduPage teraz neponúka. Vyber adresátov v Ctrl+N znova."
-                          if isinstance(recipient, dict) else
-                          "Neodoslané: EduPage nevie poslať správu bez adresáta. Odpovedz na konkrétnu správu.", event_id)
+            if root is None and to is None and not (many and not answers):
+                rooms.say(room_id, "Neodoslané: EduPage nevie poslať správu bez adresáta. Odpovedz na konkrétnu správu.", event_id)
                 continue
             with self.lock:
                 creds, edu = (dict(self.creds) if self.creds else None), self.edu
@@ -1863,6 +1865,16 @@ class Account:
             try:
                 if edu is None:
                     edu = self.connect(creds)
+                if many and root is None:
+                    # Only ids the signed-in account's school offers it now (GET /contacts shows the same list).
+                    school = school_recipients(edu)
+                    offered = {i for r in school["recipients"] for i in (r["id"], r.get("parents")) if i}
+                    ids = list(dict.fromkeys(recipient["to"]))
+                    if not ids or not all(i in offered for i in ids):
+                        rooms.say(room_id, "Neodoslané: niektorého adresáta EduPage teraz neponúka. Vyber adresátov v Ctrl+N znova.", event_id)
+                        continue
+                    to = ";".join(ids)
+                    flags = message_flags(recipient.get("options")) if school["role"] == "teacher" else None
                 blobs = [(str(f.get("name") or "subor"), str(f.get("mimetype") or ""), matrix_file(str(f.get("url") or "")))
                          for f in files]
 

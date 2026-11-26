@@ -9630,7 +9630,8 @@ function eduPickView(o) {
   const listed = new Set(recipients.map((r) => r.ghost).filter(Boolean));
   const others = [...S.names].filter(([id]) => /^@edupage_(ucitel|student|rodic)/.test(id) && !listed.has(id))
     .map(([id, name]) => ({ ghost: id, name, kind: 'person' }));
-  const everyone = [...recipients, ...others];
+  // From „Pridať“ only the school's entries: someone outside it can get a message only alone.
+  const everyone = [...recipients, ...(o.eduAdd ? [] : others)];
   const matching = (list) => (query
     ? list.map((r) => ({ r, score: nameScore(r.name, query) })).filter((x) => x.score >= 0)
       .sort((a, b) => a.score - b.score || recent(b.r) - recent(a.r)).map((x) => x.r)
