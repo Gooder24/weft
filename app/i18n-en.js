@@ -1499,4 +1499,5 @@ export default {
   "Vyber chat vľavo.": "Pick a chat on the left.",
   "Pripoj Messenger, Instagram, WhatsApp alebo Discord a tvoje správy prídu sem.": "Connect Messenger, Instagram, WhatsApp or Discord and your messages come here.",
   "Pripojiť účty": "Connect accounts",
+  "Odoslať neskôr na tomto serveri nie je.": "Send later is not available on this server.",
 };

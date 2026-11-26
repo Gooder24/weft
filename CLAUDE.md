@@ -38,10 +38,15 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   invitation code, the homeserver's registration token (`registration_token_file` in asus `tuwunel.toml`). They reach
   asus through the Cloudflare tunnel on dell, which sends the public name to Caddy's site `http://:3482` on asus. That
   site lets only dell connect and passes only an allowlist: the app, Matrix's client API and the WhatsApp, Messenger,
-  Instagram and Discord bridges. Those bridges let every account of the server sign in its own networks (`permissions`
-  `<server name>: user`). Discord gets the caller's own user id from setup.py's forward_auth (`X-Weft-User`). Weft
-  leaves out what the server refuses an account (`notOffered` in app.js: 401/403/404): EduPage, mail, calendar, feed,
-  connectors and the archive stay Karchi's. Check: `overenie/hostia/` (guest view, isolation).
+  Instagram and Discord bridges. Those are the guests' own bridges, never Karchi's: asus `~/matrix-spike/<net>-guests/`
+  (units `matrix-spike-<net>-guests`, appservices `<net>-guests.yaml`, ports 29350–29353), the same binaries with their
+  own database, puppets (`whatsappg_`, `facebookg_`, `instagramg_`, `discordg_`) and `split_portals: true`, so a friend
+  in one of Karchi's groups gets a room of their own, not his room with its history. Their permissions refuse Karchi,
+  and Karchi's bridges admit only him. Discord gets the caller's own user id from setup.py's forward_auth
+  (`/_bridges/auth-guest`, header `X-Weft-User`). Weft leaves out what the server refuses an account (`notOffered` in
+  app.js: 401/403/404, kept per account in localStorage `ep_absent:<user>`): EduPage, mail, calendar, feed and its
+  reading windows (nothing waits), send later, connectors, automations and the archive stay Karchi's. Check:
+  `overenie/hostia/` (guest view, isolation).
 - `desktop/` is the Electron shell, installed on x270 in `~/.local/share/spravy`. Its login windows go out through
   an `ssh -D` tunnel to asus and wait until Meta's checks are done.
   Checks: `overenie/ig-checkpoint/` (`window.cjs`, `tunnel.cjs`).
