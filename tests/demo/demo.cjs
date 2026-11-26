@@ -106,13 +106,13 @@ async function main() {
     await p.keyboard.down('Control'); await p.keyboard.press(','); await p.keyboard.up('Control');
     await sleep(300);
 
-    // Ctrl+N: Nový mail names Gmail (beta).
+    // Ctrl+N: one row per connected network, Gmail's a new mail from that account.
     await p.keyboard.down('Control'); await p.keyboard.press('n'); await p.keyboard.up('Control');
     await p.waitForSelector('.cmd.new .cmdinput', { timeout: 5000 });
     await sleep(500);
     const newChat = await p.$eval('.cmd.new', (e) => e.innerText);
-    ok('Ctrl+N Nový mail says Gmail (beta)', /Nový mail[\s\S]*Gmail \(beta\)/.test(newChat), newChat.slice(0, 160).replace(/\s+/g, ' '));
-    await shot('05-new-mail-gmail-beta');
+    ok('Ctrl+N offers a new mail from Gmail', newChat.includes('Nový mail z Gmailu'), newChat.slice(0, 160).replace(/\s+/g, ' '));
+    await shot('05-new-mail-gmail');
     // …and, with a Matrix account, a new chat by @name:server and a room by #alias:server.
     ok('Ctrl+N offers a new Matrix chat', newChat.includes('Nový chat na Matrixe'));
     // Choosing the row with nothing typed puts "@" in the field and the address is typed after it.

@@ -1,4 +1,5 @@
-// axe-core on the screens that load without a server: the login form and the form after a refused login.
+// axe-core on the screens that load without a server: the welcome screen, the login form and the form after a refused
+// login.
 // Known violations live in axe-baseline.json (node axe.cjs --update-baseline rewrites it); a new one fails the run.
 'use strict';
 const fs = require('node:fs');
@@ -19,7 +20,12 @@ async function main() {
   app.page.on('pageerror', (err) => errors.push(String(err && err.message || err)));
   const views = {};
   try {
+    // A device that never chose a language starts on the welcome screen; one that did goes straight to the login.
     await app.page.goto(app.base + '/', { waitUntil: 'networkidle0' });
+    await app.page.waitForSelector('.form.welcome');
+    views['welcome'] = await runAxe(app.page);
+    await app.page.evaluate(() => localStorage.setItem('ep_lang', 'sk'));
+    await app.page.reload({ waitUntil: 'networkidle0' });
     await app.page.waitForSelector('form.form input[name=password]');
     views['login'] = await runAxe(app.page);
 

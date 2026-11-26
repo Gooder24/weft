@@ -30,6 +30,9 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "common"))
+import weft_users
+
 PORT = int(os.environ.get("LINKS_PORT", "29329"))
 HS = os.environ.get("LINKS_HS", "http://127.0.0.1:8008")
 OWNER = os.environ.get("LINKS_OWNER", "")  # the owner's Matrix ID, from ~/.config/weft/weft.env on asus; the service needs it
@@ -42,6 +45,8 @@ IMAGE_CAP = 3_000_000
 TTL_OK, TTL_FAIL = 24 * 3600, 1800
 CACHE_MAX = 2000
 RATE_ALL, RATE_HOST = 30, 8   # fetch starts per minute
+RATE_PERSON = 10              # fetch starts per minute of one person other than the owner
+# The owner's RATE_ALL and RATE_HOST count only his own starts: everyone else shares a budget of the same size.
 
 
 class Refused(Exception):
@@ -481,37 +486,43 @@ def resolve(url, fetcher=fetch):
 class Reader:
     def __init__(self, fetcher=fetch, clock=time.time):
         self.fetcher, self.clock = fetcher, clock
-        self.cache = {}          # url -> (expires, result)
-        self.flying = {}         # url -> threading.Event, while one thread fetches it
-        self.starts = []         # (time, host) of recent fetch starts
-        self.images = {}         # image url -> expires: only images a result named may be proxied
+        # Keyed by (person, url): "" is the owner, anyone else their Matrix ID, so nobody can tell from a fast answer
+        # which links another person opened.
+        self.cache = {}          # (person, url) -> (expires, result)
+        self.flying = {}         # (person, url) -> threading.Event, while one thread fetches it
+        self.starts = []         # (time, host, person) of recent fetch starts
+        self.images = {}         # (person, image url) -> expires: only images a result named may be proxied
         self.lock = threading.Lock()
         self.fetches = 0
 
-    def allowed(self, host):
+    def allowed(self, host, person=""):
         now = self.clock()
-        self.starts = [(t, h) for t, h in self.starts if now - t < 60]
-        if len(self.starts) >= RATE_ALL or sum(1 for _, h in self.starts if h == host) >= RATE_HOST:
+        self.starts = [(t, h, p) for t, h, p in self.starts if now - t < 60]
+        mine = [(h, p) for _, h, p in self.starts if bool(p) == bool(person)]
+        if len(mine) >= RATE_ALL or sum(1 for h, _ in mine if h == host) >= RATE_HOST:
             return False
-        self.starts.append((now, host))
+        if person and sum(1 for _, _, p in self.starts if p == person) >= RATE_PERSON:
+            return False
+        self.starts.append((now, host, person))
         return True
 
-    def get(self, url):
+    def get(self, url, person=""):
         url = url.strip()
+        key = (person, url)
         while True:
             with self.lock:
-                hit = self.cache.get(url)
+                hit = self.cache.get(key)
                 if hit and hit[0] > self.clock():
                     return hit[1]
-                wait = self.flying.get(url)
+                wait = self.flying.get(key)
                 if not wait:
                     try:
                         host = (urllib.parse.urlsplit(url).hostname or "").lower()
                     except ValueError:  # "http://[::1" and other broken brackets
                         return result(url, status="error", reason="Neplatná adresa.")
-                    if not self.allowed(host):
+                    if not self.allowed(host, person):
                         return result(url, status="limited", reason="Weft teraz číta priveľa odkazov naraz; skús o minútu.")
-                    self.flying[url] = threading.Event()
+                    self.flying[key] = threading.Event()
                     break
             wait.wait(DEADLINE * 3)
         try:
@@ -519,19 +530,27 @@ class Reader:
             out = resolve(url, self.fetcher)
             with self.lock:
                 ttl = TTL_OK if out["status"] in ("ok", "partial", "not_found", "private", "unsupported", "blocked") else TTL_FAIL
-                self.cache[url] = (self.clock() + ttl, out)
+                self.cache[key] = (self.clock() + ttl, out)
                 if out["image"]:
-                    self.images[out["image"]] = self.clock() + TTL_OK
-                while len(self.cache) > CACHE_MAX:
-                    self.cache.pop(next(iter(self.cache)))
+                    self.images.pop((person, out["image"]), None)  # renewed goes to the end: the newest are kept
+                    self.images[(person, out["image"])] = self.clock() + TTL_OK
+                    # Expired ones go, and each side keeps at most CACHE_MAX (others' never push out the owner's).
+                    now = self.clock()
+                    for k in [k for k, t in self.images.items() if t <= now]: self.images.pop(k)
+                    side = [k for k in self.images if bool(k[0]) == bool(person)]
+                    for old in side[:max(0, len(side) - CACHE_MAX)]: self.images.pop(old)
+                # The owner's cards and everyone else's are kept apart, so others' links never push his out.
+                same = [k for k in self.cache if bool(k[0]) == bool(person)]
+                for old in same[:max(0, len(same) - CACHE_MAX)]:
+                    self.cache.pop(old)
             return out
         finally:
             with self.lock:
-                self.flying.pop(url).set()
+                self.flying.pop(key).set()
 
-    def image_ok(self, url):
+    def image_ok(self, url, person=""):
         with self.lock:
-            return self.images.get(url, 0) > self.clock()
+            return self.images.get((person, url), 0) > self.clock()
 
 
 READER = Reader()
@@ -539,14 +558,10 @@ READER = Reader()
 
 # ------------------------------------------------------------------ HTTP
 
-def whoami(token):
-    req = urllib.request.Request(HS + "/_matrix/client/v3/account/whoami", headers={"Authorization": f"Bearer {token}"})
-    with urllib.request.urlopen(req, timeout=10) as r:
-        return json.load(r)["user_id"]
+USERS = weft_users.Users(HS, OWNER, ttl=300)
 
 
 class Api(BaseHTTPRequestHandler):
-    tokens = {}
 
     def log_message(self, *a):
         pass
@@ -557,40 +572,29 @@ class Api(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", cache)
+        self.send_header("Vary", "Authorization")  # one browser, two accounts: each gets only what it asked for
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(data)
 
-    def karchi(self):
-        token = (self.headers.get("Authorization") or "").removeprefix("Bearer ").strip()
-        if not token:
-            return False
-        now = time.time()
-        for t, at in list(self.tokens.items()):
-            if now - at >= 300:
-                self.tokens.pop(t, None)
-        if token in self.tokens:
-            return True
-        try:
-            ok = whoami(token) == OWNER
-        except Exception:
-            return False
-        if ok:
-            self.tokens[token] = now
-        return ok
+    def person(self):
+        """"" for the owner, the Matrix ID of anyone else of this server, None for everyone else."""
+        user = USERS.who((self.headers.get("Authorization") or "").removeprefix("Bearer ").strip())
+        return None if user is None else "" if user == OWNER else user
 
     def do_GET(self):
         u = urllib.parse.urlsplit(self.path)
         url = urllib.parse.parse_qs(u.query).get("url", [""])[0]
         if u.path not in ("/_links/resolve", "/_links/image"):
             return self.send(404, {"error": "not found"})
-        if not self.karchi():
-            return self.send(401, {"error": "Karchi's token only"})
+        person = self.person()
+        if person is None:
+            return self.send(401, {"error": "a token of this server's people only"})
         if not url or len(url) > 2048:
             return self.send(400, {"error": "url missing or too long"})
         if u.path == "/_links/resolve":
-            return self.send(200, READER.get(url))
-        if not READER.image_ok(url):
+            return self.send(200, READER.get(url, person))
+        if not READER.image_ok(url, person):
             return self.send(404, {"error": "unknown image"})
         try:
             _, status, ctype, body = fetch(url, IMAGE_CAP, "image/avif,image/webp,image/png,image/jpeg,image/gif")

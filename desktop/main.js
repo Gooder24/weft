@@ -13,19 +13,21 @@ const net = require('node:net');
 const { spawn, execFile } = require('node:child_process');
 const crypto = require('node:crypto');
 
-// The Weft server: SPRAVY_URL, else the first line of ~/.config/weft/url; without a valid one the app says so and quits.
+// The Weft server: SPRAVY_URL, else the first line of ~/.config/weft/url, else the server the installer was built for
+// (server.json, written by the Windows build); without a valid one the app says so and quits.
 function appUrl() {
   if (process.env.SPRAVY_URL) return process.env.SPRAVY_URL;
   try {
     const saved = fs.readFileSync(path.join(os.homedir(), '.config/weft/url'), 'utf8').split('\n')[0].trim();
     if (saved) return saved;
   } catch {}
+  try { return JSON.parse(fs.readFileSync(path.join(__dirname, 'server.json'), 'utf8')).url || ''; } catch {}
   return '';
 }
 const APP_ORIGIN = (() => { try { const u = new URL(appUrl()); return /^https?:$/.test(u.protocol) ? u.origin : ''; } catch { return ''; } })();
 const APP_URL = APP_ORIGIN ? appUrl() : '';
 // A plain Chrome user agent: "Electron" in it would mark the login as unusual.
-const CHROME_UA = `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${process.versions.chrome} Safari/537.36`;
+const CHROME_UA = `Mozilla/5.0 (${process.platform === 'win32' ? 'Windows NT 10.0; Win64; x64' : 'X11; Linux x86_64'}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${process.versions.chrome} Safari/537.36`;
 
 // The name stays: it picks the profile folder (the login) and the window class the launcher matches.
 app.setName('Správy');
@@ -35,7 +37,8 @@ let pending = null; // the one login window that may be open: { win, reject }
 
 // Login windows go out through asus (an SSH SOCKS tunnel): the bridges run on asus, so Meta sees the login come from
 // where the session is used. SPRAVY_LOGIN_VIA= (empty) turns it off; without the tunnel the window goes direct.
-const LOGIN_VIA = process.env.SPRAVY_LOGIN_VIA ?? 'asus';
+// The installed app (Weft.exe on someone else's PC) has no way to asus, so it goes direct unless told otherwise.
+const LOGIN_VIA = process.env.SPRAVY_LOGIN_VIA ?? (app.isPackaged ? '' : 'asus');
 const tunnels = new Set(); // ssh children of open login windows, stopped when the app quits
 
 const freePort = () => new Promise((resolve, reject) => {

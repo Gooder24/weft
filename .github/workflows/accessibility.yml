@@ -13,6 +13,8 @@ jobs:
     # Karchi's own pushes and PRs run on asus (github/asus-runner.sh in Karchi-skills.md);
     # a pull request from a fork runs on GitHub's machines.
     runs-on: ${{ github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || 'asus' }}
+    # A stuck browser must not hold the shared runner for hours (on 2026-11-25 one axe run waited over an hour).
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 

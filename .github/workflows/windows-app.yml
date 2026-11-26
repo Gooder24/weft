@@ -1,0 +1,67 @@
+name: windows-app
+
+# Weft.exe: the desktop app as a Windows installer for people who are not technical. It installs for the one user
+# (no administrator rights), adds Weft to the Start menu and the desktop, and opens the Weft server in the
+# repository variable WEFT_SERVER (written into the app as server.json). Each push to main that changes the app
+# replaces it in the release "windows", so the link to send stays
+# https://github.com/Gooder24/weft/releases/download/windows/Weft-Setup.exe
+on:
+  pull_request:
+    paths: [desktop/**, .github/workflows/windows-app.yml]
+  push:
+    branches: [main]
+    paths: [desktop/**, .github/workflows/windows-app.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - run: npm ci --no-audit --no-fund
+
+      - name: The server the app opens
+        if: vars.WEFT_SERVER != ''
+        shell: pwsh
+        run: '@{ url = "${{ vars.WEFT_SERVER }}" } | ConvertTo-Json | Set-Content -Encoding utf8 server.json'
+
+      - run: npm run dist:win
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Weft-Setup
+          path: desktop/dist/Weft-Setup.exe
+
+      - name: The app starts on Windows (hidden self-test against example.com)
+        shell: pwsh
+        # Start-Process -Wait is the form that works on the runner (-PassThru with WaitForExit never saw the exit);
+        # the step's limit keeps a stuck start from holding the build.
+        timeout-minutes: 3
+        run: |
+          $env:SPRAVY_SELFTEST = '1'
+          $p = Start-Process dist\win-unpacked\Weft.exe -PassThru -Wait -RedirectStandardOutput selftest.txt
+          Get-Content selftest.txt
+          if (-not (Select-String -Quiet 'selftest ok' selftest.txt)) { throw "self-test failed ($($p.ExitCode))" }
+
+      - name: Replace Weft.exe in the release "windows"
+        if: github.event_name == 'push' && vars.WEFT_SERVER != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          gh release view windows *> $null
+          if ($LASTEXITCODE -ne 0) { gh release create windows --title 'Weft for Windows' --notes 'Download Weft-Setup.exe and open it.' --latest=false }
+          gh release upload windows dist/Weft-Setup.exe --clobber

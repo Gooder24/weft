@@ -137,6 +137,7 @@ const S = {
   gradeOpen: null, // grade id whose details show in the table
   profileOf: null, // whose profile the panel shows: { key } a chat's person, { room, user } one member of a group
   links: {}, // chat app id -> its logins (null: the bridge does not answer)
+  linksAbsent: new Set(), // chat app ids this server does not offer this account (notOffered)
   link: null, // account login in progress: { app, id, step, error, busy }
   acctOpen: null, // account row expanded in settings ('edupage' shows its options)
   eduKindOpen: null, // notice type whose colour and mark are being chosen in Settings → EduPage
@@ -257,6 +258,30 @@ async function call(method, path, body, base = '/_matrix/client/v3', signal = un
   return data;
 }
 const bridge = (method, path, body) => call(method, path, body ?? (method === 'POST' ? {} : undefined), BRIDGE);
+/** A service this server does not offer this account: missing here (404; the public site for invited people has only
+ *  the app, Matrix and the chat bridges) or kept for the server's owner (401/403). Weft then leaves it out. */
+// A service this server does not offer the account: the invited people's site answers 404 for everything it leaves
+// out. Never 401/403: the owner's own services answer those for a moment (a homeserver restart, a late request), and
+// taking them for absence would hide his calendar or release the messages his reading windows hold.
+const notOffered = (status) => status === 404;
+// What the server does not offer this account (notOffered), kept per account on this device, so a reload draws an
+// invited account's screen at once instead of the owner's for a moment; the next answer that works forgets it.
+const absentKey = () => `ep_absent:${S.userId}`;
+function keepAbsent() {
+  if (S.userId) localStorage.setItem(absentKey(), JSON.stringify({ calendar: cal.absent, feed: !!S.feedAbsent, edupage: S.edupage === false, automations: !!S.automationsAbsent }));
+}
+function takeAbsent() {
+  const kept = readJson(absentKey(), {});
+  cal.absent = !!kept.calendar; S.feedAbsent = !!kept.feed; S.automationsAbsent = !!kept.automations;
+  if (kept.edupage && S.edupage === undefined) S.edupage = false;
+}
+/** Automatizácie is a page about the owner's own machines, served only on his network; elsewhere it is 404. */
+function probeAutomations() {
+  fetch('/automatizacie/', { method: 'HEAD', cache: 'no-store' }).then((res) => {
+    const absent = notOffered(res.status);
+    if (absent !== !!S.automationsAbsent) { S.automationsAbsent = absent; keepAbsent(); refresh(); }
+  }, () => {});
+}
 const q = encodeURIComponent;
 
 // ------------------------------------------------------------------ boot
@@ -270,12 +295,14 @@ async function boot() {
     if (token && user) saveSession(token, user);
   }
   // Not signed in: the welcome with the language first, unless this device already chose one and has no new server to set up.
-  if (!S.token) return show(localStorage.getItem('ep_lang') && !localStorage.getItem(SETUP_KEY) ? 'login' : 'welcome');
+  // A device that chose „Mám už účet“ before opens on the login form; a language picked on the welcome screen keeps it.
+  if (!S.token) return show(localStorage.getItem('ep_lang') && !localStorage.getItem(SETUP_KEY) && !sessionStorage.getItem('ep_welcome') ? 'login' : 'welcome');
   const run = ++bootRun; // "Prihlásiť sa znova" and a later boot() end this one
   // The kept profile pictures come with the copy, so its first frame has them (both ways it is drawn, below).
   const kept = Promise.all([readSnapshot(), avatarsReady()]).then(([snap]) => snap);
   // The inbox opens from the copy kept on this computer while asus answers; the first sync replaces it.
   const keptUser = S.userId;
+  takeAbsent();
   kept.then((snap) => {
     if (run !== bootRun || S.homeSynced || S.fromSnapshot || !keptUser || snap?.user !== keptUser || S.userId !== keptUser) return;
     hydrate(snap);
@@ -290,8 +317,7 @@ async function boot() {
       if (run !== bootRun) return;
       // The kept copy was someone else's (never, unless the session changed under it): start over without it.
       if (S.fromSnapshot && S.userId !== me) { saveSession(S.token, me); await forgetSnapshot(); return location.reload(); }
-      if (S.userId !== me) { loadDrafts(me); S.editing = null; }
-      S.userId = me;
+      if (S.userId !== me) { loadDrafts(me); S.editing = null; S.userId = me; S.edupage = undefined; takeAbsent(); }
       break;
     } catch (err) {
       if (run !== bootRun) return;
@@ -350,6 +376,7 @@ function clearSession() {
   S.archiveTag = null; S.archiveAt = 0;
   S.fromSnapshot = false;
   cal.doc = null; cal.loaded = false;
+  cal.absent = false; S.feedAbsent = S.feedGone = false; S.automationsAbsent = false; S.edupage = undefined; S.linksAbsent.clear();
   forgetCodes();
   stopRing();
   S.token = null;
@@ -373,8 +400,9 @@ function noteOpened(id) {
 
 async function refreshLogins() {
   const token = S.token; // an answer for a session that has since ended changes nothing
-  // A server without the EduPage bridge (a new install) answers 404 or nothing: then EduPage is simply not offered.
-  const logins = await bridge('GET', '/whoami').then((r) => { S.edupage = true; return r.logins || []; }, (err) => { if (err.status === 404) S.edupage = false; return []; });
+  // A server without the EduPage bridge (a new install) or one kept for its owner: then EduPage is simply not offered.
+  const logins = await bridge('GET', '/whoami').then((r) => { S.edupage = true; return r.logins || []; }, (err) => { if (notOffered(err.status)) S.edupage = false; return []; });
+  keepAbsent();
   if (S.token === token) S.logins = logins;
 }
 
@@ -786,7 +814,8 @@ async function takeStashFiles(r, it) {
  *  made again after every sync that lacks it, and the draft leaves the stash only once the service says it is sent. */
 function sendStashed(r, it) {
   const to = S.rooms.get(it.room) && liveChat(S.rooms.get(it.room)) ? S.rooms.get(it.room) : r;
-  if (it.files?.length) return takeStashed(r, it); // files come down first: they go out from the box
+  // Files come down first: they go out from the box; so does everything where the send-later service is not offered.
+  if (it.files?.length || !offered.later()) return takeStashed(r, it);
   const sends = stashSends();
   if (S.editing?.room === r.id || !it.body.trim() || sends[it.id]) return;
   const key = `stash:${it.id}`;
@@ -1177,6 +1206,7 @@ function applySync(data, first = false) {
   }
   prefetchSoon();
   checkStash();
+  helloIfWaiting();
   autoMergeSoon();
   keepSoon();
   refresh();
@@ -1517,8 +1547,12 @@ function openWindow() {
 
 /** { cut: messages from others up to it show (Infinity while live), next: the coming batch time (0 when none),
  *  until: the end of the window that runs now (0 when none) }. */
+const LIVE = { cut: Infinity, next: 0, until: 0 };
 let batchMemo = null; // the same until the next batch time or the end of a window
 function batchWindow(now = Date.now()) {
+  // No feed server for this account, so no window could ever open: nothing waits. Only the feed's own 404 in this
+  // run says so (feedGone); a kept flag hides the eye at once but never releases what the owner's windows hold.
+  if (S.feedGone) return LIVE;
   const b = batchPrefs();
   const rw = readingWindow();
   if (batchMemo && batchMemo.b === b && batchMemo.rw === rw && now >= batchMemo.from && now < batchMemo.until) return batchMemo.w;
@@ -3243,6 +3277,24 @@ function mentionText(parts, find) {
 
 const laterItems = () => S.account[LATER]?.items || [];
 let laterChain = Promise.resolve();
+// The service learns once per session that this account schedules messages: it then sends them as this account
+// (every person of the server, not only the owner). A hello that did not get through is said again at most once a
+// minute for that account (also across reloads of the tab: sessionStorage), by the next change or the next sync while
+// something still waits.
+const laterHello = new Map(); // user id → 'said' | 'asking'
+const laterHelloKey = (user) => `ep_later_hello:${user}`;
+// After each sync while something of this account still waits (a fresh device learns of it only there).
+const helloIfWaiting = () => {
+  if (laterItems().some((it) => !it.sent && !it.failed)) sayLaterHello();
+};
+function sayLaterHello() {
+  const user = S.userId;
+  if (laterHello.has(user) || Date.now() - Number(sessionStorage.getItem(laterHelloKey(user)) || -Infinity) <= 60000) return;
+  laterHello.set(user, 'asking');
+  const failed = () => { laterHello.delete(user); sessionStorage.setItem(laterHelloKey(user), String(Date.now())); };
+  fetch('/_sendlater/hello', { method: 'POST', headers: { Authorization: `Bearer ${S.token}` } })
+    .then((res) => (res.ok ? laterHello.set(user, 'said') : failed()), failed);
+}
 /** Changes the list as it stands on the server now: the service marks what it sent in the same list. `change` may
  *  be async (it may read other account data just before the write). */
 function saveLater(change) {
@@ -3258,6 +3310,7 @@ function saveLater(change) {
       return;
     }
     await call('PUT', `/user/${q(S.userId)}/account_data/${LATER}`, next);
+    sayLaterHello();
     if (S.account[LATER] === seen) S.account[LATER] = next;
     else {
       // A sync brought another writer's list meanwhile (the service marking an item, another device): neither it nor
@@ -3273,6 +3326,7 @@ function saveLater(change) {
 
 function openLater(r) {
   if (r?.archiveOnly) return;
+  if (!offered.later()) return alert(T('Odoslať neskôr na tomto serveri nie je.'));
   const text = (S.drafts.get(r.id) || '').trim();
   const files = S.attach.get(r.id) || [];
   if (!text && !files.length) return alert(T('Najprv napíš správu alebo pridaj prílohu, potom vyber, kedy odíde.'));
@@ -3370,7 +3424,7 @@ function laterBubbles(r, m) {
 // (what went, who answered and how). Confirming hands every message to the send-later service (broadcast.js), which
 // paces them; Settings → Správy switches the beta on for every device, and until then Rozoslať shows nowhere.
 const bcData = () => S.account[BROADCAST] || {};
-const bcBeta = () => !!bcData().beta;
+const bcBeta = () => !!bcData().beta && offered.later(); // it sends through the send-later service
 const bcNames = () => S.account[NAMES] || {};
 let bcSaving = Promise.resolve();
 /** Changes sk.karchi.broadcast as it is on the server now (another device may have changed it meanwhile). */
@@ -3838,6 +3892,7 @@ function bcKey(e) {
 }
 /** Settings → Správy: the beta's switch, and the saved lists (the way out of „Uložiť ako zoznam…“). */
 function bcSettings() {
+  if (!offered.later()) return null;
   const lists = bcData().lists || [];
   return [
     h('h3', {}, T('Rozoslať')),
@@ -5209,8 +5264,9 @@ async function setPref(key, value) {
   await putAccount(PREFS, next).catch(() => alert(T('Nastavenie sa neuložilo.')));
 }
 
-// The first account of a new server: Matrix registration with the token install.sh made (m.login.registration_token).
-async function matrixRegister(username, password) {
+// A new account: Matrix registration with a token (m.login.registration_token), the one install.sh made for a new
+// server or an invitation code someone typed in.
+async function matrixRegister(username, password, code) {
   const body = { username, password, initial_device_display_name: 'Weft' };
   let auth;
   for (let round = 0; round < 4; round++) {
@@ -5224,7 +5280,7 @@ async function matrixRegister(username, password) {
       const next = flow.find((stage) => !(err.details.completed || []).includes(stage));
       // The server asks for the same stage again: it refused what was sent (a token that does not hold any more).
       if (auth?.type === next) throw Object.assign(new Error(T('Server účet nevytvoril.')), { errcode: 'WEFT_REFUSED', status: 401 });
-      if (next === 'm.login.registration_token') auth = { type: next, token: localStorage.getItem(SETUP_KEY) || '', session: err.details.session };
+      if (next === 'm.login.registration_token') auth = { type: next, token: code, session: err.details.session };
       else if (next === 'm.login.dummy') auth = { type: next, session: err.details.session };
       else throw err;
     }
@@ -5757,6 +5813,12 @@ const APPS = [
   ...CONNECTORS,
 ];
 const hiddenApps = () => new Set(JSON.parse(localStorage.getItem('ep_hidden_apps') || '[]'));
+/** The networks a filter can matter for: those with a chat here, and hidden ones (so they can come back). */
+function appsInUse(hidden = hiddenApps()) {
+  const used = new Set();
+  for (const r of S.rooms.values()) used.add(r.app);
+  return APPS.filter((a) => used.has(a.id) || hidden.has(a.id));
+}
 function toggleApp(id) {
   const hidden = hiddenApps();
   if (hidden.has(id)) hidden.delete(id);
@@ -5991,8 +6053,8 @@ document.addEventListener('keydown', (e) => {
   else if (mod && !e.shiftKey && key === 'k') run(() => (S.overlay?.kind === 'search' ? closeOverlay() : openSearch()));
   else if (mod && e.shiftKey && key === 's') run(() => setShowAll(!S.showAll));
   else if (mod && !e.shiftKey && key === ',') run(() => togglePanel('settings'));
-  else if (mod && !e.shiftKey && key === 'g') run(() => togglePanel('grades'));
-  else if (mod && !e.shiftKey && key === 'm') run(() => togglePanel('people'));
+  else if (mod && !e.shiftKey && key === 'g') run(() => offered.grades() && togglePanel('grades'));
+  else if (mod && !e.shiftKey && key === 'm') run(() => offered.people() && togglePanel('people'));
   else if (mod && e.shiftKey && key === 'f') run(showFeed);
   else if (mod && !e.shiftKey && key === 'd') run(toggleCalendar);
   else if (mod && !e.shiftKey && key === 'b' && board.available) run(toggleBoard);
@@ -6062,6 +6124,20 @@ function workspaceStatus() {
     S.updateAvailable ? h('button', { class: 'update-app', onclick: () => { if (!updates.apply()) alert(T('Pred aktualizáciou dokonči rozpísanú správu, odober prílohy a zavri otvorený editor alebo prihlásenie.')); } }, T('Aktualizovať Weft')) : null);
 }
 
+/** What the menus offer this account: services the server answered notOffered for, and the people map nobody filled. */
+const offered = {
+  grades: () => S.edupage !== false,
+  people: () => !!S.account[FRIENDS]?.people?.length,
+  calendar: () => !cal.absent,
+  automations: () => !S.automationsAbsent,
+  mail: () => !(S.linksAbsent.has('gmail') && S.linksAbsent.has('outlook')),
+  windows: () => !S.feedAbsent,
+  // server/sendlater sends only the owner's items and has no API to ask; the owner's services come together, so the
+  // feed's absence says the same. Without it, nothing may wait for a send that never comes. (Only offering it; items
+  // already handed over are sent by the service either way.)
+  later: () => !S.feedAbsent,
+};
+
 /** Inbox filter, search and settings; new chat on touch screens. */
 function sideHead() {
   const hidden = hiddenApps();
@@ -6073,7 +6149,7 @@ function sideHead() {
         hidden.size ? T` · bez ${APPS.filter((a) => hidden.has(a.id)).map((a) => a.name).join(', ')}` : '',
         batchWindow().until ? T` · otvorené do ${timeLabel(batchWindow().until)}` : batchWindow().next ? T` · ďalšie o ${timeLabel(batchWindow().next)}` : '')),
     // Messages that wait come in with one click, never by themselves; no count, so nothing draws the eye.
-    batchPrefs().mode !== 'live' ? windowButton() : null,
+    batchPrefs().mode !== 'live' && !S.feedAbsent ? windowButton() : null,
     h('button', { class: 'filter', title: T('Hľadať (Ctrl+K)'), onclick: () => openSearch() }, icon('search')),
     // A new chat on any network (also Ctrl+N), with its word: the pencil alone said nothing.
     h('button', { class: 'filter word', title: T('Nová správa (Ctrl+N)'), onclick: openNewChat }, icon('pencil'), h('span', {}, T('Nová'))),
@@ -6081,15 +6157,15 @@ function sideHead() {
     S.menu ? h('div', { class: 'menu', onclick: (e) => e.stopPropagation() },
       BOXES.map(([id, label]) => h('button', { class: 'mi', onclick: () => setBox(id) }, h('span', { class: 'check' }, S.box === id ? '✓' : ''), label)),
       h('hr'),
-      APPS.map((app) => h('button', { class: 'mi', onclick: () => toggleApp(app.id) },
+      appsInUse(hidden).map((app) => h('button', { class: 'mi', onclick: () => toggleApp(app.id) },
         h('span', { class: 'check' }, hidden.has(app.id) ? '' : '✓'),
         h('img', { src: app.icon, alt: '' }), app.name)),
       h('hr'),
       h('button', { class: 'mi', onclick: () => setShowAll(!S.showAll) }, h('span', { class: 'check' }, S.showAll ? '' : '✓'), T('Len neprečítané'), h('kbd', {}, 'Ctrl+Shift+S')),
-      h('button', { class: 'mi', onclick: () => togglePanel('grades') }, h('span', { class: 'check' }), T('Známky'), h('kbd', {}, 'Ctrl+G')),
-      h('button', { class: 'mi', onclick: () => togglePanel('people') }, h('span', { class: 'check' }), T('Ľudia'), h('kbd', {}, 'Ctrl+M')),
-      h('button', { class: 'mi', onclick: toggleCalendar }, h('span', { class: 'check' }), T('Kalendár'), h('kbd', {}, 'Ctrl+D')),
-      h('button', { class: 'mi', onclick: () => { location.href = '/automatizacie/'; } }, h('span', { class: 'check' }), T('Automatizácie')),
+      offered.grades() ? h('button', { class: 'mi', onclick: () => togglePanel('grades') }, h('span', { class: 'check' }), T('Známky'), h('kbd', {}, 'Ctrl+G')) : null,
+      offered.people() ? h('button', { class: 'mi', onclick: () => togglePanel('people') }, h('span', { class: 'check' }), T('Ľudia'), h('kbd', {}, 'Ctrl+M')) : null,
+      offered.calendar() ? h('button', { class: 'mi', onclick: toggleCalendar }, h('span', { class: 'check' }), T('Kalendár'), h('kbd', {}, 'Ctrl+D')) : null,
+      offered.automations() ? h('button', { class: 'mi', onclick: () => { location.href = '/automatizacie/'; } }, h('span', { class: 'check' }), T('Automatizácie')) : null,
       h('button', { class: 'mi', onclick: () => togglePanel('settings') }, h('span', { class: 'check' }), T('Nastavenia'), h('kbd', {}, 'Ctrl+,')),
       h('button', { class: 'mi', onclick: openTools }, h('span', { class: 'check' }), T('Všetky nástroje'), h('kbd', {}, 'Ctrl+J'))) : null);
 }
@@ -7918,7 +7994,7 @@ function bubbleView(r, m, ev, grouped, group, sug = null) {
       inDiscordThread(r, ev.event_id) ? h('small', { class: 'mthread' }, T('vo vlákne · odpovedať sa dá len v appke Discord')) : null,
       h('span', { class: 'mtime' }, m.edits.has(ev.event_id) && !m.edits.get(ev.event_id).content?.['com.beeper.dont_render_edited'] && !gone && !POLL_START.includes(ev.type) && !pollIn(ev, ev.content) ? T('upravené · ') : '', fail ? (fail.sure ? T('neodoslané') : T('možno neodoslané')) : ev.waiting ? T('čaká na sieť') : ev.pending ? 'odosielam' : timeLabel(ev.origin_server_ts))),
     acts && (hoverMsg === ev.event_id || S.actsFor === ev.event_id || S.pick?.event === ev.event_id) ? msgActs(r, m, ev, mine) : null),
-  sug ? calSuggestion(r, ev, sug) : null,
+  sug && !cal.absent ? calSuggestion(r, ev, sug) : null,
   fail ? h('div', { class: 'lateracts failacts' },
     h('span', { class: 'failwhy' }, fail.reason),
     r.app === 'discord' && /^@discord_\d+:/.test(dmPartner(r)?.[0] || '') && /friends|priateľom/.test(fail.reason) ? h('a', { class: 'linkbtn', href: discordProfileUrl(dmPartner(r)[0].match(/^@discord_(\d+):/)[1]), target: '_blank', rel: 'noopener noreferrer' }, T('Profil v Discorde ↗')) : null,
@@ -10665,7 +10741,7 @@ function menuView(o) {
     [item(icon('bell'), T('Pripomenúť…'), 'Ctrl+L', () => openRemind(e)),
       e.remind ? item(icon('bell-off'), T('Zrušiť pripomienku'), `${dayLabel(e.remind)} ${timeLabel(e.remind)}`, () => remindAt(e, null)) : null,
       item(icon(e.low ? 'arrow-up' : 'arrow-down'), e.low ? T('Zrušiť nízku prioritu') : T('Nízka priorita'), null, () => toggleLow(e)),
-      entryPeople(e).length ? item(icon('briefcase'), e.work ? T('Zrušiť značku Práca') : T('Práca: ukázať hneď'), null, () => setWork(entryPeople(e), !e.work)) : null],
+      offered.windows() && entryPeople(e).length ? item(icon('briefcase'), e.work ? T('Zrušiť značku Práca') : T('Práca: ukázať hneď'), null, () => setWork(entryPeople(e), !e.work)) : null],
     // What is in the chat.
     [room ? item(icon('images'), T('Galéria'), 'Ctrl+P', () => openGallery(room)) : null,
       // The members list, also where there is no mouse to rest on the group's name.
@@ -11087,25 +11163,25 @@ function toolList() {
   return [
     [T('Hľadať chaty, ľudí a správy'), 'search find vyhladavanie najst', 'Ctrl+K', () => openSearch()],
     [T('Nová správa'), 'new message napisat novy chat konverzacia', 'Ctrl+N', openNewChat],
-    [T('Nový mail'), 'gmail outlook email napisat novy mail posta', null, () => openMail()],
+    ...(offered.mail() ? [[T('Nový mail'), 'gmail outlook email napisat novy mail posta', null, () => openMail()]] : []),
     ...(bcBeta() ? [[T('Rozoslať…'), 'rozoslat broadcast hromadna sprava viacerym ludom oznam pozvanka beta', null, () => openBroadcast(bcKeyOf(e))],
       ...(bcData().items || []).slice(0, 3).map((it) => [T`Rozoslanie: ${it.title}`, 'rozoslat rozoslane odpovede stav koncept', null, () => openBroadcastItem(it.id)])] : []),
     ...(S.links.whatsapp?.length && !hidden.has('whatsapp') ? [[T('Nová skupina na WhatsAppe'), 'whatsapp nova skupina group vytvorit', null, openNewGroup]] : []),
-    [T('Známky'), 'edupage znamky hodnotenie skola grades', 'Ctrl+G', show('grades')],
-    [T('Ľudia: mapa, koho odkiaľ poznáš'), 'people mapa priatelia kamarati kamosi friends vetvy druzina', 'Ctrl+M', show('people')],
-    [T('Kalendár'), 'kalendar calendar kalendarix udalosti rozvrh tyzden mesiac', 'Ctrl+D', toggleCalendar],
+    ...(offered.grades() ? [[T('Známky'), 'edupage znamky hodnotenie skola grades', 'Ctrl+G', show('grades')]] : []),
+    ...(offered.people() ? [[T('Ľudia: mapa, koho odkiaľ poznáš'), 'people mapa priatelia kamarati kamosi friends vetvy druzina', 'Ctrl+M', show('people')]] : []),
+    ...(offered.calendar() ? [[T('Kalendár'), 'kalendar calendar kalendarix udalosti rozvrh tyzden mesiac', 'Ctrl+D', toggleCalendar]] : []),
     ...(board.available ? [[T('Nástenka: súbory a text do mojich zariadení'), 'nastenka board localsend poslat subor fotku mobil telefon zariadenie preniest', 'Ctrl+B', () => { if (S.panel !== 'board') toggleBoard(); }]] : []),
-    [T('Automatizácie'), 'procesy skripty cron ulohy systemd hermes automatizacie', '', () => { location.href = '/automatizacie/'; }],
+    ...(offered.automations() ? [[T('Automatizácie'), 'procesy skripty cron ulohy systemd hermes automatizacie', '', () => { location.href = '/automatizacie/'; }]] : []),
     [T('Nastavenia'), 'settings ucty ucet pripojit siete tema tmavy gmail outlook teams microsoft mail email login', 'Ctrl+,', show('settings')],
-    [T('EduPage: oznamy a predmety'), 'edupage oznamy typy predmety skryt suplovanie farby ikony skupina nastavenia', '', () => togglePanel('settings', 'edupage')],
+    ...(offered.grades() ? [[T('EduPage: oznamy a predmety'), 'edupage oznamy typy predmety skryt suplovanie farby ikony skupina nastavenia', '', () => togglePanel('settings', 'edupage')]] : []),
     [S.showAll ? T('Len neprečítané') : T('Všetky chaty, aj prečítané'), 'unread neprecitane precitane vsetky filter', 'Ctrl+Shift+S', () => setShowAll(!S.showAll)],
     [T('Ďalší neprečítaný chat'), 'next unread dalsi neprecitany', 'Ctrl+U', nextUnread],
-    ...(batchPrefs().mode !== 'live' && canOpenWindow() ? [[T`Ukázať nové správy a feed na ${windowMinutes()} min`, 'zobrazit cakaju caka spravy nove reveal okno citanie', '', openWindow]] : []),
-    ...BATCH_MODES.filter(([id]) => id !== batchTarget().mode).map(([id, label]) => [T`Nové správy: ${label.toLowerCase()} (od zajtra)`,
+    ...(batchPrefs().mode !== 'live' && offered.windows() && canOpenWindow() ? [[T`Ukázať nové správy a feed na ${windowMinutes()} min`, 'zobrazit cakaju caka spravy nove reveal okno citanie', '', openWindow]] : []),
+    ...BATCH_MODES.filter(([id]) => offered.windows() && id !== batchTarget().mode).map(([id, label]) => [T`Nové správy: ${label.toLowerCase()} (od zajtra)`,
       'zobrazovat davky 3x denne casy rusit vyrusovat notifikacie', '', () => saveBatches({ mode: id })]),
     [T('Archivovať všetky prečítané'), 'archive archiv precitane upratat', 'Ctrl+Shift+E', archiveAllRead, true, true],
     ...BOXES.filter(([id]) => id !== S.box).map(([id, label]) => [T`Zobraziť: ${label}`, 'zobrazenie priecinok folder view', '', () => setBox(id)]),
-    ...APPS.map((a) => [`${hidden.has(a.id) ? T('Ukázať') : T('Skryť')} ${a.name}`, 'siet filter aplikacia', '', () => toggleApp(a.id), true, !hidden.has(a.id)]),
+    ...appsInUse(hidden).map((a) => [`${hidden.has(a.id) ? T('Ukázať') : T('Skryť')} ${a.name}`, 'siet filter aplikacia', '', () => toggleApp(a.id), true, !hidden.has(a.id)]),
     [e?.archived ? T('Vrátiť chat z archívu') : T('Archivovať chat'), 'archive archiv hotovo', 'Ctrl+E', () => toggleArchive(e), !!e],
     [e?.unread ? T('Označiť ako prečítané') : T('Označiť ako neprečítané'), 'read unread precitane neprecitane', 'Ctrl+Shift+U', () => toggleRead(e), !!e],
     [T('Pripomenúť chat neskôr'), 'remind snooze pripomienka', 'Ctrl+L', () => openRemind(e), !!e],
@@ -11113,7 +11189,7 @@ function toolList() {
     [T('Upraviť svoju poslednú správu'), 'edit opravit', null, () => { const [lr, ev] = r ? lastEditableIn(r) : []; if (ev) startEdit(lr, ev); render(); }, !!r],
     [T('Nahrať hlasovku'), 'voice hlasova sprava audio nahravka mikrofon', 'Ctrl+Shift+A', toggleRecording, !!r],
     [T('Prehrať / pozastaviť hlasovku'), 'voice hlasovka prehrat pustit pozastavit audio play pause', 'Ctrl+Shift+Space', voiceShortcut, !!voice.event || !!r],
-    [T('Odoslať neskôr'), 'send later sendlater naplanovat', 'Ctrl+Shift+Enter', () => openLater(r), !!r],
+    ...(offered.later() ? [[T('Odoslať neskôr'), 'send later sendlater naplanovat', 'Ctrl+Shift+Enter', () => openLater(r), !!r]] : []),
     [T('Preposlať poslednú správu…'), 'forward preposlat poslat dalej zdielat share', '', () => forwardLast(r), !!r],
     [T('Keď odpíše, ukázať odpoveď kamošovi…'), 'relay screenshot preposlat odpoved kamos cakam odpise obrazok', '', () => openRelay(r), !!r],
     [T('Poslať GIF'), 'gif klipy obrazok', '/gif', () => openGifs(r), !!r],
@@ -11157,7 +11233,7 @@ function toolsView(o) {
   o.flat = tools.map(([, , , fn, can]) => () => { if (!can) return; S.overlay = null; if (S.panel !== 'link' && fn.panel !== S.panel) S.panel = null; render(); fn(); });
   if (o.index >= o.flat.length) o.index = 0;
   return [
-    cmdInput(o, T('Nástroj alebo akcia, napr. známky, mapa, hlasovka')),
+    cmdInput(o, offered.grades() ? T('Nástroj alebo akcia, napr. známky, mapa, hlasovka') : T('Nástroj alebo akcia, napr. hlasovka, GIF')),
     h('div', { class: 'results', ...listScroll(o) }, tools.length
       ? tools.map(([name, , key, , can], i) => resultRow(o, null, i, [
         h('div', { class: 'rmeta' }, h('b', {}, highlighted(name, o.query)), can ? null : h('small', {}, T('Najprv otvor chat'))),
@@ -11223,7 +11299,18 @@ const feed = createFeed({
   settingsPanel: () => togglePanel('settings', 'feed'), close: () => closeFeed(),
   isOpen: () => S.surface === 'feed', readingWindow, onWindow: takeWindow,
   api: async (method, path, body) => {
-    if (method !== 'MEDIA') return call(method, path, body, '/_feed', AbortSignal.timeout(method === 'GET' ? 15000 : 120000));
+    if (method !== 'MEDIA') {
+      // Only GET /doc says whether this account has a feed (a POST may get 404 for other reasons).
+      const doc = method === 'GET' && path === '/doc';
+      return call(method, path, body, '/_feed', AbortSignal.timeout(method === 'GET' ? 15000 : 120000)).then((res) => {
+        S.feedGone = false; // any answer proves the feed is there
+        if (S.feedAbsent) { S.feedAbsent = false; keepAbsent(); refresh(); }
+        return res;
+      }, (err) => {
+        if (doc && notOffered(err.status)) { S.feedGone = true; if (!S.feedAbsent) { S.feedAbsent = true; keepAbsent(); } refresh(); }
+        throw err;
+      });
+    }
     const res = await fetch('/_feed' + path, { headers: { Authorization: `Bearer ${S.token}` }, signal: AbortSignal.timeout(30000) });
     if (!res.ok) throw new Error(T('Médium sa nenačítalo alebo už vypršalo.'));
     return res.blob();
@@ -11242,6 +11329,7 @@ function toggleBoard() {
 }
 
 function showFeed() {
+  if (S.feedAbsent) return; // this server has no feed for this account
   if (S.panel === 'link') return;
   if (S.surface === 'feed') return closeFeed();
   S.surface = 'feed'; S.panel = null; S.overlay = null;
@@ -11255,10 +11343,18 @@ function closeFeed() {
   render();
 }
 
+/** Where the calendar would be on a server without one for this account (an invited person's): the way to their chats. */
+function homeStart() {
+  const linked = LINKS.some((a) => S.links[a.id]?.length);
+  return h('section', { class: 'home-start' },
+    h('p', {}, linked ? T('Vyber chat vľavo.') : T('Pripoj Messenger, Instagram, WhatsApp alebo Discord a tvoje správy prídu sem.')),
+    linked ? null : h('button', { class: 'primary', type: 'button', onclick: () => togglePanel('settings', 'accounts') }, T('Pripojiť účty')));
+}
+
 function homeView() {
   return h('main', { class: 'detail home', 'data-scroll': 'home' },
-    h('section', { class: 'home-calendar', tabindex: '0', 'aria-label': T('Kalendár') }, calendarView()),
-    h('div', { class: 'feed-launch' }, h('button', { class: 'ghost', onclick: showFeed, 'aria-expanded': String(S.surface === 'feed') }, S.surface === 'feed' ? T('Zavrieť feed') : T('Otvoriť denný feed')), h('kbd', {}, 'Ctrl+Shift+F'),
+    cal.absent ? homeStart() : h('section', { class: 'home-calendar', tabindex: '0', 'aria-label': T('Kalendár') }, calendarView()),
+    S.feedAbsent && !board.available ? null : h('div', { class: 'feed-launch' }, S.feedAbsent ? null : [h('button', { class: 'ghost', onclick: showFeed, 'aria-expanded': String(S.surface === 'feed') }, S.surface === 'feed' ? T('Zavrieť feed') : T('Otvoriť denný feed')), h('kbd', {}, 'Ctrl+Shift+F')],
       board.available ? [h('button', { class: 'ghost', onclick: toggleBoard }, T('Nástenka')), h('kbd', {}, 'Ctrl+B')] : null, h('span', { class: 'mobile-workspace-options' }, workspaceStatus(), h('button', { class: 'ghost', 'aria-label': T('Nastavenia'), onclick: () => togglePanel('settings') }, T('Nastavenia')))),
     S.surface === 'feed' ? h('section', { class: 'feed-drawer', 'aria-label': T('Denný feed') }, feed.view()) : null);
 }
@@ -11277,7 +11373,7 @@ const DAYS_SHORT = [T('Ne'), T('Po'), T('Ut'), T('St'), T('Št'), T('Pi'), T('So
 const CAL_START_HOUR = 5;
 const CAL_END_HOUR = 21;
 const CAL_HOURS = CAL_END_HOUR - CAL_START_HOUR;
-const cal = { today: Cal.dayNumber(Date.now()), doc: null, version: '', seq: 0, loaded: false, error: '', view: 'week', cursor: Cal.startOfDay(Date.now()), edit: null, lastCal: null, detail: null, search: null };
+const cal = { today: Cal.dayNumber(Date.now()), doc: null, version: '', seq: 0, loaded: false, error: '', absent: false, view: 'week', cursor: Cal.startOfDay(Date.now()), edit: null, lastCal: null, detail: null, search: null };
 // A click with no Weft window open: sw.js opens /?event=<key>, shown once the calendar is in.
 let calAsked = new URLSearchParams(location.search).get('event');
 const calDefault = () => (CAL_VIEWS.some(([id]) => id === S.account[CAL_PREFS]?.view) ? S.account[CAL_PREFS].view : 'week');
@@ -11328,11 +11424,14 @@ async function loadCalendar() {
       if (token !== S.token) return;
       setCalDoc(doc);
       cal.error = '';
+      cal.absent = false;
     } catch (err) {
       if (token !== S.token) return;
       if (isNetErr(err)) goOffline();
-      else cal.error = err.status === 404 ? T('Kalendár na tomto serveri zatiaľ nebeží.') : T`Kalendár sa nenačítal: ${err.message}`;
+      else if (notOffered(err.status)) cal.absent = true;
+      else cal.error = T`Kalendár sa nenačítal: ${err.message}`;
     }
+    keepAbsent();
   }
   cal.loaded = true;
   refresh();
@@ -13926,8 +14025,10 @@ async function refreshLinks() {
       } else {
         fresh[app.id] = (await prov(app, 'GET', '/whoami')).logins || [];
       }
-    } catch {
+      S.linksAbsent.delete(app.id);
+    } catch (err) {
       fresh[app.id] = null;
+      if (notOffered(err.status)) S.linksAbsent.add(app.id); // not offered here: Settings leaves it out
     }
   }));
   // An older answer that comes after a newer one (a check while a sign-in finished) never wins.
@@ -14164,31 +14265,33 @@ function linkView() {
 
 // Settings: one section at a time, chosen on the left (on a phone, tabs along the top). Arrow keys move
 // between sections; a disconnected account shows on its section's name.
-const SET_TABS = [['messages', T('Správy')], ['edupage', 'EduPage'], ['calendar', T('Kalendár')], ['feed', 'Feed'], ['accounts', T('Účty')], ['access', T('Prístupnosť')]];
+const SET_TABS_ALL = [['messages', T('Správy')], ['edupage', 'EduPage'], ['calendar', T('Kalendár')], ['feed', 'Feed'], ['accounts', T('Účty')], ['access', T('Prístupnosť')]];
 function settingsTab(id) {
   S.setTab = id;
   render();
   document.querySelector(`.setnav [data-tab="${id}"]`)?.focus();
 }
 function settingsView() {
-  const tab = SET_TABS.some(([id]) => id === S.setTab) ? S.setTab : 'messages';
+  // Tabs of services this server does not offer this account stay out.
+  const tabs = SET_TABS_ALL.filter(([id]) => !(id === 'edupage' && S.edupage === false) && !(id === 'calendar' && cal.absent) && !(id === 'feed' && S.feedAbsent));
+  const tab = tabs.some(([id]) => id === S.setTab) ? S.setTab : 'messages';
   const down = downAccounts();
   const pane = { messages: batchSettings, edupage: eduSettings, calendar: calendarSettings, feed: feed.settings, accounts: accountSettings, access: accessSettings }[tab]();
   const move = (ev) => {
     const step = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 }[ev.key];
     if (!step) return;
     ev.preventDefault();
-    const i = SET_TABS.findIndex(([id]) => id === tab);
-    settingsTab(SET_TABS[(i + step + SET_TABS.length) % SET_TABS.length][0]);
+    const i = tabs.findIndex(([id]) => id === tab);
+    settingsTab(tabs[(i + step + tabs.length) % tabs.length][0]);
   };
   return h('div', { class: 'settings' },
     h('div', { class: 'setnav', role: 'tablist', 'aria-label': T('Nastavenia'), 'aria-orientation': 'vertical', onkeydown: move },
       h('h2', {}, T('Nastavenia')),
-      SET_TABS.map(([id, label]) => h('button', {
+      tabs.map(([id, label]) => h('button', {
         type: 'button', role: 'tab', 'data-tab': id, 'aria-selected': String(id === tab), tabindex: id === tab ? 0 : -1,
         class: id === tab ? 'on' : '', onclick: () => settingsTab(id),
       }, h('span', {}, label), id === 'accounts' && down.length ? h('small', { class: 'setwarn' }, T`odpojené: ${down.length}`) : null))),
-    h('div', { class: 'form inpanel setpane', 'data-scroll': `settings:${tab}`, role: 'tabpanel', 'aria-label': SET_TABS.find(([id]) => id === tab)[1] }, pane));
+    h('div', { class: 'form inpanel setpane', 'data-scroll': `settings:${tab}`, role: 'tabpanel', 'aria-label': tabs.find(([id]) => id === tab)[1] }, pane));
 }
 
 // Settings → EduPage: how each type of school notice is made and shown, and which subjects are Karchi's. The bridge
@@ -14369,12 +14472,13 @@ function accountSettings() {
   const login = S.logins[0];
   return [
     h('h3', {}, T('Pripojené účty')),
-    openableAcct('edupage', '/edupage.png', 'EduPage', login ? login.name + (login.state?.message ? ` · ${login.state.message}` : '') : T('nepripojené')),
-    S.acctOpen === 'edupage' ? h('div', { class: 'acctopts' },
+    S.edupage === false ? null : openableAcct('edupage', '/edupage.png', 'EduPage', login ? login.name + (login.state?.message ? ` · ${login.state.message}` : '') : T('nepripojené')),
+    S.acctOpen === 'edupage' && S.edupage !== false ? h('div', { class: 'acctopts' },
       h('button', { class: 'ghost', type: 'button', onclick: () => settingsTab('edupage') }, T('Oznamy a predmety…')),
       login ? h('button', { class: 'ghost danger', onclick: edupageLogout }, T('Odhlásiť EduPage')) : null) : null,
     LINKS.map((app) => {
       const logins = S.links[app.id];
+      if (S.linksAbsent.has(app.id)) return null;
       // Outlook and Teams open even before the first account, so what Weft may do can be chosen before signing in.
       if (logins?.length || (logins && app.flow === 'microsoft')) return appAccounts(app, logins);
       return h('div', { class: 'acct', 'data-key': `acct:${app.id}` }, h('img', { class: 'appicon', src: app.icon, alt: '' }),
@@ -14398,16 +14502,17 @@ async function loadConnectors(change) {
       headers: { Authorization: `Bearer ${S.token}`, ...(change ? { 'Content-Type': 'application/json' } : {}) },
       body: change ? JSON.stringify({ on: change.on }) : undefined,
     });
-    if (!res.ok) throw new Error(res.status);
+    if (!res.ok) throw Object.assign(new Error(res.status), { status: res.status });
     S.connectors = (await res.json()).connectors;
-  } catch {
+  } catch (err) {
     if (change) alert(T('Nastavenie sa neuložilo.'));
-    S.connectors ??= null;
+    S.connectors = !change && notOffered(err.status) ? false : S.connectors ?? null;
   }
   render();
 }
 function connectorSettings() {
   const state = S.connectors;
+  if (state === false) return null;
   return [
     h('h3', {}, T('Z mailov')),
     h('p', { class: 'hint' }, T('Weft číta len maily, ktoré ti tieto služby už posielajú, a robí z nich chaty. Nikam sa neprihlasuje ani nič neposiela, takže ti účet nemôžu zablokovať.')),
@@ -14416,6 +14521,7 @@ function connectorSettings() {
 }
 function connectorRow(c) {
   const state = S.connectors;
+  if (state === false) return null; // no connectors on this server for this account
   const st = state?.find((x) => x.id === c.id);
   const what = state === undefined ? T('zisťujem…') : !st ? T('služba neodpovedá')
     : st.on ? T`${c.about} Chatov: ${st.chats}, správ: ${st.items}.` : c.phone ? T('Vypnuté: čo telefón pošle, zahodí, chaty ostávajú.') : T('Vypnuté: nové maily nečíta, chaty ostávajú.');
@@ -14427,20 +14533,20 @@ function connectorRow(c) {
 
 /* Settings → Účty → „Telefón“: Karchi's phones with Weft Telefón (android/), which send SMS and the notifications of
  * the apps picked there (server/connect/phone.ts). „Pridať telefón“ shows a code for ten minutes; „Odpojiť“ ends that
- * phone's token at once. S.phones: undefined loading, null no answer; S.phoneCode the code being shown. */
+ * phone's token at once. S.phones: undefined loading, null no answer, false not offered here; S.phoneCode the code being shown. */
 async function loadPhones(action) {
   try {
     const path = action?.remove ? `/_connect/phones/${q(action.remove)}` : action?.code ? '/_connect/phones/code' : '/_connect/phones';
     const res = await fetch(path, { method: action?.remove ? 'DELETE' : action?.code ? 'POST' : 'GET', cache: 'no-store', headers: { Authorization: `Bearer ${S.token}` } });
-    if (!res.ok) throw new Error(res.status);
+    if (!res.ok) throw Object.assign(new Error(res.status), { status: res.status });
     const body = await res.json();
     if (action?.code) S.phoneCode = { ...body, since: S.phones?.length ?? 0 };
     else S.phones = body.phones;
     // A phone that claimed the code shows up in the list: the code goes away.
     if (S.phoneCode && !action?.code && (S.phones.length > S.phoneCode.since || S.phoneCode.expires < Date.now())) S.phoneCode = null;
-  } catch {
+  } catch (err) {
     if (action) alert(T('Nepodarilo sa. Skús to znova.'));
-    S.phones ??= null;
+    S.phones = !action && notOffered(err.status) ? false : S.phones ?? null;
   }
   render();
   // While a code is shown, look every 5 s whether the phone came.
@@ -14449,6 +14555,7 @@ async function loadPhones(action) {
 }
 function phoneSettings() {
   const phones = S.phones;
+  if (phones === false) return null;
   const code = S.phoneCode && S.phoneCode.expires > Date.now() ? S.phoneCode : null;
   const when = (ts) => ts ? seenLabel(ts) : T('ešte nič');
   // The phone reaches Weft on the address its certificate names (PHONE_URL on asus), not a tunnel or name this window uses.
@@ -14773,7 +14880,7 @@ function batchSettings() {
   const modeNow = `${BATCH_MODES.find(([id]) => id === now.mode)?.[1] || ''}${now.mode === 'times' ? ` (${now.times.filter(Boolean).join(', ')})` : ''}${now.edupage && !b.edupage ? T(', EduPage počká') : ''}`;
   return [
     langSetting(),
-    h('h3', {}, T('Nové správy')),
+    S.feedAbsent ? null : [h('h3', {}, T('Nové správy')),
     h('div', { class: 'seg', role: 'radiogroup', 'aria-label': T('Nové správy') }, BATCH_MODES.map(([id, label]) =>
       h('button', { type: 'button', role: 'radio', 'aria-checked': String(b.mode === id), class: b.mode === id ? 'on' : '', onclick: () => b.mode !== id && saveBatches({ mode: id }) }, label))),
     line,
@@ -14788,12 +14895,12 @@ function batchSettings() {
       : T`Dnes ${left}. Oko otvorí nové správy spolu s feedom; ďalšie kliknutie počas okna čas nepredĺži. Zmena počtu, dĺžky, režimu aj časov platí od zajtra.`),
     h('label', { class: 'bcheck' },
       h('input', { type: 'checkbox', checked: !!b.edupage, onchange: (e) => saveBatches({ edupage: e.target.checked }) }),
-      h('span', {}, T('Aj EduPage počká'), h('small', {}, T('Inak ju vidíš hneď, aj na hodine.')))),
+      h('span', {}, T('Aj EduPage počká'), h('small', {}, T('Inak ju vidíš hneď, aj na hodine.'))))],
     h('h3', {}, T('Písanie')),
     h('label', { class: 'bcheck' },
       h('input', { type: 'checkbox', checked: typingOn(), onchange: (e) => { if (!e.target.checked) typingStop(); putAccount(TYPING, { send: e.target.checked }).catch(() => alert(T('Nastavenie sa neuložilo.'))); render(); } }),
       h('span', {}, T('Ukázať ľuďom, že píšem'), h('small', {}, T('Messenger, Instagram, WhatsApp a Discord uvidia „píše…“, kým píšeš správu.')))),
-    workSettings(),
+    S.feedAbsent ? null : workSettings(),
     ringSettings(),
     lookSettings(),
     bcSettings(),
@@ -15354,12 +15461,15 @@ function welcomeView() {
     h('p', {}, T('Všetky tvoje správy v jednej schránke: Messenger, Instagram, WhatsApp, Discord, EduPage, Gmail, Outlook a Teams.')),
     h('div', { class: 'seg', role: 'radiogroup', 'aria-label': T('Jazyk') }, LANGS.map(([id, label]) =>
       h('button', { type: 'button', role: 'radio', lang: id, 'aria-checked': String(LANG === id), class: LANG === id ? 'on' : '',
-        onclick: () => { setLang(id); if (id !== LANG) location.reload(); else render(); } }, label))),
+        onclick: () => { sessionStorage.setItem('ep_welcome', '1'); setLang(id); if (id !== LANG) location.reload(); else render(); } }, label))),
+    // Without the installer's code a new account needs an invitation code (registerView asks for it).
     setup ? h('button', { class: 'primary', type: 'button', onclick: () => show('register') }, T('Vytvoriť účet')) : null,
-    h('button', { class: setup ? 'ghost' : 'primary', type: 'button', onclick: () => { setLang(LANG); show('login'); } }, T('Mám už účet')));
+    h('button', { class: setup ? 'ghost' : 'primary', type: 'button', onclick: () => { sessionStorage.removeItem('ep_welcome'); setLang(LANG); show('login'); } }, T('Mám už účet')),
+    setup ? null : h('button', { class: 'ghost', type: 'button', onclick: () => { sessionStorage.setItem('ep_welcome', '1'); setLang(LANG); show('register'); } }, T('Mám pozvánku')));
 }
 
 function registerView() {
+  const setup = localStorage.getItem(SETUP_KEY);
   return h('form', {
     class: 'form',
     onsubmit: async (e) => {
@@ -15370,7 +15480,7 @@ function registerView() {
       if (f.password.value !== f.password2.value) { S.error = T('Heslá sa nezhodujú.'); render(); return; }
       S.busy = true; S.error = ''; render();
       try {
-        await matrixRegister(f.user.value.trim().toLowerCase(), f.password.value);
+        await matrixRegister(f.user.value.trim().toLowerCase(), f.password.value, setup || f.code.value.trim());
         localStorage.removeItem(SETUP_KEY);
         setLang(LANG);
         S.busy = false;
@@ -15379,14 +15489,16 @@ function registerView() {
         S.busy = false;
         S.error = err.errcode === 'M_USER_IN_USE' ? T('Toto meno už niekto má.')
           : err.errcode === 'M_INVALID_USERNAME' ? T('Meno môže mať len malé písmená bez diakritiky, číslice a . _ -')
-          : err.status === 401 || err.errcode === 'M_FORBIDDEN' ? T('Kód na vytvorenie účtu neplatí. Spusti inštalátor znova, otvorí Weft s novým.')
+          : (err.status === 401 || err.errcode === 'M_FORBIDDEN') && setup ? T('Kód na vytvorenie účtu neplatí. Spusti inštalátor znova, otvorí Weft s novým.')
+          : err.status === 401 || err.errcode === 'M_FORBIDDEN' ? T('Kód pozvánky neplatí. Popýtaj nový od toho, kto ťa pozval.')
           : err.message;
         render();
       }
     },
   },
   h('h2', {}, T('Tvoj účet')),
-  h('p', {}, T('Účet je na tvojom serveri. Prvý účet ho aj spravuje.')),
+  h('p', {}, setup ? T('Účet je na tvojom serveri. Prvý účet ho aj spravuje.') : T('Kód pozvánky ti poslal ten, kto ťa pozval do Weftu.')),
+  setup ? null : h('label', {}, T('Kód pozvánky'), h('input', { name: 'code', required: true, autocomplete: 'off', autocapitalize: 'none', spellcheck: false })),
   h('label', {}, T('Meno'), h('input', { name: 'user', autocomplete: 'username', required: true, autocapitalize: 'none', spellcheck: false })),
   h('label', {}, T('Heslo'), h('input', { name: 'password', type: 'password', autocomplete: 'new-password', required: true, minLength: 8 })),
   h('label', {}, T('Heslo znova'), h('input', { name: 'password2', type: 'password', autocomplete: 'new-password', required: true })),
@@ -15424,7 +15536,9 @@ function loginView() {
   h('label', {}, T('Heslo'), pass),
   // Keep the live region mounted before its text changes, including on repeated refusals.
   h('div', { class: 'err', role: 'alert', 'aria-atomic': 'true' }, S.error),
-  h('button', { class: 'primary', type: 'submit', disabled: S.busy }, S.busy ? T('Prihlasujem…') : T('Prihlásiť')));
+  h('button', { class: 'primary', type: 'submit', disabled: S.busy }, S.busy ? T('Prihlasujem…') : T('Prihlásiť')),
+  // Back to the welcome screen: the language and „Mám pozvánku“ stay reachable from here.
+  h('button', { class: 'ghost', type: 'button', onclick: () => { S.error = ''; sessionStorage.setItem('ep_welcome', '1'); show('welcome'); } }, T('Späť')));
 }
 
 function connectView() {
@@ -15645,7 +15759,7 @@ function render() {
   // The box Karchi typed in is gone, no longer has the keys (another chat, the network switch) or is under a panel or
   // overlay (Ctrl+, keeps its focus behind the veil): he stopped typing there.
   if (typingOut && (document.activeElement?.dataset?.root !== typingOut.room || S.panel || S.overlay || S.offline)) typingStop();
-  if (S.view === 'main') { markRead(); if (!S.homeReady) { S.homeReady = true; cal.view = calDefault(); queueMicrotask(() => { loadCalendar(); if (S.surface === 'feed') feed.enter(); else feed.load(); }); } }
+  if (S.view === 'main') { markRead(); if (!S.homeReady) { S.homeReady = true; cal.view = calDefault(); queueMicrotask(() => { loadCalendar(); probeAutomations(); helloIfWaiting(); if (S.surface === 'feed') feed.enter(); else feed.load(); }); } }
 }
 
 // Never reload an active conversation's unsent work or an open native login window.
