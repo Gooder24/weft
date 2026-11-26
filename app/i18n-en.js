@@ -444,6 +444,7 @@ export default {
   "Ktorému priateľovi na Discorde?": "Which friend on Discord?",
   "Začať nový chat": "Start a new chat",
   "Esc sa vráti ku všetkým sieťam.": "Esc goes back to every network.",
+  "EduPage je odpojený · otvorí Nastavenia → Účty": "EduPage is disconnected · opens Settings → Accounts",
   "Nedávni": "Recent",
   "Nikoho takého nepoznám.": "I know nobody like that.",
   "Hľadať „{}“ mimo kontaktov": "Search “{}” outside contacts",

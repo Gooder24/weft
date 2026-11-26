@@ -10402,18 +10402,22 @@ function startNets(o, query, mailTo) {
   const hidden = hiddenApps();
   const accounts = mailAccounts();
   const linked = (id) => id === 'edupage' ? S.logins.length > 0 : !!S.links[id]?.length;
+  // EduPage refused its saved login: the row leads to signing in again, as the other networks' modes say.
+  const eduOut = (S.logins[0]?.state?.state_event || 'CONNECTED') !== 'CONNECTED' && S.logins[0]?.state?.state_event !== 'CONNECTING';
   return START_NETS.filter((n) => !hidden.has(n.id) && linked(n.id)
     && (n.mail ? accounts.some((l) => l.app.id === n.id) && (!query || mailTo || nameScore(n.words, query) >= 0) : !query || nameScore(n.words, query) >= 0))
     .map((n) => {
       const app = APPS.find((a) => a.id === n.id) || LINKS.find((a) => a.id === n.id);
+      const out = n.id === 'edupage' && eduOut;
       const go = n.mail ? () => openMail(mailTo, '', accounts.find((l) => l.app.id === n.id).key)
+        : out ? () => { closeOverlay(); togglePanel('settings', 'accounts'); }
         : ONLY_ASK[n.id] ? () => { Object.assign(o, { only: n.id, query: '', index: 0 }); render(); }
         : () => openRemote(o, n.id);
       return {
         go,
         av: [h('div', { class: `icon ${n.mail ? 'mailicon' : 'grpicon'}` }, icon(n.mail ? 'mail' : 'pencil')), h('img', { class: 'badge', src: app.icon, alt: '' })],
         title: n.mail && mailTo ? T`Nový mail pre ${mailTo}` : n.title(),
-        note: n.mail && mailTo ? n.title() : n.note(),
+        note: n.mail && mailTo ? n.title() : out ? T('EduPage je odpojený · otvorí Nastavenia → Účty') : n.note(),
       };
     });
 }
