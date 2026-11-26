@@ -3272,6 +3272,15 @@ function mentionText(parts, find) {
 
 const laterItems = () => S.account[LATER]?.items || [];
 let laterChain = Promise.resolve();
+// The service learns once per session that this account schedules messages: it then sends them as this account
+// (every person of the server, not only the owner). Failing is harmless: the next change says it again.
+let laterHello = null;
+function sayLaterHello() {
+  if (laterHello === S.userId) return;
+  laterHello = S.userId;
+  fetch('/_sendlater/hello', { method: 'POST', headers: { Authorization: `Bearer ${S.token}` } })
+    .then((res) => { if (!res.ok) laterHello = null; }, () => { laterHello = null; });
+}
 /** Changes the list as it stands on the server now: the service marks what it sent in the same list. `change` may
  *  be async (it may read other account data just before the write). */
 function saveLater(change) {
@@ -3287,6 +3296,7 @@ function saveLater(change) {
       return;
     }
     await call('PUT', `/user/${q(S.userId)}/account_data/${LATER}`, next);
+    sayLaterHello();
     if (S.account[LATER] === seen) S.account[LATER] = next;
     else {
       // A sync brought another writer's list meanwhile (the service marking an item, another device): neither it nor

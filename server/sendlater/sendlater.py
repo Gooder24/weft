@@ -7,14 +7,26 @@ same network (`net`, else its room) went, so a list due all at once after an out
 This waits on /sync for changes to that list (or until the next one is due), sends each due item with its id
 as the transaction id, so a retry after a crash cannot send it twice, and marks it sent (or failed, with the
 server's error). Weft shows what is still waiting and can cancel it or move it to now.
-Its own device logs in once with a token from mint-login-token.py; the token stays in ./token (0600)."""
-import json, os, stat, subprocess, sys, time, urllib.error, urllib.parse, urllib.request
+Its own device logs in once with a token from mint-login-token.py; the token stays in ./token (0600).
+
+Every other person of this server gets the same, as themselves: their Weft says hello (POST /_sendlater/hello on
+127.0.0.1:29336 behind Caddy, with their Matrix token) the first time it schedules something, and from then on this
+watches their list too, acting as them through the double puppet's appservice token (DOUBLEPUPPET_TOKEN_FILE).
+Whom it watches is kept in ./people.json (0600)."""
+import json, os, stat, subprocess, sys, threading, time, urllib.error, urllib.parse, urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "common"))
+import weft_users
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BASE = os.environ.get("HS", "http://127.0.0.1:8008")
 KEY = "sk.karchi.sendlater"
 TOKEN_FILE = os.environ.get("TOKEN_FILE", os.path.join(HERE, "token"))
 MINT = os.path.expanduser("~/matrix-spike/homeserver/mint-login-token.py")
+PEOPLE_FILE = os.environ.get("PEOPLE_FILE", os.path.join(HERE, "people.json"))
+DOUBLEPUPPET = os.environ.get("DOUBLEPUPPET_TOKEN_FILE", os.path.expanduser("~/matrix-spike/appservices/doublepuppet.as_token"))
+PORT = int(os.environ.get("PORT", "29336"))
 KEEP_DONE_MS = 7 * 24 * 3600e3  # sent and failed items stay a week, so Weft can still say what happened
 q = lambda s: urllib.parse.quote(s, safe="")
 
@@ -25,7 +37,17 @@ class HttpError(Exception):
         self.status, self.body = status, body
 
 
+class Puppet(str):
+    """An appservice token acting as one person: every request carries ?user_id= (the homeserver checks it)."""
+    def __new__(cls, token, user):
+        self = super().__new__(cls, token)
+        self.user = user
+        return self
+
+
 def call(method, path, body=None, token=None, timeout=60):
+    if isinstance(token, Puppet):
+        path += ("&" if "?" in path else "?") + "user_id=" + q(token.user)
     req = urllib.request.Request(BASE + path, method=method, data=None if body is None else json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json", **({"Authorization": f"Bearer {token}"} if token else {})})
     try:
@@ -216,8 +238,8 @@ def next_due(token, user):
     return min(waiting) if waiting else None
 
 
-def main():
-    token, user = login()
+def watch(token, user, relogin):
+    """Sends one person's scheduled messages for as long as the service runs."""
     flt = q(json.dumps({"presence": {"not_types": ["*"]}, "account_data": {"types": [KEY]}, "room": {"rooms": []}}))
     since = None
     print(f"waiting for scheduled messages of {user}", flush=True)
@@ -234,13 +256,64 @@ def main():
             since = r.get("next_batch", since)
         except HttpError as e:
             if e.status == 401:
-                token, user = login()
+                try: token, user = relogin()
+                except Exception as err:
+                    print(f"error: {user}: no token ({err})", flush=True)
+                    time.sleep(60)
             else:
                 print(f"error: {e}", flush=True)
                 time.sleep(10)
         except (OSError, ValueError) as e:
             print(f"error: {e}", flush=True)
             time.sleep(10)
+
+
+def puppet(user):
+    return Puppet(open(DOUBLEPUPPET).read().strip(), user)
+
+
+class People:
+    """The people besides the owner whose lists this watches, each in a thread of its own."""
+    def __init__(self, owner):
+        self.owner, self.lock, self.running = owner, threading.Lock(), set()
+        try: self.known = set(json.load(open(PEOPLE_FILE)))
+        except (FileNotFoundError, ValueError): self.known = set()
+
+    def start(self, user):
+        with self.lock:
+            if user == self.owner or user in self.running: return
+            self.running.add(user)
+            if user not in self.known:
+                self.known.add(user)
+                fd = os.open(PEOPLE_FILE + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IRUSR | stat.S_IWUSR)
+                with os.fdopen(fd, "w") as f: json.dump(sorted(self.known), f)
+                os.replace(PEOPLE_FILE + ".tmp", PEOPLE_FILE)
+        threading.Thread(target=watch, args=(puppet(user), user, lambda: (puppet(user), user)), daemon=True).start()
+
+
+def serve(people, users):
+    class Api(BaseHTTPRequestHandler):
+        def log_message(self, *a): pass
+        def do_POST(self):
+            user = users.who((self.headers.get("Authorization") or "").removeprefix("Bearer ").strip())
+            code = 404 if self.path != "/_sendlater/hello" else 401 if not user else 200
+            if code == 200: people.start(user)
+            body = b"{}"
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+    ThreadingHTTPServer(("127.0.0.1", PORT), Api).serve_forever()
+
+
+def main():
+    token, user = login()
+    if os.path.exists(DOUBLEPUPPET):
+        people = People(user)
+        for other in sorted(people.known): people.start(other)
+        threading.Thread(target=serve, args=(people, weft_users.Users(BASE, user)), daemon=True).start()
+    watch(token, user, login)
 
 
 if __name__ == "__main__":
