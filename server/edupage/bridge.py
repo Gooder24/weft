@@ -816,6 +816,12 @@ def homework_material(edu: Edupage, hw: dict) -> dict:
     return {"text": "\n\n".join(filter(None, texts)), "files": [f for f in files if f]}
 
 
+def get_once(session: requests.Session, url: str) -> requests.Response:
+    """One GET that neither follows a redirect nor reads the body yet. Session.get reads a redirect's whole body even
+    with allow_redirects=False, so this asks the session's adapter itself (with the session's cookies and headers)."""
+    return session.get_adapter(url).send(session.prepare_request(requests.Request("GET", url)), stream=True, timeout=60)
+
+
 def upload_file(edu: Edupage, base: str, file: dict) -> dict | None:
     """Copies one card file into the Matrix media store; EduPage serves it only to a logged-in session."""
     url = urllib.parse.urljoin(base + "/", str(file["src"]))
@@ -825,7 +831,7 @@ def upload_file(edu: Edupage, base: str, file: dict) -> dict | None:
     # an elearning address sends its file): a file never comes from elsewhere.
     school_host = urllib.parse.urlsplit(base).netloc
     for _ in range(4):
-        resp = edu.session.get(url, timeout=60, allow_redirects=False, stream=True)
+        resp = get_once(edu.session, url)
         if resp.status_code not in (301, 302, 303, 307, 308):
             break
         resp.close()
@@ -845,18 +851,23 @@ def upload_file(edu: Edupage, base: str, file: dict) -> dict | None:
         raise ValueError("login page instead of a file")
     if mimetype in ("application/octet-stream", "application/force-download", ""):  # elearning links say this for any file
         mimetype = mimetypes.guess_type(str(file.get("name") or ""))[0] or "application/octet-stream"
-    if len(resp.content) > MAX_FILE_BYTES:
-        return None
+    body = bytearray()
+    for chunk in resp.iter_content(1 << 16):  # also when EduPage does not say the size
+        body += chunk
+        if len(body) > MAX_FILE_BYTES:
+            resp.close()
+            return None
+    content = bytes(body)
     name = str(file.get("name") or "subor")
     req = urllib.request.Request(
         f"{HOMESERVER}/_matrix/media/v3/upload?" + urllib.parse.urlencode({"user_id": BOT, "filename": name}),
-        data=resp.content, method="POST",
+        data=content, method="POST",
         headers={"Authorization": f"Bearer {AS_TOKEN}", "Content-Type": mimetype},
     )
     with urllib.request.urlopen(req, timeout=60) as up:
         mxc = json.load(up)["content_uri"]
-    out = {"name": name, "url": mxc, "mimetype": mimetype, "size": len(resp.content)}
-    size = image_size(resp.content)
+    out = {"name": name, "url": mxc, "mimetype": mimetype, "size": len(content)}
+    size = image_size(content)
     if size:
         out.update(w=size[0], h=size[1])
     return out

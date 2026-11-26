@@ -46,13 +46,22 @@ class Resp:
         self.headers = {"Content-Type": ctype, **({"Location": location} if location else {})}
     def raise_for_status(self): pass
     def close(self): self.closed = True
+    def iter_content(self, size):
+        if isinstance(self.content, bytes):
+            yield self.content
+        else:
+            yield from self.content
 
 
 class Session:
     def __init__(self, login=False): self.gets, self.login, self.cookies = [], login, {}
 
-    def get(self, url, timeout=None, allow_redirects=True, stream=False):
-        assert allow_redirects is False
+    # The bridge asks the adapter itself (get_once), never Session.get.
+    def prepare_request(self, req): return req.url
+    def get_adapter(self, url): return self
+
+    def send(self, url, stream=False, timeout=None):
+        assert stream
         self.gets.append(url)
         if "away" in url:
             return Resp(b"", "text/html", 302, "https://127.0.0.1/secret")
@@ -74,6 +83,13 @@ class Session:
             r = Resp(None, "application/pdf")
             r.headers["Content-Length"] = str(b.MAX_FILE_BYTES + 1)
             return r
+        if "huge" in url:  # does not say its size: read only until it is too big
+            self.chunks = 0
+            def chunks():
+                while True:
+                    self.chunks += 1
+                    yield b"\0" * (1 << 20)
+            return Resp(chunks(), "application/pdf")
         return Resp(JPEG if "img" in url else b"%PDF-1.4", "application/octet-stream")
 
 
@@ -122,6 +138,15 @@ try:
 except b.ApiError as err:
     check("over 25 MB: said, not copied", err.status == 413 and len(uploads) == 2, (err.status, uploads))
 
+huge = {**item, "timelineid": 3, "data": json.dumps({"attachements": {"/elearning/huge": "film.mp4"}})}
+db.execute("INSERT INTO raw VALUES (3, 'sprava', 0, ?)", (json.dumps(huge),))
+try:
+    b.message_attachment(db, BASE + "/elearning/huge")
+    check("over 25 MB without a stated size: reading stops, not copied", False, "no error")
+except b.ApiError as err:
+    check("over 25 MB without a stated size: reading stops, not copied", err.status == 413 and len(uploads) == 2
+          and b.ACCOUNT.edu.session.chunks == b.MAX_FILE_BYTES // (1 << 20) + 1, (err.status, b.ACCOUNT.edu.session.chunks))
+
 for key, name in (("/elearning/away", "von.pdf"), ("/elearning/moved", "presun.jpg"), ("/elearning/tocloud", "c.jpg"), ("/elearning/tocloudb", "e.pdf"), ("/elearning/othercloud", "d.jpg")):
     db.execute("INSERT INTO raw VALUES (?, 'sprava', 0, ?)", (len(key), json.dumps({**item, "timelineid": len(key), "data": json.dumps({"attachements": {key: name}})})))
 try:
@@ -158,6 +183,29 @@ try:
     check("EduPage still refusing: said plainly", False, "no error")
 except b.ApiError as err:
     check("EduPage still refusing: said plainly", err.status == 502, err.status)
+
+# A real requests session against a local server: a redirect with a large body is answered without reading that body.
+import http.server, socket
+sent = []
+class Big(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(301)
+        self.send_header("Location", "https://cloud-2.edupage.org/x")
+        self.send_header("Content-Length", str(64 << 20))
+        self.end_headers()
+        try:
+            for _ in range(64):
+                self.wfile.write(b"\0" * (1 << 20))
+                sent.append(1)
+        except OSError:
+            pass
+    def log_message(self, *a): pass
+srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Big)
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+r = b.get_once(b.requests.Session(), f"http://127.0.0.1:{srv.server_address[1]}/elearning/r")
+check("a redirect's body is not read", r.status_code == 301 and r.raw.tell() < (8 << 20), r.raw.tell())
+r.close()
+srv.shutdown()
 
 print("FAILS:", fails)
 sys.exit(1 if fails else 0)
