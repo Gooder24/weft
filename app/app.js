@@ -256,7 +256,10 @@ async function call(method, path, body, base = '/_matrix/client/v3', signal = un
 const bridge = (method, path, body) => call(method, path, body ?? (method === 'POST' ? {} : undefined), BRIDGE);
 /** A service this server does not offer this account: missing here (404; the public site for invited people has only
  *  the app, Matrix and the chat bridges) or kept for the server's owner (401/403). Weft then leaves it out. */
-const notOffered = (status) => status === 401 || status === 403 || status === 404;
+// A service this server does not offer the account: the invited people's site answers 404 for everything it leaves
+// out. Never 401/403: the owner's own services answer those for a moment (a homeserver restart, a late request), and
+// taking them for absence would hide his calendar or release the messages his reading windows hold.
+const notOffered = (status) => status === 404;
 // What the server does not offer this account (notOffered), kept per account on this device, so a reload draws an
 // invited account's screen at once instead of the owner's for a moment; the next answer that works forgets it.
 const absentKey = () => `ep_absent:${S.userId}`;
@@ -5993,8 +5996,8 @@ document.addEventListener('keydown', (e) => {
   else if (mod && !e.shiftKey && key === 'k') run(() => (S.overlay?.kind === 'search' ? closeOverlay() : openSearch()));
   else if (mod && e.shiftKey && key === 's') run(() => setShowAll(!S.showAll));
   else if (mod && !e.shiftKey && key === ',') run(() => togglePanel('settings'));
-  else if (mod && !e.shiftKey && key === 'g') run(() => togglePanel('grades'));
-  else if (mod && !e.shiftKey && key === 'm') run(() => togglePanel('people'));
+  else if (mod && !e.shiftKey && key === 'g') run(() => offered.grades() && togglePanel('grades'));
+  else if (mod && !e.shiftKey && key === 'm') run(() => offered.people() && togglePanel('people'));
   else if (mod && e.shiftKey && key === 'f') run(showFeed);
   else if (mod && !e.shiftKey && key === 'd') run(toggleCalendar);
   else if (mod && !e.shiftKey && key === 'b' && board.available) run(toggleBoard);
@@ -11034,7 +11037,7 @@ function toolList() {
     [T('Upraviť svoju poslednú správu'), 'edit opravit', null, () => { const [lr, ev] = r ? lastEditableIn(r) : []; if (ev) startEdit(lr, ev); render(); }, !!r],
     [T('Nahrať hlasovku'), 'voice hlasova sprava audio nahravka mikrofon', 'Ctrl+Shift+A', toggleRecording, !!r],
     [T('Prehrať / pozastaviť hlasovku'), 'voice hlasovka prehrat pustit pozastavit audio play pause', 'Ctrl+Shift+Space', voiceShortcut, !!voice.event || !!r],
-    [T('Odoslať neskôr'), 'send later sendlater naplanovat', 'Ctrl+Shift+Enter', () => openLater(r), !!r && offered.later()],
+    ...(offered.later() ? [[T('Odoslať neskôr'), 'send later sendlater naplanovat', 'Ctrl+Shift+Enter', () => openLater(r), !!r]] : []),
     [T('Preposlať poslednú správu…'), 'forward preposlat poslat dalej zdielat share', '', () => forwardLast(r), !!r],
     [T('Keď odpíše, ukázať odpoveď kamošovi…'), 'relay screenshot preposlat odpoved kamos cakam odpise obrazok', '', () => openRelay(r), !!r],
     [T('Poslať GIF'), 'gif klipy obrazok', '/gif', () => openGifs(r), !!r],
@@ -11078,7 +11081,7 @@ function toolsView(o) {
   o.flat = tools.map(([, , , fn, can]) => () => { if (!can) return; S.overlay = null; if (S.panel !== 'link' && fn.panel !== S.panel) S.panel = null; render(); fn(); });
   if (o.index >= o.flat.length) o.index = 0;
   return [
-    cmdInput(o, T('Nástroj alebo akcia, napr. známky, mapa, hlasovka')),
+    cmdInput(o, offered.grades() ? T('Nástroj alebo akcia, napr. známky, mapa, hlasovka') : T('Nástroj alebo akcia, napr. hlasovka, GIF')),
     h('div', { class: 'results', ...listScroll(o) }, tools.length
       ? tools.map(([name, , key, , can], i) => resultRow(o, null, i, [
         h('div', { class: 'rmeta' }, h('b', {}, highlighted(name, o.query)), can ? null : h('small', {}, T('Najprv otvor chat'))),
@@ -11145,11 +11148,13 @@ const feed = createFeed({
   isOpen: () => S.surface === 'feed', readingWindow, onWindow: takeWindow,
   api: async (method, path, body) => {
     if (method !== 'MEDIA') {
+      // Only GET /doc says whether this account has a feed (a POST may get 404 for other reasons).
+      const doc = method === 'GET' && path === '/doc';
       return call(method, path, body, '/_feed', AbortSignal.timeout(method === 'GET' ? 15000 : 120000)).then((res) => {
-        if (S.feedAbsent) { S.feedAbsent = false; keepAbsent(); refresh(); }
+        if (doc && S.feedAbsent) { S.feedAbsent = false; keepAbsent(); refresh(); }
         return res;
       }, (err) => {
-        if (notOffered(err.status) && !S.feedAbsent) { S.feedAbsent = true; keepAbsent(); refresh(); }
+        if (doc && notOffered(err.status) && !S.feedAbsent) { S.feedAbsent = true; keepAbsent(); refresh(); }
         throw err;
       });
     }

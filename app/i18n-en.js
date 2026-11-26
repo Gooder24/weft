@@ -1500,4 +1500,5 @@ export default {
   "Pripoj Messenger, Instagram, WhatsApp alebo Discord a tvoje správy prídu sem.": "Connect Messenger, Instagram, WhatsApp or Discord and your messages come here.",
   "Pripojiť účty": "Connect accounts",
   "Odoslať neskôr na tomto serveri nie je.": "Send later is not available on this server.",
+  "Nástroj alebo akcia, napr. hlasovka, GIF": "A tool or action, e.g. voice message, GIF",
 };

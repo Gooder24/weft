@@ -44,7 +44,7 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   in one of Karchi's groups gets a room of their own, not his room with its history. Their permissions refuse Karchi,
   and Karchi's bridges admit only him. Discord gets the caller's own user id from setup.py's forward_auth
   (`/_bridges/auth-guest`, header `X-Weft-User`). Weft leaves out what the server refuses an account (`notOffered` in
-  app.js: 401/403/404, kept per account in localStorage `ep_absent:<user>`): EduPage, mail, calendar, feed and its
+  app.js: 404 only, as the owner's services answer 401/403 for a moment; kept per account in localStorage `ep_absent:<user>`): EduPage, mail, calendar, feed and its
   reading windows (nothing waits), send later, connectors, automations and the archive stay Karchi's. Check:
   `overenie/hostia/` (guest view, isolation).
 - `desktop/` is the Electron shell, installed on x270 in `~/.local/share/spravy`. Its login windows go out through
