@@ -155,12 +155,21 @@ FEATURES_FILE = STATE_DIR / "features.json"
 assert {G + s for c in CHOICES for s in c["scopes"]} == set(ALL_SCOPES) - {s for p in PRODUCTS.values() for s in p["scopes"]}
 
 
+FEATURES_LOCK = threading.Lock()
+
+
 def features_off() -> set[str]:
+    """No file: everything on. A file that cannot be read: everything off, so nothing turned off comes back by itself."""
     try:
-        off = json.loads(FEATURES_FILE.read_text()).get("off")
-    except (OSError, ValueError, AttributeError):
+        off = json.loads(FEATURES_FILE.read_bytes()).get("off")
+        if not isinstance(off, list):
+            raise ValueError
+    except FileNotFoundError:
         return set()
-    return {c["id"] for c in CHOICES if isinstance(off, list) and c["id"] in off}
+    except (OSError, ValueError, AttributeError):
+        log("features.json cannot be read; every optional feature counts as off until Settings saves a choice")
+        return {c["id"] for c in CHOICES}
+    return {c["id"] for c in CHOICES if c["id"] in off}
 
 
 def set_features_off(off: object) -> None:
@@ -169,9 +178,10 @@ def set_features_off(off: object) -> None:
     known = {c["id"] for c in CHOICES}
     if set(off) - known:
         raise ApiError(400, "SK.KARCHI.INVALID_INPUT", "Takú funkciu Weft nepozná.")
-    tmp = FEATURES_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps({"off": sorted(set(off))}))
-    tmp.replace(FEATURES_FILE)
+    with FEATURES_LOCK:
+        tmp = FEATURES_FILE.with_name(f"features.json.{uuid.uuid4().hex}.tmp")
+        tmp.write_text(json.dumps({"off": sorted(set(off))}))
+        tmp.replace(FEATURES_FILE)
 
 
 def allowed(scopes: list[str]) -> list[str]:
@@ -654,9 +664,10 @@ def process(process_id: str) -> dict:
     return found
 
 
-def signin_scopes(product: str, client: dict) -> list[str]:
-    """Everything at once, unless such a sign-in was just refused or left unfinished (see BASE_ONLY)."""
-    if time.time() - BASE_ONLY.get(product, 0) < BASE_ONLY_SECONDS:
+def signin_scopes(product: str, client: dict, full: bool = False) -> list[str]:
+    """Everything at once, unless such a sign-in was just refused or left unfinished (see BASE_ONLY) and Karchi did not
+    ask for everything himself (full: Settings → „Povoliť vybrané“)."""
+    if not full and time.time() - BASE_ONLY.get(product, 0) < BASE_ONLY_SECONDS:
         return PRODUCTS[product]["scopes"]
     return all_user_scopes(product, client)
 
@@ -668,13 +679,13 @@ def all_user_scopes(product: str, client: dict) -> list[str]:
     return allowed(spec["scopes"] + spec["extra"])
 
 
-def start_login(product: str) -> dict:
+def start_login(product: str, full: bool = False) -> dict:
     client = ms_client()
     if not client:
         raise ApiError(503, "SK.KARCHI.NO_CLIENT", NO_CLIENT)
     process_id = uuid.uuid4().hex
     verifier = secrets.token_urlsafe(48)
-    scopes = signin_scopes(product, client)
+    scopes = signin_scopes(product, client, full)
     PROCESSES[process_id] = {"created": time.time(), "verifier": verifier, "product": product,
                              "extras": scopes != PRODUCTS[product]["scopes"]}
     spec = PRODUCTS[product]
@@ -2077,7 +2088,7 @@ def route(product: str, method: str, parts: list[str], body: dict, args: dict, t
         case "GET", ["login", "flows"]:
             return {"flows": [flow]}
         case "POST", ["login", "start", "microsoft"]:
-            return start_login(product)
+            return start_login(product, args.get("full") == "1")
         case "POST", ["login", "step", process_id, step_id, "user_input"] if step_id == STEP_ID:
             # Weft starts a fresh sign-in after any failure that is not a wrong paste (a code works once).
             try:
