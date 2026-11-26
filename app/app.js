@@ -6078,8 +6078,9 @@ const offered = {
   mail: () => !(S.linksAbsent.has('gmail') && S.linksAbsent.has('outlook')),
   windows: () => !S.feedAbsent,
   // server/sendlater sends only the owner's items and has no API to ask; the owner's services come together, so the
-  // feed's absence says the same. Without it, nothing may wait for a send that never comes.
-  later: () => !S.feedGone,
+  // feed's absence says the same. Without it, nothing may wait for a send that never comes. (Only offering it; items
+  // already handed over are sent by the service either way.)
+  later: () => !S.feedAbsent,
 };
 
 /** Inbox filter, search and settings; new chat on touch screens. */
@@ -11153,8 +11154,8 @@ const feed = createFeed({
       // Only GET /doc says whether this account has a feed (a POST may get 404 for other reasons).
       const doc = method === 'GET' && path === '/doc';
       return call(method, path, body, '/_feed', AbortSignal.timeout(method === 'GET' ? 15000 : 120000)).then((res) => {
-        S.feedGone = false;
-        if (doc && S.feedAbsent) { S.feedAbsent = false; keepAbsent(); refresh(); }
+        S.feedGone = false; // any answer proves the feed is there
+        if (S.feedAbsent) { S.feedAbsent = false; keepAbsent(); refresh(); }
         return res;
       }, (err) => {
         if (doc && notOffered(err.status)) { S.feedGone = true; if (!S.feedAbsent) { S.feedAbsent = true; keepAbsent(); } refresh(); }
