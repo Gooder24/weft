@@ -6061,12 +6061,14 @@ function sideHead() {
 }
 document.addEventListener('click', () => { if (S.menu) { S.menu = false; render(); } });
 
+/** EduPage's saved login lost its connection (a refused login, the bridge's own outage); importing its history after a
+ *  sign-in (BACKFILLING) is connected, as on the other networks. */
+const eduDown = () => !!S.logins[0]?.state?.state_event && !['CONNECTED', 'CONNECTING', 'BACKFILLING'].includes(S.logins[0].state.state_event);
 /** Accounts that lost their connection: { id, name, icon, app, out }. out: the login to sign in again ({} when the
  *  network's login is gone), null while the bridge reconnects by itself. */
 function downAccounts() {
   const down = [];
-  const edu = S.logins[0];
-  if (edu && edu.state?.state_event && !['CONNECTED', 'CONNECTING'].includes(edu.state.state_event)) down.push({ id: 'edupage', name: 'EduPage', icon: '/edupage.png', out: null });
+  if (eduDown()) down.push({ id: 'edupage', name: 'EduPage', icon: '/edupage.png', out: null });
   for (const app of LINKS) {
     const logins = S.links[app.id];
     const broken = logins?.some((l) => l.state?.state_event && !['CONNECTED', 'CONNECTING', 'BACKFILLING'].includes(l.state.state_event));
@@ -10402,8 +10404,8 @@ function startNets(o, query, mailTo) {
   const hidden = hiddenApps();
   const accounts = mailAccounts();
   const linked = (id) => id === 'edupage' ? S.logins.length > 0 : !!S.links[id]?.length;
-  // EduPage refused its saved login: the row leads to signing in again, as the other networks' modes say.
-  const eduOut = (S.logins[0]?.state?.state_event || 'CONNECTED') !== 'CONNECTED' && S.logins[0]?.state?.state_event !== 'CONNECTING';
+  // EduPage lost its saved login: the row leads to signing in again, as the other networks' modes say.
+  const eduOut = eduDown();
   return START_NETS.filter((n) => !hidden.has(n.id) && linked(n.id)
     && (n.mail ? accounts.some((l) => l.app.id === n.id) && (!query || mailTo || nameScore(n.words, query) >= 0) : !query || nameScore(n.words, query) >= 0))
     .map((n) => {
