@@ -825,9 +825,10 @@ def upload_file(edu: Edupage, base: str, file: dict) -> dict | None:
     # an elearning address sends its file): a file never comes from elsewhere.
     school_host = urllib.parse.urlsplit(base).netloc
     for _ in range(4):
-        resp = edu.session.get(url, timeout=60, allow_redirects=False)
+        resp = edu.session.get(url, timeout=60, allow_redirects=False, stream=True)
         if resp.status_code not in (301, 302, 303, 307, 308):
             break
+        resp.close()
         url = urllib.parse.urljoin(url, resp.headers.get("Location") or "")
         parts = urllib.parse.urlsplit(url)
         if parts.scheme != "https" or not (parts.netloc == school_host or EDUPAGE_FILES.fullmatch(parts.netloc)):
@@ -835,6 +836,9 @@ def upload_file(edu: Edupage, base: str, file: dict) -> dict | None:
     else:
         raise requests.RequestException("too many redirects")
     resp.raise_for_status()
+    if int(resp.headers.get("Content-Length") or 0) > MAX_FILE_BYTES:  # said before it is read
+        resp.close()
+        return None
     mimetype = resp.headers.get("Content-Type", "application/octet-stream").split(";")[0].strip()
     mimetype = {"image/x-png": "image/png", "image/pjpeg": "image/jpeg"}.get(mimetype, mimetype)
     if mimetype == "text/html":

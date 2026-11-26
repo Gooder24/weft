@@ -45,12 +45,13 @@ class Resp:
         self.content, self.status_code = content, status
         self.headers = {"Content-Type": ctype, **({"Location": location} if location else {})}
     def raise_for_status(self): pass
+    def close(self): self.closed = True
 
 
 class Session:
     def __init__(self, login=False): self.gets, self.login, self.cookies = [], login, {}
 
-    def get(self, url, timeout=None, allow_redirects=True):
+    def get(self, url, timeout=None, allow_redirects=True, stream=False):
         assert allow_redirects is False
         self.gets.append(url)
         if "away" in url:
@@ -69,8 +70,10 @@ class Session:
             return Resp(JPEG, "image/jpeg")
         if self.login:
             return Resp(b"<html>login</html>", "text/html; charset=utf-8")
-        if "big" in url:
-            return Resp(b"x" * (b.MAX_FILE_BYTES + 1), "application/pdf")
+        if "big" in url:  # says its size; its body is never read
+            r = Resp(None, "application/pdf")
+            r.headers["Content-Length"] = str(b.MAX_FILE_BYTES + 1)
+            return r
         return Resp(JPEG if "img" in url else b"%PDF-1.4", "application/octet-stream")
 
 
