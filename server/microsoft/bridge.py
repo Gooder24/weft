@@ -178,8 +178,10 @@ def set_features(body: dict) -> None:
     known = {c["id"] for c in CHOICES}
     changes, off = body.get("changes"), body.get("off")
     if isinstance(changes, dict):
-        if not changes or set(changes) - known or not all(isinstance(v, bool) for v in changes.values()):
+        if not changes or set(changes) - known:
             raise ApiError(400, "SK.KARCHI.INVALID_INPUT", "Takú funkciu Weft nepozná.")
+        if not all(isinstance(v, bool) for v in changes.values()):
+            raise ApiError(400, "SK.KARCHI.INVALID_INPUT", "Pri každej funkcii pošli true alebo false.")
     elif not isinstance(off, list) or not all(isinstance(i, str) for i in off):
         raise ApiError(400, "SK.KARCHI.INVALID_INPUT", "Pošli zoznam vypnutých funkcií.")
     elif set(off) - known:
@@ -1031,7 +1033,7 @@ def consent_report(product: str) -> dict:
             continue
         logins.append({"id": key, "name": login["name"], "granted": sorted(have),
                        "missing": [{"scope": s, "what": FEATURES.get(s, s), "admin": G + s in ADMIN_ONLY,
-                                    "feature": next((c["id"] for c in CHOICES if s in c["scopes"]), None)}
+                                    "feature": next((c["id"] for c in CHOICES if s in c["scopes"]), "base")}
                                    for s in wanted if s not in have]})
     return {"logins": logins, "admin_url": admin_consent_url(tenant), "choices": choices()}
 

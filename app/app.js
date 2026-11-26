@@ -15027,8 +15027,8 @@ function appAccounts(app, logins) {
           h('button', { class: 'ghost danger', type: 'button', onclick: () => unlink(app, l, l.name) }, T('Odhlásiť'))))),
       app.id === 'discord' ? discordServers() : null,
       app.flow === 'microsoft' ? microsoftFeatures(app) : null,
-      !logins.length ? h('button', { class: 'primary', type: 'button', onclick: () => startLink(app) }, T('Pripojiť'))
-        : app.multi ? h('button', { class: 'primary', type: 'button', onclick: () => startLink(app) }, T('Pridať ďalší účet'))
+      !logins.length ? h('button', { class: 'primary', type: 'button', disabled: app.flow === 'microsoft' && msSaving(), onclick: () => startLink(app) }, T('Pripojiť'))
+        : app.multi ? h('button', { class: 'primary', type: 'button', disabled: app.flow === 'microsoft' && msSaving(), onclick: () => startLink(app) }, T('Pridať ďalší účet'))
         : h('p', { class: 'hint' }, T`${app.name} vo Wefte vie zatiaľ len jeden účet.`)) : null,
   ];
 }
@@ -15041,9 +15041,12 @@ const MS_FEATURES = {
   mailbox: T('automatická odpoveď a nastavenia schránky'), shared: T('zdieľané schránky a kalendáre'),
   presence: T('kto je online a tvoj stav v Teams'), channels: T('tímy, kanály a písanie do nich'),
   channel_read: T('čítanie kanálov a ľudia v tímoch'), chat_members: T('pridávanie ľudí do chatov'),
-  recordings: T('prepisy a nahrávky stretnutí'),
+  recordings: T('prepisy a nahrávky stretnutí'), base: T('pošta, chaty a súbory'),
 };
-const msFeat = { pending: {}, chain: Promise.resolve() };
+/** pending: ticks not yet saved; seq: the newest consent refresh, so an older answer that comes late is dropped. */
+const msFeat = { pending: {}, chain: Promise.resolve(), seq: 0 };
+/** While a choice is being saved (or its consent not asked again yet), nothing may start a sign-in with the old one. */
+const msSaving = () => Object.keys(msFeat.pending).length > 0 || Object.values(S.msConsent || {}).some((x) => x?.stale);
 function microsoftFeatures(app) {
   const all = (S.msConsent ||= {});
   if (all[app.id] === undefined) {
@@ -15061,7 +15064,7 @@ function microsoftFeatures(app) {
   // Ticks show at once; each click saves only its own change, one after another, so quick clicks add up and another
   // window's choices stay. Signing in and the admin's link wait until the bridge has them.
   const isOn = (c) => (c.id in msFeat.pending ? msFeat.pending[c.id].on : c.on);
-  const saving = Object.keys(msFeat.pending).length > 0 || !!r.stale;
+  const saving = msSaving();
   const choose = (e, id) => {
     const on = e.currentTarget.checked;
     const mine = msFeat.pending[id] = { on };
@@ -15071,9 +15074,11 @@ function microsoftFeatures(app) {
       try { res = await prov(app, 'POST', '/features', { changes: { [id]: on } }); } catch { alert(T('Nastavenie sa neuložilo.')); }
       if (msFeat.pending[id] === mine) delete msFeat.pending[id];
       if (Object.keys(msFeat.pending).length) return;
+      const seq = ++msFeat.seq;
       for (const a of LINKS.filter((x) => x.flow === 'microsoft')) {
-        if (all[a.id] && all[a.id] !== 'loading') all[a.id] = { ...all[a.id], ...(res?.choices ? { choices: res.choices } : {}), stale: true };
-        prov(a, 'GET', '/consent').then((x) => { if (!Object.keys(msFeat.pending).length) all[a.id] = x; }, () => { all[a.id] = null; })
+        if (all[a.id] && all[a.id] !== 'loading') all[a.id] = { ...all[a.id], ...(res?.choices ? { choices: res.choices } : {}), stale: true, failed: false };
+        prov(a, 'GET', '/consent').then((x) => { if (seq === msFeat.seq && !Object.keys(msFeat.pending).length) all[a.id] = x; },
+          () => { if (seq === msFeat.seq && all[a.id]?.stale) all[a.id] = { ...all[a.id], failed: true }; })
           .then(() => { if (S.panel === 'settings') render(); });
       }
       render();
@@ -15086,6 +15091,8 @@ function microsoftFeatures(app) {
   };
   return [
     h('h4', {}, T('Čo smie Weft')),
+    r.failed ? h('p', { class: 'hint' }, T('Most Microsoftu neodpovedá, výber sa možno neuložil.'), ' ',
+      h('button', { class: 'linkbtn', type: 'button', onclick: () => { for (const a of LINKS) if (a.flow === 'microsoft') delete all[a.id]; render(); } }, T('Skontrolovať znova'))) : null,
     h('p', { class: 'hint' }, T('Platí pre Outlook aj Teams. Prihlásenie a odkaz pre správcu pýtajú len zaškrtnuté; vypnuté Weft nepoužije.')),
     h('label', { class: 'bcheck' }, h('input', { type: 'checkbox', checked: true, disabled: true }), T('pošta, chaty a súbory (vždy)')),
     (r.choices || []).map((c) => h('label', { class: 'bcheck', 'data-key': `feat:${c.id}` },

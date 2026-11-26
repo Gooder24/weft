@@ -1325,6 +1325,8 @@ export default {
   "Čo smie Weft": "What Weft may do",
   "Platí pre Outlook aj Teams. Prihlásenie a odkaz pre správcu pýtajú len zaškrtnuté; vypnuté Weft nepoužije.": "Applies to Outlook and Teams. Signing in and the admin link ask only for what is ticked; Weft does not use what is off.",
   "pošta, chaty a súbory (vždy)": "mail, chats and files (always)",
+  "pošta, chaty a súbory": "mail, chats and files",
+  "Most Microsoftu neodpovedá, výber sa možno neuložil.": "The Microsoft bridge does not answer; the choice may not be saved.",
   "povolí len správca": "only an admin allows it",
   "len pracovný alebo školský účet": "work or school account only",
   "kalendár a stretnutia": "calendar and meetings",
