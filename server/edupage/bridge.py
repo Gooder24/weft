@@ -1449,6 +1449,15 @@ class Account:
             json.dump(self.creds, out)
         tmp.replace(ACCOUNT_FILE)
 
+    def keep_session(self, edu: Edupage) -> None:
+        """Uses `edu` from now on and stores its session, so a restart reuses it instead of the password (which
+        EduPage may answer by asking to confirm the sign-in in its app). Call with the lock held."""
+        self.edu = edu
+        sid = session_id(edu)
+        if self.creds and sid and sid != self.creds.get("session"):
+            self.creds["session"] = sid
+            self.save()
+
     def login_view(self) -> list[dict]:
         creds = self.creds
         if not creds:
@@ -1504,7 +1513,7 @@ class Account:
 
     def poll(self, rooms: Rooms) -> None:
         with self.lock:
-            creds = self.creds
+            creds = dict(self.creds) if self.creds else None  # connect() writes the new session into this copy
             edu = self.edu
         if not creds:
             return
@@ -1532,10 +1541,7 @@ class Account:
         with self.lock:
             if self.creds is None or self.creds["login_id"] != creds["login_id"]:
                 return  # logged out or replaced meanwhile
-            self.edu = edu
-            if creds.get("session") and creds["session"] != self.creds.get("session"):
-                self.creds["session"] = creds["session"]
-                self.save()
+            self.keep_session(edu)
         settle_before = int((time.time() - SETTLE_AFTER_DAYS * 86400) * 1000) if backfill else None
         try:
             teachers = teacher_contacts(edu)
@@ -1711,7 +1717,7 @@ class Account:
                 rooms.say(room_id, "Neodoslané: EduPage nevie poslať správu bez adresáta. Odpovedz na konkrétnu správu.", event_id)
                 continue
             with self.lock:
-                creds, edu = self.creds, self.edu
+                creds, edu = (dict(self.creds) if self.creds else None), self.edu
             if not creds:
                 rooms.say(room_id, "Neodoslané: EduPage nie je pripojený.", event_id)
                 continue
@@ -1741,8 +1747,8 @@ class Account:
                 else:
                     rooms.mark_sent(item_id, root if root is not None else item_id, event_id)
                 with self.lock:
-                    if self.creds is creds:
-                        self.edu = edu
+                    if self.creds and self.creds["login_id"] == creds["login_id"]:
+                        self.keep_session(edu)
             except AttachmentRefused as err:
                 rooms.say(room_id, f"Táto správa neodišla do EduPage: {err}. Skús iný súbor alebo ju pošli bez neho.", event_id)
             except Exception as err:
