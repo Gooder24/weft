@@ -372,7 +372,7 @@ function clearSession() {
   S.archiveTag = null; S.archiveAt = 0;
   S.fromSnapshot = false;
   cal.doc = null; cal.loaded = false;
-  cal.absent = false; S.feedAbsent = false; S.automationsAbsent = false; S.edupage = undefined; S.linksAbsent.clear();
+  cal.absent = false; S.feedAbsent = S.feedGone = false; S.automationsAbsent = false; S.edupage = undefined; S.linksAbsent.clear();
   forgetCodes();
   stopRing();
   S.token = null;
@@ -1545,7 +1545,9 @@ function openWindow() {
 const LIVE = { cut: Infinity, next: 0, until: 0 };
 let batchMemo = null; // the same until the next batch time or the end of a window
 function batchWindow(now = Date.now()) {
-  if (S.feedAbsent) return LIVE; // no feed server for this account, so no window could ever open: nothing waits
+  // No feed server for this account, so no window could ever open: nothing waits. Only the feed's own 404 in this
+  // run says so (feedGone); a kept flag hides the eye at once but never releases what the owner's windows hold.
+  if (S.feedGone) return LIVE;
   const b = batchPrefs();
   const rw = readingWindow();
   if (batchMemo && batchMemo.b === b && batchMemo.rw === rw && now >= batchMemo.from && now < batchMemo.until) return batchMemo.w;
@@ -6077,7 +6079,7 @@ const offered = {
   windows: () => !S.feedAbsent,
   // server/sendlater sends only the owner's items and has no API to ask; the owner's services come together, so the
   // feed's absence says the same. Without it, nothing may wait for a send that never comes.
-  later: () => !S.feedAbsent,
+  later: () => !S.feedGone,
 };
 
 /** Inbox filter, search and settings; new chat on touch screens. */
@@ -11151,10 +11153,11 @@ const feed = createFeed({
       // Only GET /doc says whether this account has a feed (a POST may get 404 for other reasons).
       const doc = method === 'GET' && path === '/doc';
       return call(method, path, body, '/_feed', AbortSignal.timeout(method === 'GET' ? 15000 : 120000)).then((res) => {
+        S.feedGone = false;
         if (doc && S.feedAbsent) { S.feedAbsent = false; keepAbsent(); refresh(); }
         return res;
       }, (err) => {
-        if (doc && notOffered(err.status) && !S.feedAbsent) { S.feedAbsent = true; keepAbsent(); refresh(); }
+        if (doc && notOffered(err.status)) { S.feedGone = true; if (!S.feedAbsent) { S.feedAbsent = true; keepAbsent(); } refresh(); }
         throw err;
       });
     }
