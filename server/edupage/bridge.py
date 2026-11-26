@@ -1618,6 +1618,10 @@ def sync_tests(db: sqlite3.Connection, people: dict, today: date | None = None, 
 class Account:
     """The one EduPage account; the poller thread owns the session, HTTP threads read state."""
 
+    # Counts sign-ins and sign-outs: work started under an older one (a poll, a send) never writes its results or
+    # sends through its session, also when the same account signed in again meanwhile.
+    gen = 0
+
     def __init__(self):
         self.lock = threading.Lock()
         self.wake = threading.Event()
@@ -1678,6 +1682,7 @@ class Account:
             same = self.creds and self.creds.get("login_id") == creds["login_id"]
             creds["backfilled"] = bool(same and self.creds.get("backfilled"))
             self.edu, self.creds = edu, creds
+            self.gen += 1
             self.teachers, self.recipients = [], {"role": "", "recipients": []}  # the next poll reads this login's
             self.state, self.message = ("CONNECTED" if creds["backfilled"] else "BACKFILLING"), ""
             self.save()
@@ -1688,6 +1693,7 @@ class Account:
             if not self.creds or self.creds["login_id"] != login_id:
                 return False
             edu, self.edu, self.creds = self.edu, None, None
+            self.gen += 1
             self.teachers, self.recipients = [], {"role": "", "recipients": []}
             ACCOUNT_FILE.unlink(missing_ok=True)
         if edu:
@@ -1720,7 +1726,7 @@ class Account:
     def poll(self, rooms: Rooms) -> None:
         with self.lock:
             creds = dict(self.creds) if self.creds else None  # connect() writes the new session into this copy
-            edu = self.edu
+            edu, gen = self.edu, self.gen
         if not creds:
             return
         try:
@@ -1745,7 +1751,7 @@ class Account:
                 self.state, self.message = "TRANSIENT_DISCONNECT", "EduPage neodpovedá, skúsim to znova o pár minút."
             return
         with self.lock:
-            if self.creds is None or self.creds["login_id"] != creds["login_id"]:
+            if self.creds is None or self.gen != gen:
                 return  # logged out or replaced meanwhile
             self.keep_session(edu)
         settle_before = int((time.time() - SETTLE_AFTER_DAYS * 86400) * 1000) if backfill else None
@@ -1756,7 +1762,7 @@ class Account:
             log("teachers failed:", type(err).__name__)
         else:
             with self.lock:
-                if self.edu is edu:  # not a login replaced meanwhile
+                if self.gen == gen:  # not a login replaced meanwhile
                     self.teachers, self.recipients = teachers, recipients
         rooms.keep(items)
         self.nudge_timetable(items, rooms.db)
@@ -1930,7 +1936,7 @@ class Account:
                 rooms.say(room_id, "Neodoslané: EduPage nevie poslať správu bez adresáta. Odpovedz na konkrétnu správu.", event_id)
                 continue
             with self.lock:
-                creds, edu = (dict(self.creds) if self.creds else None), self.edu
+                creds, edu, gen = (dict(self.creds) if self.creds else None), self.edu, self.gen
             if not creds:
                 rooms.say(room_id, "Neodoslané: EduPage nie je pripojený.", event_id)
                 continue
@@ -1939,19 +1945,24 @@ class Account:
                     edu = self.connect(creds)
                 ids = list(dict.fromkeys(recipient["to"])) if many and root is None else []
 
+                def still_signed_in() -> None:
+                    with self.lock:
+                        if not self.creds or self.gen != gen:
+                            raise RecipientsRefused("EduPage účet sa medzitým zmenil")
+
                 def check_recipients(e: Edupage) -> None:
                     """Only ids the account behind `e` offers now (GET /contacts shows the same list), and only while
                     that account is still the one signed in."""
                     nonlocal to, flags
-                    with self.lock:
-                        if not self.creds or self.creds["login_id"] != creds["login_id"]:
-                            raise RecipientsRefused("EduPage účet sa medzitým zmenil")
+                    still_signed_in()
                     school = school_recipients(e)
                     offered = {i for r in school["recipients"] for i in (r["id"], r.get("parents")) if i}
                     if not ids or not all(i in offered for i in ids):
                         raise RecipientsRefused("niektorého adresáta EduPage teraz neponúka. Vyber adresátov v Ctrl+N znova")
                     to = ";".join(ids)
                     flags = message_flags(recipient.get("options")) if school["role"] == "teacher" else None
+                if many and root is None:
+                    check_recipients(edu)  # before the files are fetched: a refused list is said as such
                 blobs = [(str(f.get("name") or "subor"), str(f.get("mimetype") or ""), matrix_file(str(f.get("url") or "")))
                          for f in files]
 
@@ -1966,6 +1977,7 @@ class Account:
                     if many and root is None:
                         check_recipients(e)
                     attachments = dict(upload_attachment(e, *blob) for blob in blobs)
+                    still_signed_in()  # the account may have changed while the files went up
                     if root is not None:
                         return send_reply(e, root, text, attachments, to_whom, user_id, known, since)
                     return send_message(e, to, text, attachments, user_id, known, since, flags)
@@ -1982,7 +1994,7 @@ class Account:
                     rooms.mark_sent(item_id, root if root is not None else item_id, event_id)
                 try:  # the message is out: a failed session save must not tell Karchi it did not go
                     with self.lock:
-                        if self.creds and self.creds.get("login_id") == creds.get("login_id"):
+                        if self.creds and self.gen == gen:
                             self.keep_session(edu)
                 except Exception as err:
                     log("session not kept after a send:", repr(err))
