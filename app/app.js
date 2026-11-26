@@ -5189,10 +5189,14 @@ async function sendReply(rootId) {
     await call('PUT', `/rooms/${q(S.roomId)}/send/m.room.message/${txn}`, content);
   } catch {
     S.pending.delete(txn);
-    setDraft(rootId, text);
-    if (files.length) S.attach.set(rootId, files);
-    if (content[REPLY_TO_KEY] === 'all') S.eduTo.set(rootId, 'all'); // the draft comes back with its choice
-    alert(T('Odpoveď sa neodoslala. Skús to znova.'));
+    // The reply comes back into the box with its files and choice, unless a new one was started meanwhile.
+    const fresh = !(S.drafts.get(rootId) || '').trim() && !(S.attach.get(rootId) || []).length;
+    if (fresh) {
+      setDraft(rootId, text);
+      if (files.length) S.attach.set(rootId, files);
+      if (content[REPLY_TO_KEY] === 'all') S.eduTo.set(rootId, 'all');
+    }
+    alert(fresh ? T('Odpoveď sa neodoslala. Skús to znova.') : T`Odpoveď sa neodoslala: ${text || files.map((f) => f.name).join(', ')}`);
     render();
   }
 }

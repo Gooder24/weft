@@ -375,10 +375,12 @@ def reply_audience(item: dict, user_id: str) -> str | None:
 def reply_recipient(root_item: dict | None, user_id: str, reply_to: str) -> str:
     """createReply's recipient: "" is everyone the thread went to (and the only choice in a two-person thread), an
     author's user string that author alone. Without Karchi's explicit "all" a reply never goes to a whole class."""
-    if not root_item or not root_item.get("vlastnik"):
+    if not root_item:
         return ""
     audience = reply_audience(root_item, user_id)
     if audience == "author" or (audience == "all" and reply_to != "all"):
+        if not root_item.get("vlastnik"):
+            raise RuntimeError("the thread's author is unknown")
         return str(root_item["vlastnik"])
     return ""
 
@@ -395,7 +397,7 @@ def own_item(items: list, user_id: str, text: str, root: int | None, known: set[
         int(i["timelineid"]) for i in items
         if isinstance(i, dict) and str(i.get("timelineid") or "").isdigit() and int(i["timelineid"]) not in known
         and is_mine(i, user_id) and not i.get("pomocny_zaznam") and str(i.get("removed") or "0") != "1"
-        and same_text(i.get("text"), text) and (not since or str(i.get("cas_pridania") or since) >= since)
+        and same_text(i.get("text"), text) and (not since or str(i.get("cas_pridania") or "") >= since)
         and (int(i.get("reakcia_na") or 0) == root if root is not None else not i.get("reakcia_na"))
     ]
     return max(found) if found else None
@@ -406,8 +408,8 @@ class Rooms:
 
     def __init__(self, db: sqlite3.Connection):
         self.db = db
-        # Sends EduPage took without naming them: (root or None, text, event_id); the poll links the item it finds.
-        self.unnamed: list[tuple[int | None, str, str]] = []
+        # Sends EduPage took without naming them; the poll links the item it finds instead of posting it again.
+        db.execute("CREATE TABLE IF NOT EXISTS unnamed (event_id TEXT PRIMARY KEY, root INTEGER, text TEXT NOT NULL, since TEXT NOT NULL)")
 
     def ghost(self, item: dict) -> str:
         owner = item.get("vlastnik") or ""
@@ -461,7 +463,7 @@ class Rooms:
             return reply_recipient(item, user_id, reply_to)
         event_id = self.root_event(root)
         if not event_id:
-            return ""
+            raise RuntimeError(f"thread {root} is unknown")
         sender = matrix("GET", f"/rooms/{q(self.school_room()[0])}/event/{q(event_id)}").get("sender") or ""
         if sender == ADMIN:
             return ""
@@ -658,10 +660,12 @@ class Rooms:
                 row = self.db.execute("SELECT root FROM items WHERE id = ?", (parent,)).fetchone()
                 root = row[0] if row else parent
             if is_mine(item, user_id):
-                match = next((u for u in self.unnamed if u[0] == (root if parent else None) and same_text(u[1], item.get("text"))), None)
+                match = next((ev for ev, r, text, since in self.db.execute("SELECT event_id, root, text, since FROM unnamed")
+                              if r == (root if parent else None) and same_text(text, item.get("text"))
+                              and str(item.get("cas_pridania") or "") >= since), None)
                 if match:  # written in Weft, already in the room: only its id was missing
-                    self.unnamed.remove(match)
-                    self.mark_sent(item_id, root, match[2])
+                    self.db.execute("DELETE FROM unnamed WHERE event_id = ?", (match,))
+                    self.mark_sent(item_id, root, match)
                     known.add(item_id)
                     continue
             sender = ADMIN if is_mine(item, user_id) else self.ghost(item)
@@ -1030,13 +1034,15 @@ def sent_id(edu: Edupage, data, user_id: str, text: str, root: int | None, known
     if not isinstance(data, dict):
         raise RuntimeError(refused)
     status = str(data.get("status") or "").lower()
-    for change in data.get("changes") or []:
-        if (isinstance(change, dict) and str(change.get("timelineid") or "").isdigit()
-                and int(change["timelineid"]) not in known
-                and (not change.get("vlastnik") or is_mine(change, user_id))):
-            return int(change["timelineid"])
     if status and status != "ok":
         raise RuntimeError(refused)
+    for change in data.get("changes") or []:
+        # The answer to this very request; it names the new item, which may carry only its id.
+        if (isinstance(change, dict) and str(change.get("timelineid") or "").isdigit()
+                and int(change["timelineid"]) not in known
+                and (not change.get("vlastnik") or is_mine(change, user_id))
+                and ("text" not in change or same_text(change.get("text"), text))):
+            return int(change["timelineid"])
     inner = data.get("data") if isinstance(data.get("data"), dict) else {}
     replies = [*(data.get("reakcie") or []), *(inner.get("reakcie") or [])]
     found = own_item([{"reakcia_na": root, **r} for r in replies if isinstance(r, dict)], user_id, text, root, known,
@@ -1862,7 +1868,8 @@ class Account:
 
                 user_id = str(creds.get("user_id") or "")
                 known = {row[0] for row in rooms.db.execute("SELECT id FROM items UNION SELECT id FROM raw")}
-                since = (datetime.now(LOCAL) - timedelta(minutes=2)).strftime("%Y-%m-%d %H:%M:%S")
+                # A minute's leeway for the clocks of asus and EduPage; older own items are never taken for this send.
+                since = (datetime.now(LOCAL) - timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M:%S")
                 to_whom = rooms.recipient_for(root, user_id, reply_to) if root is not None else ""
 
                 def send(e: Edupage) -> int | None:
@@ -1878,12 +1885,16 @@ class Account:
                     item_id = send(edu)
                 if item_id is None:
                     log("sent, but EduPage did not say under which id; the next poll links it")
-                    rooms.unnamed.append((root, text, event_id))
+                    rooms.db.execute("INSERT OR REPLACE INTO unnamed VALUES (?, ?, ?, ?)", (event_id, root, text, since))
+                    rooms.db.commit()
                 else:
                     rooms.mark_sent(item_id, root if root is not None else item_id, event_id)
-                with self.lock:
-                    if self.creds and self.creds["login_id"] == creds["login_id"]:
-                        self.keep_session(edu)
+                try:  # the message is out: a failed session save must not tell Karchi it did not go
+                    with self.lock:
+                        if self.creds and self.creds.get("login_id") == creds.get("login_id"):
+                            self.keep_session(edu)
+                except Exception as err:
+                    log("session not kept after a send:", repr(err))
             except AttachmentRefused as err:
                 rooms.say(room_id, f"Táto správa neodišla do EduPage: {err}. Skús iný súbor alebo ju pošli bez neho.", event_id)
             except Exception as err:

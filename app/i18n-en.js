@@ -164,6 +164,7 @@ export default {
   "Len {}": "Only {}",
   "Všetkým": "Everyone",
   "Odpoveď uvidí len {}.": "Only {} will see the reply.",
+  "Odpoveď sa neodoslala: {}": "The reply was not sent: {}",
   "Odoslať": "Send",
   "Odobrať": "Remove",
   "Pridať prílohu (aj Ctrl+V alebo pretiahnutím)": "Add an attachment (also Ctrl+V or drag and drop)",
