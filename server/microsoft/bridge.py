@@ -26,7 +26,8 @@ Provisioning speaks the subset of the mautrix bridgev2 API that Weft's Accounts 
   POST /<outlook|teams>/_matrix/provision/v3/logout/<login>
   POST /outlook/_matrix/provision/v3/send/<login>     a new mail, as Gmail's: {"to", "cc", "subject", "text", "files"}
   GET  /<outlook|teams>/_matrix/provision/v3/consent   what each login may do, what waits, the admin's link
-  POST /<outlook|teams>/_matrix/provision/v3/features  {"off": [CHOICES ids]}: what Weft leaves out (both products)
+  POST /<outlook|teams>/_matrix/provision/v3/features  {"changes": {id: on}} or {"off": [CHOICES ids]}: what Weft
+                                                        leaves out (both products)
   POST /teams/_matrix/provision/v3/meeting/<login>    a meeting in that account's calendar, see create_meeting
   POST /teams/_matrix/provision/v3/search_users       {"query"}: people in Karchi's organization
   GET  /teams/_matrix/provision/v3/resolve_identifier/<Entra id or address>
@@ -162,7 +163,7 @@ def features_off() -> set[str]:
     """No file: everything on. A file that cannot be read: everything off, so nothing turned off comes back by itself."""
     try:
         off = json.loads(FEATURES_FILE.read_bytes()).get("off")
-        if not isinstance(off, list):
+        if not isinstance(off, list) or not all(isinstance(i, str) for i in off):
             raise ValueError
     except FileNotFoundError:
         return set()
@@ -172,13 +173,21 @@ def features_off() -> set[str]:
     return {c["id"] for c in CHOICES if c["id"] in off}
 
 
-def set_features_off(off: object) -> None:
-    if not isinstance(off, list) or not all(isinstance(i, str) for i in off):
-        raise ApiError(400, "SK.KARCHI.INVALID_INPUT", "Pošli zoznam vypnutých funkcií.")
+def set_features(body: dict) -> None:
+    """{"changes": {id: on}} changes only those (two windows never undo each other); {"off": [ids]} sets the whole list."""
     known = {c["id"] for c in CHOICES}
-    if set(off) - known:
+    changes, off = body.get("changes"), body.get("off")
+    if isinstance(changes, dict):
+        if not changes or set(changes) - known or not all(isinstance(v, bool) for v in changes.values()):
+            raise ApiError(400, "SK.KARCHI.INVALID_INPUT", "Takú funkciu Weft nepozná.")
+    elif not isinstance(off, list) or not all(isinstance(i, str) for i in off):
+        raise ApiError(400, "SK.KARCHI.INVALID_INPUT", "Pošli zoznam vypnutých funkcií.")
+    elif set(off) - known:
         raise ApiError(400, "SK.KARCHI.INVALID_INPUT", "Takú funkciu Weft nepozná.")
     with FEATURES_LOCK:
+        if isinstance(changes, dict):
+            now = features_off()
+            off = [i for i, on in changes.items() if not on] + [i for i in now if i not in changes]
         tmp = FEATURES_FILE.with_name(f"features.json.{uuid.uuid4().hex}.tmp")
         tmp.write_text(json.dumps({"off": sorted(set(off))}))
         tmp.replace(FEATURES_FILE)
@@ -186,7 +195,8 @@ def set_features_off(off: object) -> None:
 
 def allowed(scopes: list[str]) -> list[str]:
     """These scopes without the ones of features turned off."""
-    off = {G + s for c in CHOICES if c["id"] in features_off() for s in c["scopes"]}
+    turned_off = features_off()
+    off = {G + s for c in CHOICES if c["id"] in turned_off for s in c["scopes"]}
     return [s for s in scopes if s not in off]
 
 
@@ -1020,7 +1030,8 @@ def consent_report(product: str) -> dict:
             logins.append({"id": key, "name": login["name"], "error": err.message})
             continue
         logins.append({"id": key, "name": login["name"], "granted": sorted(have),
-                       "missing": [{"scope": s, "what": FEATURES.get(s, s), "admin": G + s in ADMIN_ONLY}
+                       "missing": [{"scope": s, "what": FEATURES.get(s, s), "admin": G + s in ADMIN_ONLY,
+                                    "feature": next((c["id"] for c in CHOICES if s in c["scopes"]), None)}
                                    for s in wanted if s not in have]})
     return {"logins": logins, "admin_url": admin_consent_url(tenant), "choices": choices()}
 
@@ -2119,7 +2130,7 @@ def route(product: str, method: str, parts: list[str], body: dict, args: dict, t
         case "GET", ["consent"]:
             return consent_report(product)
         case "POST", ["features"]:
-            set_features_off(body.get("off"))
+            set_features(body)
             return {"choices": choices()}
         case "POST", ["meeting", login_id] if product == "teams":
             return create_meeting(TEAMS.login_for(login_id), body)

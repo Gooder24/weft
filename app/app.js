@@ -15037,7 +15037,7 @@ const MS_FEATURES = {
   channel_read: T('čítanie kanálov a ľudia v tímoch'), chat_members: T('pridávanie ľudí do chatov'),
   recordings: T('prepisy a nahrávky stretnutí'),
 };
-const msFeat = { off: null, chain: Promise.resolve() };
+const msFeat = { pending: {}, chain: Promise.resolve() };
 function microsoftFeatures(app) {
   const all = (S.msConsent ||= {});
   if (all[app.id] === undefined) {
@@ -15052,22 +15052,24 @@ function microsoftFeatures(app) {
   r = { ...r, logins: (r.logins || []).filter((l) => here.has(l.id)) };
   const waiting = r.logins.filter((l) => l.missing?.length);
   const askAll = (id) => startLink(app, app.flow, null, { ...(S.links[app.id]?.find((x) => x.id === id) || {}), full: true });
-  // Ticks show at once; saves go one after another and only the newest choice is sent, so quick clicks add up.
-  const isOn = (c) => (msFeat.off ? !msFeat.off.has(c.id) : c.on);
+  // Ticks show at once; each click saves only its own change, one after another, so quick clicks add up and another
+  // window's choices stay. Signing in and the admin's link wait until the bridge has them.
+  const isOn = (c) => (c.id in msFeat.pending ? msFeat.pending[c.id].on : c.on);
+  const saving = Object.keys(msFeat.pending).length > 0 || !!r.stale;
   const choose = (e, id) => {
-    const off = new Set((r.choices || []).filter((c) => !isOn(c)).map((c) => c.id));
-    if (e.currentTarget.checked) off.delete(id); else off.add(id);
-    msFeat.off = off;
+    const on = e.currentTarget.checked;
+    const mine = msFeat.pending[id] = { on };
     render();
     msFeat.chain = msFeat.chain.then(async () => {
-      if (msFeat.off !== off) return; // a newer click sends its own list
       let res;
-      try { res = await prov(app, 'POST', '/features', { off: [...off] }); } catch { alert(T('Nastavenie sa neuložilo.')); }
+      try { res = await prov(app, 'POST', '/features', { changes: { [id]: on } }); } catch { alert(T('Nastavenie sa neuložilo.')); }
+      if (msFeat.pending[id] === mine) delete msFeat.pending[id];
+      if (Object.keys(msFeat.pending).length) return;
       for (const a of LINKS.filter((x) => x.flow === 'microsoft')) {
-        if (res?.choices && all[a.id] && all[a.id] !== 'loading') all[a.id] = { ...all[a.id], choices: res.choices };
-        prov(a, 'GET', '/consent').then((x) => { if (!msFeat.off) all[a.id] = x; if (S.panel === 'settings') render(); }, () => {});
+        if (all[a.id] && all[a.id] !== 'loading') all[a.id] = { ...all[a.id], ...(res?.choices ? { choices: res.choices } : {}), stale: true };
+        prov(a, 'GET', '/consent').then((x) => { if (!Object.keys(msFeat.pending).length) all[a.id] = x; }, () => { all[a.id] = null; })
+          .then(() => { if (S.panel === 'settings') render(); });
       }
-      if (msFeat.off === off) msFeat.off = null;
       render();
     });
   };
@@ -15085,12 +15087,12 @@ function microsoftFeatures(app) {
       h('span', {}, MS_FEATURES[c.id] || c.name, c.admin ? h('small', {}, T('povolí len správca')) : c.work ? h('small', {}, T('len pracovný alebo školský účet')) : null))),
     r.logins.length ? h('h4', {}, T('Funkcie Microsoftu')) : null,
     (r.logins || []).map((l) => h('p', { class: 'hint', 'data-key': `ms:${l.id}` }, l.error ? `${l.name}: ${l.error}`
-      : l.missing?.length ? T`${l.name}: čaká na súhlas: ${l.missing.map((m) => m.what).join(', ')}` : T`${l.name}: všetko vybrané je povolené`,
-      waiting.length > 1 && l.missing?.length ? [' ', h('button', { class: 'linkbtn', type: 'button', onclick: () => askAll(l.id) }, T('Povoliť vybrané'))] : null)),
+      : l.missing?.length ? T`${l.name}: čaká na súhlas: ${[...new Set(l.missing.map((m) => MS_FEATURES[m.feature] || m.what))].join(', ')}` : T`${l.name}: všetko vybrané je povolené`,
+      waiting.length > 1 && l.missing?.length ? [' ', h('button', { class: 'linkbtn', type: 'button', disabled: saving, onclick: () => askAll(l.id) }, T('Povoliť vybrané'))] : null)),
     waiting.length ? h('p', { class: 'hint' }, T('Povoliť vybrané ťa prihlási znova a Microsoft sa spýta na všetko zaškrtnuté naraz. Ak to škola alebo firma nedovolí, jej správca to povolí pre všetkých jedným odkazom.')) : null,
     waiting.length ? h('div', { class: 'row' },
-      waiting.length === 1 ? h('button', { class: 'primary', type: 'button', onclick: () => askAll(waiting[0].id) }, T('Povoliť vybrané')) : null,
-      h('button', { class: 'ghost', type: 'button', onclick: copy }, T('Kopírovať odkaz pre správcu')),
+      waiting.length === 1 ? h('button', { class: 'primary', type: 'button', disabled: saving, onclick: () => askAll(waiting[0].id) }, T('Povoliť vybrané')) : null,
+      h('button', { class: 'ghost', type: 'button', disabled: saving, onclick: copy }, T('Kopírovať odkaz pre správcu')),
       h('button', { class: 'ghost', type: 'button', onclick: () => { delete all[app.id]; render(); } }, T('Skontrolovať znova'))) : null,
   ];
 }
