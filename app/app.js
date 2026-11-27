@@ -4199,21 +4199,25 @@ function markRoomRead(r, force = false) {
   const last = readUpTo([...r.events.values()].filter((ev) => ev.type !== 'm.room.redaction' && ev.type !== 'm.room.member' && ev.event_id.startsWith('$')), cut, talkOf(r));
   if (!last || last.event_id === r.readSent) return;
   if (!force && (document.visibilityState !== 'visible' || !document.hasFocus())) return;
-  // While messages wait, a message missing between his receipt and what is loaded (a limited sync emptied the room,
-  // the kept copy has only its newest events) may be one that waits: the receipt goes once older pages brought his
-  // receipt's message, at most 6 pages back.
-  // His own „Prečítané“ reads it here at once and the receipt waits the same way.
+  // While messages wait, one may be missing from memory (a limited sync emptied the room, the kept copy has only its
+  // newest events): between his receipt, when it is not loaded, and the oldest loaded event, if that came after the
+  // cut. Then no receipt goes (also not with his own „Prečítané“, which reads only here, nor later from offline);
+  // older pages load (at most 20) and the next window lifts it anyway.
   const mine = r.receipts.get(S.userId) || r.readSent;
-  const pages = r.gapPages?.epoch === r.epoch ? r.gapPages?.n || 0 : 0;
-  const gap = cut !== Infinity && mine && !r.events.has(mine) && !r.historyDone && pages < 6;
-  if (gap && !r.loading) { r.gapPages = { epoch: r.epoch, n: pages + 1 }; setTimeout(() => loadRoomHistory(r)); }
-  if (gap && !force) return;
+  let oldest = Infinity;
+  for (const ev of r.events.values()) if (ev.event_id.startsWith('$') && ev.origin_server_ts < oldest) oldest = ev.origin_server_ts;
+  const gap = cut !== Infinity && !(mine && r.events.has(mine)) && !r.historyDone && oldest > cut;
+  if (gap) {
+    const pages = r.gapPages?.epoch === r.epoch ? r.gapPages?.n || 0 : 0;
+    if (!r.loading && pages < 20) { r.gapPages = { epoch: r.epoch, n: pages + 1 }; setTimeout(() => loadRoomHistory(r)); }
+    if (!force) return;
+  }
   if (!r.unread && r.receipts.get(S.userId) === last.event_id) return;
   r.unread = 0;
   r.readAt = Math.max(r.readAt, cut === Infinity ? Date.now() : 0, last.origin_server_ts);
+  if (gap) return;
   // Offline only this window knows; the receipt for exactly what was read goes out after reconnecting.
   if (S.offline) return (S.readLater ||= new Map()).set(r.id, last.event_id);
-  if (gap) return;
   r.readSent = last.event_id;
   call('POST', `/rooms/${q(r.id)}/receipt/m.read/${q(last.event_id)}`, {}).catch(() => { r.readSent = ''; });
 }
