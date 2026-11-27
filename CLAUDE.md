@@ -246,6 +246,8 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   People marked „Práca“ (chat menu → „Práca: ukázať hneď“, list in Settings → Správy; account data
   `sk.karchi.work`, `{ [user id]: { name, until? } }`) never wait: their messages show at once, in groups too;
   unmarking keeps `until`, so what was seen stays seen. Check: `overenie/work-people/run.sh`.
+  Neither waits what comes in a chat after Karchi wrote there, until that midnight: the answer he asked for
+  (`talkOf` in app.js; Karchi, 2026-11-27). What waited before his message keeps waiting. Check: `overenie/talk/run.sh`.
   Checks: `overenie/reading-window/run.sh`.
   Sources are RSS/Atom, YouTube channels (a channel, @handle or video address is stored as the channel's feed) and X
   profiles (`x.com/<name>`, read without a login through FxTwitter's public API `api.fxtwitter.com/2/profile/<name>/statuses`).

@@ -1473,7 +1473,8 @@ function mutedRooms() {
 /** Messages from others come when Karchi wants them: when he asks ('manual': the eye) or at the times he sets
  *  ('times'). "Hneď" ('live') is gone on purpose (Karchi, 16. 11.): a stored 'live', or none, shows everything
  *  until the first sync turns it into 'manual' (keepBatchesHeld), so nothing seen before is hidden. Either opens a reading window: for its few minutes messages come right away, also
- *  replies to what he wrote. The eye opens one of the day's few reading windows Feed shares (count and length set
+ *  replies to what he wrote; outside one, what comes in a chat after Karchi wrote there comes at once until that
+ *  midnight (talkOf). The eye opens one of the day's few reading windows Feed shares (count and length set
  *  in Settings, kept by the feed server); clicking during one adds nothing. Mode and times change from tomorrow
  *  (`pending: {mode, times, from}`), so a change never opens anything today.
  *  One that arrived after a window stays out of sight (no unread mark, preview, move to the top or read receipt);
@@ -1626,8 +1627,33 @@ function setWork(people, on) {
   putAccount(WORK, next).catch(() => alert(T('Nastavenie sa neuložilo.')));
   render();
 }
-// A bridge's „not bridged“ notice is about Karchi's own message: it never waits; neither does anything from work.
-const isHeld = (ev, cut) => ev.origin_server_ts > cut && ev.sender !== S.userId && !bridgeFailure(ev) && !(ev.origin_server_ts <= (workTimes().get(ev.sender) || 0));
+/** Times Karchi wrote into a chat, oldest first: what comes there after one of them until that midnight is the
+ *  answer he is waiting for, so it never waits for a reading window (Karchi, 2026-11-27). Kept per room version. */
+function talkOf(r) {
+  if (!r) return null;
+  if (r.talk?.version !== r.version) {
+    const list = [];
+    for (const ev of r.events.values()) {
+      if (ev.sender !== S.userId || !ev.event_id?.startsWith('$') || ev.content?.['m.relates_to']?.rel_type === 'm.replace') continue;
+      if (ev.type === 'm.room.message' || ev.type === 'm.sticker' || POLL_START.includes(ev.type)) list.push(ev.origin_server_ts);
+    }
+    r.talk = { version: r.version, list: list.sort((a, b) => a - b) };
+  }
+  return r.talk.list;
+}
+/** Whether an event came after Karchi's own last message before it, on the same day. */
+function inTalk(ts, talk) {
+  if (!talk?.length || ts <= talk[0]) return false;
+  let lo = 0, hi = talk.length - 1; // the last of his messages before ts
+  while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (talk[mid] < ts) lo = mid; else hi = mid - 1; }
+  const end = new Date(talk[lo]);
+  end.setHours(24, 0, 0, 0);
+  return ts < end.getTime();
+}
+// A bridge's „not bridged“ notice is about Karchi's own message: it never waits; neither does anything from work,
+// nor an answer in a chat he wrote into that day (`talk`: talkOf the room).
+const isHeld = (ev, cut, talk = null) => ev.origin_server_ts > cut && ev.sender !== S.userId && !bridgeFailure(ev)
+  && !(ev.origin_server_ts <= (workTimes().get(ev.sender) || 0)) && !inTalk(ev.origin_server_ts, talk);
 /** The time a bridged chat shows messages up to: the last batch, or later where Karchi chose "Ukázať teraz". */
 function roomCut(r) {
   const { cut } = batchWindow();
@@ -1636,9 +1662,9 @@ function roomCut(r) {
 const eduCut = () => (batchPrefs().edupage ? Math.max(batchWindow().cut, batchPrefs().eduSince || 0) : Infinity);
 /** A receipt never passes a held message, not even with Karchi's own later message: a bridge marks read by time,
  *  so a receipt on his reply would tell WhatsApp or Messenger he saw what still waits. */
-function readUpTo(events, cut) {
+function readUpTo(events, cut, talk = null) {
   let firstHeld = Infinity;
-  for (const ev of events) if (isHeld(ev, cut) && ev.origin_server_ts < firstHeld) firstHeld = ev.origin_server_ts;
+  for (const ev of events) if (isHeld(ev, cut, talk) && ev.origin_server_ts < firstHeld) firstHeld = ev.origin_server_ts;
   return events.filter((ev) => ev.origin_server_ts < firstHeld).sort((a, b) => b.origin_server_ts - a.origin_server_ts)[0];
 }
 /** The cut for any room id, for search results. */
@@ -1707,7 +1733,7 @@ function heldBar(r, m) {
 function typingIn(r) {
   if (S.offline || !r.typing.length) return [];
   const cut = roomCut(r);
-  return r.typing.filter((sender) => !isHeld({ origin_server_ts: Date.now(), sender }, cut));
+  return r.typing.filter((sender) => !isHeld({ origin_server_ts: Date.now(), sender }, cut, talkOf(r)));
 }
 /** "píše…" under a chat's last message; in a group with names. */
 function typingLine(parts, partner) {
@@ -1730,7 +1756,7 @@ function windowButton() {
 /** Unread count of a room: the server's, or for a muted room the messages from others since Karchi read it. */
 function roomUnread(r, m, muted) {
   // The server counts held messages too; they are not unread until their batch comes.
-  if (r.unread || !muted.has(r.id)) return Math.max(0, r.unread - m.held);
+  if (r.unread || !muted.has(r.id)) return Math.max(0, r.unread - m.heldCounted);
   // With batches the receipt's own message says how far he read: a receipt sent at 16:00 stops before a held 15:00
   // message, so the time it was sent (readAt) must not count that message as read.
   const at = r.events.get(r.receipts.get(S.userId))?.origin_server_ts;
@@ -1766,6 +1792,7 @@ function mediaFillIn(r, ev) {
 function roomModel(r) {
   const cut = roomCut(r);
   const work = workTimes();
+  const talk = talkOf(r);
   if (r.model?.version === r.version && r.model.pending === r.pending.size && r.model.cut === cut && r.model.work === work) return r.model;
   const all = [...r.events.values()].sort((a, b) => a.origin_server_ts - b.origin_server_ts);
   const redacted = new Set();
@@ -1782,8 +1809,8 @@ function roomModel(r) {
   for (const ev of all) {
     const isMessage = ev.type === 'm.room.message' || POLL_START.includes(ev.type);
     // Others' reactions, votes and edits wait for the batch too; their messages are counted and left out below.
-    if (!isMessage && ev.type !== 'm.sticker' && ev.type !== 'm.room.member' && ev.type !== 'm.room.redaction' && isHeld(ev, cut)) continue;
-    if (isMessage && ev.content?.['m.relates_to']?.rel_type === 'm.replace' && !mediaFillIn(r, ev) && isHeld(ev, cut)) continue;
+    if (!isMessage && ev.type !== 'm.sticker' && ev.type !== 'm.room.member' && ev.type !== 'm.room.redaction' && isHeld(ev, cut, talk)) continue;
+    if (isMessage && ev.content?.['m.relates_to']?.rel_type === 'm.replace' && !mediaFillIn(r, ev) && isHeld(ev, cut, talk)) continue;
     if (redacted.has(ev.event_id) && !isMessage) continue;
     const rel = ev.content?.['m.relates_to'];
     if (ev.type === 'm.reaction') {
@@ -1848,14 +1875,17 @@ function roomModel(r) {
   });
   if (failed.size || resent.size) messages = messages.filter((ev) => !resent.has(ev.event_id) && !(failed.has(ev.event_id) && redacted.has(ev.event_id)));
   // Messages waiting for their batch are left out here, so the list, previews and the chat agree.
-  const held = messages.filter((ev) => isHeld(ev, cut) && !redacted.has(ev.event_id)).length;
-  if (held) messages = messages.filter((ev) => !isHeld(ev, cut));
+  const waiting = messages.filter((ev) => isHeld(ev, cut, talk) && !redacted.has(ev.event_id));
+  const held = waiting.length;
+  // The server counts only what came after Karchi's own last message: held ones before it are not in its count.
+  const heldCounted = waiting.filter((ev) => !talk.length || ev.origin_server_ts > talk.at(-1)).length;
+  if (held) messages = messages.filter((ev) => !isHeld(ev, cut, talk));
   for (const p of r.pending.values()) messages.push(p);
   const byId = new Map(messages.map((m) => [m.event_id, m]));
   // Only the sender may edit a message.
   for (const [id, edit] of edits) if (byId.get(id)?.sender !== edit.sender) edits.delete(id);
   const notes = memberNotes(r, memberEvents);
-  r.model = { version: r.version, pending: r.pending.size, cut, work, held, messages, byId, redacted, edits, editCount, reactions, ownReacts, votes, votedAt, ended, notes, failed };
+  r.model = { version: r.version, pending: r.pending.size, cut, work, held, heldCounted, messages, byId, redacted, edits, editCount, reactions, ownReacts, votes, votedAt, ended, notes, failed };
   return r.model;
 }
 
@@ -2040,7 +2070,7 @@ const ringWhat = (it) => `${appOf(it.app)?.name || ''}${it.video ? ` · ${T('vid
 function mayRing(r, ev) {
   const mode = ringMode();
   if (mode === 'never' || ev.sender === S.userId || hiddenApps().has(r.app)) return false;
-  return mode === 'always' || !isHeld(ev, roomCut(r));
+  return mode === 'always' || !isHeld(ev, roomCut(r), talkOf(r));
 }
 
 /** The new events of one room in a sync after the first: an incoming call rings, a later call event ends it. */
@@ -3641,7 +3671,7 @@ function bcAnswer(t, sent, event) {
     const since = (event && (m.byId.get(event) || r.events.get(event))?.origin_server_ts) || sent;
     const ev = m.messages.find((x) => theirs(x, since) && !isRedacted(m, x));
     if (ev && (!best || ev.origin_server_ts < best.ts)) best = { ts: ev.origin_server_ts, text: (plainBody(contentOf(m, ev)).trim() || contentOf(m, ev).body || '…').replace(/\s+/g, ' ') };
-    if (!ev && m.held) { const cut = roomCut(r); held ||= [...r.events.values()].some((x) => theirs(x, since) && isHeld(x, cut)); }
+    if (!ev && m.held) { const cut = roomCut(r), talk = talkOf(r); held ||= [...r.events.values()].some((x) => theirs(x, since) && isHeld(x, cut, talk)); }
   }
   return best || (held ? { held } : null);
 }
@@ -4119,7 +4149,7 @@ function markRoomRead(r, force = false) {
   // Member events are kept for the chat's history lines; a bridge may not map a receipt on one to a message.
   // A message waiting for its batch is not read: the receipt stops before it, so its sender sees no "seen".
   const cut = roomCut(r);
-  const last = readUpTo([...r.events.values()].filter((ev) => ev.type !== 'm.room.redaction' && ev.type !== 'm.room.member' && ev.event_id.startsWith('$')), cut);
+  const last = readUpTo([...r.events.values()].filter((ev) => ev.type !== 'm.room.redaction' && ev.type !== 'm.room.member' && ev.event_id.startsWith('$')), cut, talkOf(r));
   if (!last || last.event_id === r.readSent) return;
   if (!force && (document.visibilityState !== 'visible' || !document.hasFocus())) return;
   if (!r.unread && r.receipts.get(S.userId) === last.event_id) return;
@@ -10053,7 +10083,7 @@ function searchResults(o) {
   o.narrow = { base: o.base, tokens, pool };
   const byKey = new Map(list.map((e) => [e.key, e]));
   for (const ev of o.server || []) {
-    if (isHeld(ev, cutOf(ev.room_id))) continue;
+    if (isHeld(ev, cutOf(ev.room_id), talkOf(S.rooms.get(ev.room_id)))) continue;
     const e = ev.room_id === S.roomId ? byKey.get(S.rootOf?.get(ev.event_id)) : byKey.get(ev.room_id);
     if (!e || !ev.content?.body) continue;
     add(e, ev, String(ev.content.body).replace(/^(> .*\n)+\n/, ''));
