@@ -1199,7 +1199,7 @@ def main(argv=None):
                                  "info": {"mimetype": f["mimetype"], "size": f["size"]}, **(reply if not ids else {})}))
             if text: ids.append(send({"msgtype": "m.text", "body": text, **(reply if not ids else {})}))
             note = ""
-        if net in PHONE: note = f"; odíde z telefónu (beta), a ak neodíde, Weft to napíše pod správu: weft read {rid}"
+        if net in PHONE: note = f"; odíde z telefónu (beta), a ak neodíde, prečo uvidíš v chate: weft read {rid}"
         return out({"room": rid, "sent": True, "event_ids": ids}, [f"odoslané do {where}" + note])
     if a.cmd == "draft":
         rid, text, files = find_chat(rooms, mx, a.chat), text_arg(a.text) if a.text else "", files_arg(a.file)

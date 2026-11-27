@@ -9175,7 +9175,7 @@ function connectorCompose(r) {
 
 /** Over the message box of a phone's chat: where the message goes (beta). */
 function phoneNote(r, m) {
-  if (r.app === 'sms') return h('div', { class: 'cnote', 'data-key': 'phonenote' }, T('Odíde ako SMS z tvojho telefónu (beta). Ak neodíde, Weft to napíše pod správu.'));
+  if (r.app === 'sms') return h('div', { class: 'cnote', 'data-key': 'phonenote' }, T('Odíde ako SMS z tvojho telefónu (beta). Ak neodíde, pri správe uvidíš prečo.'));
   const picked = S.replyTo?.room === r.id;
   const to = picked ? m.byId.get(S.replyTo.event) : phoneTarget(r);
   return h('div', { class: 'cnote', 'data-key': 'phonenote' }, !to ? T('Odpovedať sa dá len na správu, ktorá prišla z telefónu.')

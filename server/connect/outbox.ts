@@ -1,8 +1,9 @@
 // What Karchi writes in Weft into an SMS chat or an app's chat (beta): the homeserver hands it to the appservice, a
 // paired phone takes it and sends it (an SMS, or the answer through that notification's own Reply button) and says
 // how it went. A message goes out at most once: the phone keeps what it took and never sends it twice, and one no
-// phone took within an hour is not sent at all (an SMS that late is worse than none). What did not go is said in
-// the chat, as a notice under the message.
+// phone took within an hour is not sent at all (an SMS that late is worse than none). Weft hears it as from any
+// bridge: the bot's com.beeper.message_send_status once the phone sent it (✓), the mautrix bridges' „⚠️ Your message
+// was not bridged: <why>“ notice when it did not (Weft marks the message Neodoslané with the reason).
 import type { Database } from 'bun:sqlite';
 import { number } from './connectors/phone.ts';
 import type { Matrix } from './matrix.ts';
@@ -99,7 +100,8 @@ export class Outbox {
       const row = this.db.query<{ room: string }, [string, string]>("SELECT room FROM outbox WHERE event = ? AND device = ? AND state = 'out'").get(r.id, device);
       if (!row) continue; // reported before, or not this phone's
       this.db.query('UPDATE outbox SET state = ?, done = ? WHERE event = ?').run(r.ok ? 'sent' : 'failed', this.now(), r.id);
-      if (!r.ok) await this.notice(row.room, r.id, `Neodišlo: ${(r.error || 'telefón nepovedal prečo').slice(0, 200)}`);
+      if (r.ok) await this.sent(row.room, r.id);
+      else await this.notice(row.room, r.id, (r.error || 'Telefón nepovedal prečo.').slice(0, 200));
     }
   }
 
@@ -113,7 +115,7 @@ export class Outbox {
     }
     for (const r of this.db.query<{ event: string; room: string }, [number]>("SELECT event, room FROM outbox WHERE state = 'out' AND leased < ?").all(hour)) {
       this.db.query("UPDATE outbox SET state = 'unknown', done = ? WHERE event = ? AND state = 'out'").run(this.now(), r.event);
-      await this.notice(r.room, r.event, 'Telefón nepovedal, či správa odišla. Pozri sa do neho.');
+      await this.notice(r.room, r.event, 'Telefón nepovedal, či správa odišla. Pozri sa do neho.', false);
     }
     this.db.query("DELETE FROM outbox WHERE state != 'new' AND state != 'out' AND done < ?").run(this.now() - 30 * DAY);
   }
@@ -128,11 +130,23 @@ export class Outbox {
     return row;
   }
 
-  private async notice(room: string, event: string, body: string) {
-    const txn = `cxo-${new Bun.CryptoHasher('sha256').update(`${event}\n${body}`).digest('hex').slice(0, 32)}`;
+  /** Under the message: why it did not go (`sure` false: it may have). */
+  private async notice(room: string, event: string, why: string, sure = true) {
+    const body = `\u26a0\ufe0f Your message ${sure ? 'was not' : 'may not have been'} bridged: ${why}`;
     const content = { msgtype: 'm.notice', body, 'm.relates_to': { 'm.in_reply_to': { event_id: event } }, [MARK]: { outbox: true } };
-    await this.matrix.call('PUT', `/rooms/${encodeURIComponent(room)}/send/m.room.message/${txn}`, content).catch((err) => {
-      console.log(`notice in ${room}: ${err instanceof Error ? err.message : err}`);
+    await this.send(room, 'm.room.message', `${event}\n${body}`, content);
+  }
+
+  /** The phone sent it: Weft's ✓ beside the message. */
+  private async sent(room: string, event: string) {
+    const content = { 'm.relates_to': { rel_type: 'm.reference', event_id: event }, status: 'SUCCESS', network: 'phone' };
+    await this.send(room, 'com.beeper.message_send_status', `${event}\nsent`, content);
+  }
+
+  private async send(room: string, type: string, once: string, content: Record<string, unknown>) {
+    const txn = `cxo-${new Bun.CryptoHasher('sha256').update(once).digest('hex').slice(0, 32)}`;
+    await this.matrix.call('PUT', `/rooms/${encodeURIComponent(room)}/send/${type}/${txn}`, content).catch((err) => {
+      console.log(`${type} in ${room}: ${err instanceof Error ? err.message : err}`);
     });
   }
 }

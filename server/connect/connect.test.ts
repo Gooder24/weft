@@ -360,7 +360,9 @@ describe('outbox', () => {
       s.host.outbox.take([{ type: 'm.room.message', event_id: id, room_id: roomId, sender, content }]);
     return { ...s, smsRoom: room('sms'), appRoom: room('phone'), event, say };
   }
-  const notices = (calls: Call[]) => sends(calls).filter((c) => (c.body as { msgtype?: string }).msgtype === 'm.notice').map((c) => (c.body as { body: string }).body);
+  // The reasons of the bridge-style notices Weft turns into „Neodoslané: …“.
+  const notices = (calls: Call[]) => sends(calls).filter((c) => (c.body as { msgtype?: string }).msgtype === 'm.notice')
+    .map((c) => (c.body as { body: string }).body.replace(/^\u26a0\ufe0f Your message (was not|may not have been) bridged: /, (_, how: string) => (how === 'was not' ? '' : '? ')));
 
   test('Karchi\'s SMS goes to the paired phone once, and its echo from the phone posts nothing', async () => {
     const { hs, host, smsRoom, say } = await chats();
@@ -369,6 +371,8 @@ describe('outbox', () => {
     expect(await host.outbox.next('p1', [])).toEqual([{ id: '$k1', kind: 'sms', to: '+421900123456', text: 'Prídem o 5' }]);
     expect(await host.outbox.next('p2', [])).toEqual([]); // taken by p1
     expect(await host.outbox.next('p1', [{ id: '$k1', ok: true }])).toEqual([]);
+    expect(hs.calls.some((c) => c.path.includes('/send/com.beeper.message_send_status/') && (c.body as { status?: string; 'm.relates_to'?: { event_id?: string } }).status === 'SUCCESS'
+      && (c.body as { 'm.relates_to': { event_id: string } })['m.relates_to'].event_id === '$k1')).toBe(true); // Weft's ✓
     const before = sends(hs.calls).length;
     await host.phone('p1', [{ ...sms('9', '+421 900 123 456', 'Prídem o 5', NOW + 1000), out: true }]);
     expect(sends(hs.calls)).toHaveLength(before);
@@ -391,7 +395,7 @@ describe('outbox', () => {
     await say(smsRoom, '$k3', { msgtype: 'm.text', body: '* Ahoj', 'm.relates_to': { rel_type: 'm.replace', event_id: '$k1' } });
     await say(smsRoom, '$k4', { msgtype: 'm.text', body: 'cudzí' }, '@someone:test');
     await say(smsRoom, '$k5', { msgtype: 'm.text', body: 'z telefónu', 'sk.karchi.connect': { connector: 'sms' } });
-    expect(notices(hs.calls)).toEqual(['Neodišlo: Bez signálu', 'Cez telefón ide zatiaľ len text.', 'Úpravu do telefónu poslať nejde, platí pôvodná správa.']);
+    expect(notices(hs.calls)).toEqual(['Bez signálu', 'Cez telefón ide zatiaľ len text.', 'Úpravu do telefónu poslať nejde, platí pôvodná správa.']);
     expect(await host.outbox.next('p1', [])).toEqual([]);
   });
 
@@ -406,7 +410,7 @@ describe('outbox', () => {
     now += 2 * 3_600_000;
     await host.outbox.expire();
     expect(await host.outbox.next('p1', [])).toEqual([]);
-    expect(notices(s.hs.calls)).toEqual(['Telefón sa hodinu neozval, správu som už neposlal.', 'Telefón nepovedal, či správa odišla. Pozri sa do neho.']);
+    expect(notices(s.hs.calls)).toEqual(['Telefón sa hodinu neozval, správu som už neposlal.', '? Telefón nepovedal, či správa odišla. Pozri sa do neho.']);
   });
 
   test('a waiting phone hears a new message at once', async () => {

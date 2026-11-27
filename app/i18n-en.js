@@ -1409,7 +1409,7 @@ export default {
   "SMS z telefónu, chat ku každému číslu.": "SMS from your phone, one chat per number.",
   "Notifikácie appiek, ktoré si v telefóne vybral, chat ku každej appke.": "Notifications of the apps you picked on your phone, one chat per app.",
   "V tomto chate ešte nie je správa, na ktorú by sa dalo odpovedať.": "This chat has no message yet that could be answered.",
-  "Odíde ako SMS z tvojho telefónu (beta). Ak neodíde, Weft to napíše pod správu.": "Goes as an SMS from your phone (beta). If it does not go, Weft says so under the message.",
+  "Odíde ako SMS z tvojho telefónu (beta). Ak neodíde, pri správe uvidíš prečo.": "Goes as an SMS from your phone (beta). If it does not go, the message says why.",
   "Odpovedať sa dá len na správu, ktorá prišla z telefónu.": "You can only answer a message that came from the phone.",
   "Odpoveď odíde cez notifikáciu v telefóne (beta), kým tam ešte je.": "The answer goes through the notification on the phone (beta), while it is still there.",
   "Odpovieš: {}, cez notifikáciu v telefóne (beta). Inému cez Odpovedať pri jeho správe.": "You answer {}, through the notification on the phone (beta). Someone else: Reply on their message.",

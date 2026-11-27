@@ -82,18 +82,22 @@ sender_localpart: doublepuppet\nrate_limited: false\nnamespaces:\n  users:\n  - 
   const out = await until('the SMS in the outbox', async () => ((await post('/_connect/phone/outbox', phone, { wait: 5 })).items as { id: string; kind: string; to: string; text: string }[]).at(0));
   check(out.id === sent.event_id && out.kind === 'sms' && out.to === '+421900123456' && out.text === 'O siedmej', 'Karchi\'s SMS reaches the phone through the homeserver\'s transaction');
   await post('/_connect/phone/outbox', phone, { done: [{ id: out.id, ok: true }] });
+  const status = await call('GET', `/rooms/${encodeURIComponent(smsRoom)}/messages?dir=b&limit=50`, me);
+  check((status.chunk as { type: string; sender: string; content: { status?: string; 'm.relates_to'?: { event_id?: string } } }[])
+    .some((e) => e.type === 'com.beeper.message_send_status' && e.sender === '@connectbot:weft.test' && e.content.status === 'SUCCESS' && e.content['m.relates_to']?.event_id === out.id),
+  'the phone\'s „sent“ is the bridge bot\'s send status Weft shows as ✓');
   const before = (await messages(smsRoom)).length;
   await post('/_connect/phone/items', phone, { items: [{ id: 'sms:2', kind: 'sms', ts: Date.now(), address: '+421 900 123 456', name: 'Mama', text: 'O siedmej', out: true }] });
   check((await messages(smsRoom)).length === before, 'its echo from the phone\'s SMS store posts nothing');
 
   await say(appRoom, { msgtype: 'm.text', body: 'Hej' });
-  await until('the notice for an answer to nobody', async () => (await messages(appRoom)).some((e) => e.content.msgtype === 'm.notice' && String(e.content.body).startsWith('Odpovedz na konkrétnu správu')));
+  await until('the notice for an answer to nobody', async () => (await messages(appRoom)).some((e) => e.content.msgtype === 'm.notice' && String(e.content.body).startsWith('\u26a0\ufe0f Your message was not bridged: Odpovedz na konkrétnu správu')));
   check(true, 'a message in an app\'s chat that answers nothing is refused in the chat');
   const answer = await say(appRoom, { msgtype: 'm.text', body: '> <@cx_phone:weft.test> Ideš večer?\n\nÁno', 'm.relates_to': { 'm.in_reply_to': { event_id: asked } } });
   const reply = await until('the answer in the outbox', async () => ((await post('/_connect/phone/outbox', phone, { wait: 5 })).items as { id: string; kind: string; to: string; text: string }[]).at(0));
   check(reply.id === answer.event_id && reply.kind === 'reply' && reply.to === 'n:com.app:1:a' && reply.text === 'Áno', 'an answer goes to the notification it answers, without the quote');
   await post('/_connect/phone/outbox', phone, { done: [{ id: reply.id, ok: false, error: 'Táto notifikácia už v telefóne nie je.' }] });
-  check((await messages(appRoom)).some((e) => e.content.msgtype === 'm.notice' && e.content.body === 'Neodišlo: Táto notifikácia už v telefóne nie je.'), 'what the phone could not send is said under it');
+  check((await messages(appRoom)).some((e) => e.content.msgtype === 'm.notice' && e.content.body === '\u26a0\ufe0f Your message was not bridged: Táto notifikácia už v telefóne nie je.'), 'what the phone could not send is said under it');
   check(((await post('/_connect/phone/outbox', phone, {})).items as unknown[]).length === 0, 'nothing is handed out again');
   state.close();
 } catch (err) {
