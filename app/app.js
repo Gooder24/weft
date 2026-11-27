@@ -9361,6 +9361,7 @@ function igThreadCompose(r) {
 
 /** The bridge opens the thread by its id (POST /v3/create_dm/thread:<id>, server/bridges/instagram-open-thread.patch),
  *  with the first account that has it; the old history then belongs to that room. */
+const IG_LEFT_ROOM = 'SK.KARCHI.LEFT_ROOM';
 async function openIgThread(r) {
   if (r.reaching) return;
   const app = LINKS.find((a) => a.id === 'instagram');
@@ -9377,9 +9378,12 @@ async function openIgThread(r) {
         room = (await call('POST', `/create_dm/${q(`thread:${igThreadOf(r)}`)}?login_id=${q(login.id)}&user_id=${q(S.userId)}`, {}, app.base, AbortSignal.timeout(60e3))).dm_room_mxid;
         if (room) break;
       } catch (err) {
-        // Another account may have it (Instagram may refuse one that is not in the group with any error).
-        if (err.name !== 'TimeoutError' && login !== logins.at(-1)) { missing = err; continue; }
-        throw err;
+        // Another account may have it (Instagram may refuse one that is not in the group with any error). That
+        // Karchi left its room says more than another account's not found.
+        if (err.name === 'TimeoutError') throw err;
+        if (!missing || err.errcode === IG_LEFT_ROOM || missing.errcode !== IG_LEFT_ROOM) missing = err;
+        if (login !== logins.at(-1)) continue;
+        throw missing;
       }
     }
     if (!room) throw missing || new Error(T('most nevrátil chat'));
@@ -9389,7 +9393,7 @@ async function openIgThread(r) {
     alert(T`Chat sa nepodarilo otvoriť: ${err.name === 'TimeoutError' ? T('most neodpovedá')
       : err.status === 404 ? T('Instagram tento chat nenašiel, možno si zo skupiny odišiel')
       : err.status === 400 ? T('most je starší a chat otvoriť nevie')
-      : err.status === 403 ? T('jeho chat vo Wefte už je, ale odišiel si z neho')
+      : err.errcode === IG_LEFT_ROOM ? T('jeho chat vo Wefte už je, ale odišiel si z neho')
       : err.message}`);
   } finally {
     r.reaching = null;

@@ -1,4 +1,4 @@
-From bc41c057ee14bfcd0e1fa583c1c8ee65f2a94e0e Mon Sep 17 00:00:00 2001
+From d094f7eaca175f58f660ef849e7ec95779af9ccd Mon Sep 17 00:00:00 2001
 From: Gooder24 <162874774+Gooder24@users.noreply.github.com>
 Date: Thu, 26 Nov 2026 08:24:39 +0100
 Subject: [PATCH] igconnector: open an existing thread by its FBID through
@@ -10,22 +10,23 @@ so it could not be written to again from Matrix.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- pkg/igconnector/openthread.go | 150 ++++++++++++++++++++++++++++++++++
+ pkg/igconnector/openthread.go | 157 ++++++++++++++++++++++++++++++++++
  pkg/igconnector/startchat.go  |   3 +
- 2 files changed, 153 insertions(+)
+ 2 files changed, 160 insertions(+)
  create mode 100644 pkg/igconnector/openthread.go
 
 diff --git a/pkg/igconnector/openthread.go b/pkg/igconnector/openthread.go
 new file mode 100644
-index 0000000..e2d88cb
+index 0000000..ca41f7d
 --- /dev/null
 +++ b/pkg/igconnector/openthread.go
-@@ -0,0 +1,150 @@
+@@ -0,0 +1,157 @@
 +package igconnector
 +
 +import (
 +	"context"
 +	"fmt"
++	"net/http"
 +	"strconv"
 +	"strings"
 +	"sync"
@@ -45,6 +46,9 @@ index 0000000..e2d88cb
 +// opens such a thread as a portal; GET /v3/resolve_identifier/thread:<fbid> only says whether its room exists (200
 +// without a room ID, else 404).
 +const threadIdentifierPrefix = "thread:"
++
++// leftRoomErrCode answers an open of a thread whose room the user has left (403): the room and its history stay.
++const leftRoomErrCode = "SK.KARCHI.LEFT_ROOM"
 +
 +func (ic *IGClient) resolveThread(ctx context.Context, rawID string, createChat bool) (*bridgev2.ResolveIdentifierResponse, error) {
 +	fbid, err := strconv.ParseInt(rawID, 10, 64)
@@ -122,11 +126,13 @@ index 0000000..e2d88cb
 +// deletes a room the user is not in, and under a cancelled request it cannot read the members and drops the room's
 +// ID; refused, the room stays as it is and the next open finds it.
 +func (ic *IGClient) handBack(ctx context.Context, portal *bridgev2.Portal) (*bridgev2.ResolveIdentifierResponse, error) {
-+	in := ic.waitUserInRoom(ctx, portal.MXID)
-+	if err := ctx.Err(); err != nil {
-+		return nil, err
++	in, err := ic.waitUserInRoom(ctx, portal.MXID)
++	if ctxErr := ctx.Err(); ctxErr != nil {
++		return nil, ctxErr
++	} else if err != nil {
++		return nil, fmt.Errorf("failed to read the members of %s: %w", portal.MXID, err)
 +	} else if !in {
-+		return nil, bridgev2.WrapRespErr(fmt.Errorf("user is not in the thread's room %s", portal.MXID), mautrix.MForbidden)
++		return nil, bridgev2.WrapRespErrManual(fmt.Errorf("user is not in the thread's room %s", portal.MXID), leftRoomErrCode, http.StatusForbidden)
 +	}
 +	return &bridgev2.ResolveIdentifierResponse{Chat: &bridgev2.CreateChatResponse{PortalKey: portal.PortalKey, Portal: portal}}, nil
 +}
@@ -144,28 +150,29 @@ index 0000000..e2d88cb
 +	}
 +}
 +
-+func (ic *IGClient) userInRoom(ctx context.Context, roomID id.RoomID) bool {
++func (ic *IGClient) userInRoom(ctx context.Context, roomID id.RoomID) (bool, error) {
 +	members, err := ic.Main.Bridge.Matrix.GetMembers(ctx, roomID)
 +	if err != nil {
-+		return false
++		return false, err
 +	}
 +	member, ok := members[ic.UserLogin.UserMXID]
-+	return ok && member.Membership.IsInviteOrJoin()
++	return ok && member.Membership.IsInviteOrJoin(), nil
 +}
 +
 +// waitUserInRoom waits up to ten seconds for the user to get into a room that is being created.
-+func (ic *IGClient) waitUserInRoom(ctx context.Context, roomID id.RoomID) bool {
++// A read that fails on the last try is the answer: never "not in" on a failed read.
++func (ic *IGClient) waitUserInRoom(ctx context.Context, roomID id.RoomID) (in bool, err error) {
 +	for range 20 {
-+		if ic.userInRoom(ctx, roomID) {
-+			return true
++		if in, err = ic.userInRoom(ctx, roomID); in {
++			return true, nil
 +		}
 +		select {
 +		case <-time.After(500 * time.Millisecond):
 +		case <-ctx.Done():
-+			return false
++			return false, ctx.Err()
 +		}
 +	}
-+	return false
++	return false, err
 +}
 +
 +func cutThreadIdentifier(identifier string) (string, bool) {
