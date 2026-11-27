@@ -449,7 +449,10 @@ function offlineBanner() {
 }
 
 function flushAll() {
-  for (const [room, ev] of S.readLater || []) if (S.rooms.has(room)) sendReceipt(S.rooms.get(room), ev);
+  for (const [room, ev] of S.readLater || []) {
+    const r = S.rooms.get(room);
+    if (r && r.readCheck !== `${ev} ${roomCut(r)}`) sendReceipt(r, ev);
+  }
   S.readLater = null;
   for (const [type, content] of Object.entries(accountOut())) putAccount(type, content).catch(() => {});
   flushOut();
@@ -1480,6 +1483,7 @@ function updateRoom(r, data) {
     if (ev.type !== 'm.receipt') continue;
     for (const [eventId, kinds] of Object.entries(ev.content || {})) {
       for (const [user, receipt] of Object.entries(kinds['m.read'] || {})) {
+        if (receipt?.thread_id && receipt.thread_id !== 'main') continue; // one thread's says nothing of the chat
         r.receipts.set(user, eventId);
         if (receipt?.ts) r.receiptAt.set(user, receipt.ts); else r.receiptAt.delete(user);
         if (user !== S.userId) r.receiptStale = true; // the archive's log of this chat has a newer one
@@ -4240,7 +4244,8 @@ async function receiptSafe(r, eventId, cut) {
   let reached = false;
   for (let page = 0; page < 10 && from && !reached; page++) {
     const data = await call('GET', `/rooms/${q(r.id)}/messages?dir=b&limit=100&from=${q(from)}&filter=${filter}`);
-    for (const ev of data.chunk || []) {
+    if (!Array.isArray(data.chunk)) return false; // a broken answer proves nothing
+    for (const ev of data.chunk) {
       if (ev.event_id === mine || ev.origin_server_ts <= cut) { reached = true; break; }
       seen.push(ev);
     }
