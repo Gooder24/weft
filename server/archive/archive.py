@@ -892,12 +892,14 @@ def fetch_more(c, network, room, owner, has_older):
                      " ".join(b for b in map(part_body, m["parts"]) if b)) for m in msgs]
             rows = [r for r in rows if r[5]]
             c.execute("INSERT INTO chats VALUES (?, ?, NULL, ?, 'bridge') ON CONFLICT (id) DO NOTHING", (f"bridge:{room}", network, room))
+            had = c.total_changes
             c.executemany("INSERT OR IGNORE INTO messages VALUES (?,?,?,?,?,?)", rows)
+            added = c.total_changes > had  # Teams: a page of messages the archive already has counts as empty
             c.executemany(ADD_MEDIA, [r for m in msgs for r in bridge_media(network, room, m)])
             oldest = min(msgs, key=lambda m: m["ts"], default=None)
             moved = oldest is not None or (page or {}).get("cursor", "") not in ("", st["cursor"])
             advanced = (page or {}).get("cursor", "") not in ("", st["cursor"])  # Teams: only a new page cursor is progress
-            st["empty"] = 0 if rows else st["empty"] + 1
+            st["empty"] = 0 if (added if network in HISTORY_AHEAD else rows) else st["empty"] + 1
             st |= {"cursor": (page or {}).get("cursor", "") or st["cursor"], "failed_at": None,
                    # Teams' bridge says has_more false only at the chat's start, also on an empty page (a chat no longer
                    # than what its room has), and its empty pages (system notes) go on while the cursor does; Meta's say it also when they cannot page
