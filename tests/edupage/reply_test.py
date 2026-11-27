@@ -78,11 +78,14 @@ class Resp:
 class Session:
     answer: dict = {}
     tab: list = []
+    lost = None  # an exception the send's connection ends with
 
     def __init__(self): self.posts, self.cookies = [], {}
 
     def post(self, url, params=None, data=None, headers=None, files=None, timeout=None):
         self.posts.append((url, data))
+        if ("createReply" in url or "createItem" in url) and Session.lost:
+            raise Session.lost
         if "createReply" in url or "createItem" in url:
             return Resp(Session.answer)
         return Resp({"timelineItems": Session.tab})  # the message tab read again
@@ -223,6 +226,42 @@ acct.outbox.put(("!room", "$r4", "$theirs", "Hm", "", [], ""))
 acct.send_outbox(rooms)
 check("…and a refused one none", not any("$r4" in x for x in statuses), statuses)
 check("someone else's without raw: nothing sent, Karchi told", not acct.edu.session.posts and said and "neodišla" in said[-1], (acct.edu.session.posts, said))
+
+# The connection breaks after the reply went out: nothing false is said, it is never sent again, and the poll that
+# finds it gives its ✓; one no poll finds in UNSURE_MINUTES is said not to have gone.
+events = []
+b.matrix = lambda method, path, body=None, **k: events.append(((body or {}).get("status"), (body or {}).get("m.relates_to", {}).get("event_id"))) or {"event_id": "$x"}
+said.clear()
+acct.edu = Edu()
+Session.lost = b.requests.ConnectionError("Connection aborted.")
+acct.outbox.put(("!room", "$lost", "$own", "Stratená odpoveď", "", [], ""))
+acct.send_outbox(rooms)
+check("an answer lost on the way: nothing said, sent once, no ✓ yet", not said and len(acct.edu.session.posts) == 1 and not events
+      and db.execute("SELECT 1 FROM unsure WHERE event_id = '$lost'").fetchone(), (said, acct.edu.session.posts, events))
+now = b.datetime.now(b.LOCAL).strftime("%Y-%m-%d %H:%M:%S")
+check("the poll that finds it links it and gives the ✓",
+      Rooms(db).sync([{"timelineid": "70", "typ": "sprava", "reakcia_na": "14", "vlastnik": ME, "text": "Stratená odpoveď", "cas_pridania": now}], "skola", ME) == 0
+      and db.execute("SELECT event_id FROM items WHERE id = 70").fetchone() == ("$lost",) and ("SUCCESS", "$lost") in events
+      and not db.execute("SELECT 1 FROM unsure").fetchall(), events)
+acct.edu = Edu()
+Session.lost = b.requests.ReadTimeout("read timed out")
+acct.outbox.put(("!room", "$gone", "$own", "Neprišla", "", [], ""))
+acct.send_outbox(rooms)
+rooms.settle_unsure()
+check("not found yet: still nothing said", not said, said)
+db.execute("UPDATE unsure SET at = '2020-01-01 00:00:00' WHERE event_id = '$gone'")
+rooms.settle_unsure()
+check("not found in time: said not to have gone, once", len(said) == 1 and "neodišla" in said[0]
+      and not db.execute("SELECT 1 FROM unsure UNION ALL SELECT 1 FROM unnamed WHERE event_id = '$gone'").fetchall(), said)
+rooms.settle_unsure()
+check("…and not again", len(said) == 1, said)
+acct.edu = Edu()
+Session.lost = b.requests.ConnectTimeout("no route")
+acct.outbox.put(("!room", "$never", "$own", "Nikam", "", [], ""))
+acct.send_outbox(rooms)
+check("a connection that never reached EduPage: said at once", len(said) == 2 and "neodišla" in said[1]
+      and not db.execute("SELECT 1 FROM unsure").fetchall(), said)
+Session.lost = None
 
 print("FAILS:", fails)
 sys.exit(1 if fails else 0)

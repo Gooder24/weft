@@ -61,6 +61,8 @@ SERVER_NAME = ADMIN.split(":", 1)[1]
 STATE_DIR = Path(os.environ.get("STATE_DIR", Path(__file__).resolve().parent))
 ACCOUNT_FILE = STATE_DIR / "account.json"
 POLL_SECONDS = int(os.environ.get("POLL_SECONDS", "300"))
+# A send whose answer was lost is looked for this long before Karchi is told it did not go.
+UNSURE_MINUTES = 10
 # Each poll re-reads this many days; the first sync after a login reads the whole school year.
 RECENT_DAYS = 7
 # On the first sync, messages older than this start as read instead of all looking new.
@@ -417,6 +419,8 @@ class Rooms:
         # A send not seen in a day never will be (the poll reads a week); its row must not take a later same text.
         day = (datetime.now(LOCAL) - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
         db.execute("DELETE FROM unnamed WHERE since < ?", (day,))
+        # Sends whose answer was lost: linked with a ✓ when a poll finds them, else said not to have gone (settle_unsure).
+        db.execute("CREATE TABLE IF NOT EXISTS unsure (event_id TEXT PRIMARY KEY, room_id TEXT NOT NULL, at TEXT NOT NULL)")
         db.commit()
 
     def ghost(self, item: dict) -> str:
@@ -498,6 +502,15 @@ class Rooms:
         if answers:
             content["m.relates_to"] = {"m.in_reply_to": {"event_id": answers}}
         matrix("PUT", f"/rooms/{q(room_id)}/send/m.room.message/{uuid.uuid4().hex}", content)
+
+    def settle_unsure(self) -> None:
+        """A send whose answer was lost and that no poll found in UNSURE_MINUTES did not go: said so now."""
+        cut = (datetime.now(LOCAL) - timedelta(minutes=UNSURE_MINUTES)).strftime("%Y-%m-%d %H:%M:%S")
+        for event_id, room_id in self.db.execute("SELECT event_id, room_id FROM unsure WHERE at < ?", (cut,)).fetchall():
+            self.say(room_id, "Táto správa neodišla do EduPage. Skús to znova alebo odpovedz na edupage.org.", event_id)
+            self.db.execute("DELETE FROM unsure WHERE event_id = ?", (event_id,))
+            self.db.execute("DELETE FROM unnamed WHERE event_id = ?", (event_id,))
+            self.db.commit()
 
     def sent(self, room_id: str, event_id: str) -> None:
         """Weft's ✓ beside the admin's message: EduPage took it (the mautrix bridges' send status event)."""
@@ -684,6 +697,9 @@ class Rooms:
                 if match:  # written in Weft, already in the room: only its id was missing
                     self.db.execute("DELETE FROM unnamed WHERE event_id = ?", (match,))
                     self.mark_sent(item_id, root, match)
+                    if self.db.execute("DELETE FROM unsure WHERE event_id = ?", (match,)).rowcount:
+                        self.db.commit()
+                        self.sent(room_id, match)  # its answer was lost: the ✓ comes now
                     known.add(item_id)
                     continue
             sender = ADMIN if is_mine(item, user_id) else self.ghost(item)
@@ -722,6 +738,21 @@ class Rooms:
 
 class NeedsLogin(Exception):
     """The stored session and password no longer work; the user has to log in again."""
+
+
+class Unsure(Exception):
+    """A send went out but its answer was lost: EduPage may have it or not, so it is never sent again."""
+
+
+def post_send(edu: Edupage, url: str, body: dict) -> requests.Response:
+    """createItem/createReply. A connection that broke after the request may have been taken is Unsure, not a failure."""
+    try:
+        return edu.session.post(url, data=RequestData.encode_request_body(body),
+                                headers={"Content-Type": "application/x-www-form-urlencoded"}, timeout=60)
+    except requests.ConnectTimeout:
+        raise  # never reached EduPage
+    except (requests.ConnectionError, requests.Timeout, requests.exceptions.ChunkedEncodingError) as err:
+        raise Unsure(type(err).__name__) from None
 
 
 class SessionExpired(Exception):
@@ -1092,14 +1123,9 @@ def send_message(edu: Edupage, recipient: str, text: str, attachments: dict | No
                  user_id: str = "", known: set[int] | None = None, since: str = "", flags: dict | None = None) -> int | None:
     """Starts a new message the way edupage.org's "Nová správa" does; returns its timeline id. recipient is one id
     or several joined by ";", attachments maps each uploaded file's EduPage path to its name, flags message_flags."""
-    resp = edu.session.post(
-        f"https://{edu.subdomain}.edupage.org/timeline/?=&akcia=createItem&eqav=1&maxEqav=7",
-        data=RequestData.encode_request_body(
-            {"selectedUser": recipient, "text": text, "attachements": json.dumps(attachments or {}),
-             "receipt": "0", "typ": "sprava", **(flags or {})}
-        ),
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-    )
+    resp = post_send(edu, f"https://{edu.subdomain}.edupage.org/timeline/?=&akcia=createItem&eqav=1&maxEqav=7",
+                     {"selectedUser": recipient, "text": text, "attachements": json.dumps(attachments or {}),
+                      "receipt": "0", "typ": "sprava", **(flags or {})})
     resp.raise_for_status()
     try:
         data = json.loads(RequestData.decode_response(resp.text))
@@ -1112,14 +1138,9 @@ def send_reply(edu: Edupage, root: int, text: str, attachments: dict | None = No
                user_id: str = "", known: set[int] | None = None, since: str = "") -> int | None:
     """Replies in the thread `root` the way edupage.org does, to `recipient` (see reply_recipient); returns the
     new timeline id, None when EduPage took it but its id could not be found."""
-    resp = edu.session.post(
-        f"https://{edu.subdomain}.edupage.org/timeline/?akcia=createReply&eqav=1&maxEqav=7",
-        data=RequestData.encode_request_body(
-            {"groupid": str(root), "recipient": recipient, "text": text,
-             "moredata": json.dumps({"attachements": attachments or {}})}
-        ),
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-    )
+    resp = post_send(edu, f"https://{edu.subdomain}.edupage.org/timeline/?akcia=createReply&eqav=1&maxEqav=7",
+                     {"groupid": str(root), "recipient": recipient, "text": text,
+                      "moredata": json.dumps({"attachements": attachments or {}})})
     resp.raise_for_status()
     try:
         data = json.loads(RequestData.decode_response(resp.text))
@@ -1813,6 +1834,7 @@ class Account:
             posted = rooms.sync(items, creds["school"], creds["user_id"], settle_before)
             prefs = read_prefs()
             noticed = rooms.notices(items, prefs)
+            rooms.settle_unsure()
         except (MatrixError, urllib.error.URLError) as err:
             log("matrix error:", err)
             return
@@ -2050,6 +2072,12 @@ class Account:
                             self.keep_session(edu)
                 except Exception as err:
                     log("session not kept after a send:", repr(err))
+            except Unsure as err:  # the poll links it with a ✓ if EduPage has it; else settle_unsure says it did not go
+                log("send answer lost:", err)
+                at = datetime.now(LOCAL).strftime("%Y-%m-%d %H:%M:%S")
+                rooms.db.execute("INSERT OR REPLACE INTO unnamed VALUES (?, ?, ?, ?)", (event_id, root, text, since))
+                rooms.db.execute("INSERT OR REPLACE INTO unsure VALUES (?, ?, ?)", (event_id, room_id, at))
+                rooms.db.commit()
             except AttachmentRefused as err:
                 rooms.say(room_id, f"Táto správa neodišla do EduPage: {err}. Skús iný súbor alebo ju pošli bez neho.", event_id)
             except RecipientsRefused as err:
