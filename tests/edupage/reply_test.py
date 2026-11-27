@@ -176,6 +176,8 @@ check("Weft learns which threads ask", rooms.reply_audiences(ME) == {"$class": "
 acct = b.Account.__new__(b.Account)
 acct.lock, acct.outbox, acct.teachers = threading.Lock(), queue.Queue(), []
 acct.creds = {"login_id": "skola:" + ME, "school": "skola", "user_id": ME}
+statuses = []  # what the bridge writes into the room: only its send status, for Weft's ✓
+b.matrix = lambda method, path, body=None, **k: statuses.append((path.split("/send/")[-1].split("/")[0], (body or {}).get("m.relates_to", {}).get("event_id"), (body or {}).get("status"))) or {}
 for choice, event in (("", "$r1"), ("all", "$r2")):
     acct.edu = Edu()
     Session.answer = {"changes": [{"timelineid": "5" + event[-1]}]}
@@ -191,6 +193,7 @@ Session.answer, Session.tab = {"status": "ok"}, []
 acct.outbox.put(("!room", "$r3", "$own", "Ešte niečo", "", [], ""))
 acct.send_outbox(rooms)
 check("taken without an id: no 'neodišla'", not said, said)
+check("each reply EduPage took gets the send status Weft shows as ✓", statuses == [("com.beeper.message_send_status", e, "SUCCESS") for e in ("$r1", "$r2", "$r3")], statuses)
 now = b.datetime.now(b.LOCAL).strftime("%Y-%m-%d %H:%M:%S")
 older = {"timelineid": "59", "typ": "sprava", "reakcia_na": "14", "vlastnik": ME, "text": "Ešte niečo", "cas_pridania": "2026-01-01 08:00:00"}
 posted = []
@@ -207,7 +210,8 @@ check("the poll (also after a restart) links it instead of posting it again",
 
 # A thread whose first message was never kept raw: answered when Karchi wrote it, refused for anyone else's.
 db.execute("INSERT INTO items VALUES (98, 98, '$mine'), (99, 99, '$theirs')")
-b.matrix = lambda method, path, *a, **k: {"sender": "@me:test" if "%24mine" in path or "$mine" in path else "@edupage_ucitel1:test"}
+b.matrix = lambda method, path, body=None, **k: (statuses.append(((body or {}).get("status"), (body or {}).get("m.relates_to", {}).get("event_id"))) if "/send/" in path else None) or \
+    {"sender": "@me:test" if "%24mine" in path or "$mine" in path else "@edupage_ucitel1:test"}
 check("own first message without raw: replies go to whom he wrote", rooms.recipient_for(98, ME, "") == "")
 try:
     rooms.recipient_for(97, ME, "")
@@ -217,6 +221,7 @@ except RuntimeError:
 acct.edu = Edu()
 acct.outbox.put(("!room", "$r4", "$theirs", "Hm", "", [], ""))
 acct.send_outbox(rooms)
+check("…and a refused one none", not any("$r4" in x for x in statuses), statuses)
 check("someone else's without raw: nothing sent, Karchi told", not acct.edu.session.posts and said and "neodišla" in said[-1], (acct.edu.session.posts, said))
 
 print("FAILS:", fails)

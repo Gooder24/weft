@@ -1338,6 +1338,14 @@ class Teams:
             content["m.relates_to"] = {"m.in_reply_to": {"event_id": about}}
         matrix("PUT", f"/rooms/{q(room)}/send/m.room.message/{uuid.uuid4().hex}", content)
 
+    def sent(self, room: str, event: str) -> None:
+        """Weft's ✓ beside the message: Teams took it. The same event the mautrix bridges send (MSS)."""
+        try:
+            matrix("PUT", f"/rooms/{q(room)}/send/com.beeper.message_send_status/{uuid.uuid4().hex}",
+                   {"m.relates_to": {"rel_type": "m.reference", "event_id": event}, "status": "SUCCESS", "network": "teams"})
+        except MatrixError as err:
+            log("teams: send status", err)
+
     def failed(self, room: str, event: str, reason: str) -> None:
         """Weft's „neodišlo“ under the message: the wording of the mautrix bridges' notice (app.js bridgeFailure)."""
         try:
@@ -1952,6 +1960,7 @@ class Teams:
                             (room, str(sent["id"]), event["event_id"], str(sent.get("lastEditedDateTime") or "")))
             self.db.execute("INSERT OR IGNORE INTO parts VALUES (?, ?, ?)", (event["event_id"], room, str(sent["id"])))
             self.db.commit()
+        self.sent(room, event["event_id"])
 
     def markup(self, content: dict, text: str) -> tuple[str, list[dict]]:
         """What Karchi wrote as Teams HTML; his @mentions of people in Teams become Teams mentions."""

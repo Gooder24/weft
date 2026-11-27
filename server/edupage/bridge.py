@@ -499,6 +499,14 @@ class Rooms:
             content["m.relates_to"] = {"m.in_reply_to": {"event_id": answers}}
         matrix("PUT", f"/rooms/{q(room_id)}/send/m.room.message/{uuid.uuid4().hex}", content)
 
+    def sent(self, room_id: str, event_id: str) -> None:
+        """Weft's ✓ beside the admin's message: EduPage took it (the mautrix bridges' send status event)."""
+        try:
+            matrix("PUT", f"/rooms/{q(room_id)}/send/com.beeper.message_send_status/{uuid.uuid4().hex}",
+                   {"m.relates_to": {"rel_type": "m.reference", "event_id": event_id}, "status": "SUCCESS", "network": "edupage"})
+        except Exception as err:  # the message is out; a missing ✓ must not tell Karchi it did not go
+            log("send status not written:", repr(err))
+
     def school_room(self) -> tuple[str, str]:
         """The one EduPage room, and the "EduPage" ghost that writes notices in it."""
         sender = self.ghost({"vlastnik": "school", "vlastnik_meno": "EduPage"})
@@ -2035,6 +2043,7 @@ class Account:
                     rooms.db.commit()
                 else:
                     rooms.mark_sent(item_id, root if root is not None else item_id, event_id)
+                rooms.sent(room_id, event_id)
                 try:  # the message is out: a failed session save must not tell Karchi it did not go
                     with self.lock:
                         if self.creds and self.gen == gen:

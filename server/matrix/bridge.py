@@ -74,6 +74,7 @@ MEDIA_KEYS = ("url", "file")
 MEDIA_MAX = 25 * 1024 * 1024  # bytes a file may have to cross; more becomes a note in the chat
 GHOSTS_AT_ONCE = 20  # rooms up to this many people get all their ghosts at once, bigger ones as people write
 FROM_THERE = "sk.karchi.matrix.remote"
+SEND_STATUS = EventType.find("com.beeper.message_send_status", EventType.Class.MESSAGE)
 # A Filter object, which mautrix uploads once: a dict would go into ?filter= as Python's text, which Synapse refuses.
 SYNC_FILTER = Filter(room=RoomFilter(timeline=RoomEventFilter(limit=20), state=StateFilter(lazy_load_members=True)))  # on a message Weft got from there: its event id there
 
@@ -731,6 +732,11 @@ class Bridge:
             await self.az.intent.send_notice(RoomID(room), f"Neodoslané na Matrix: {getattr(err, 'message', None) or err}")
             return
         self.store.run("INSERT OR IGNORE INTO message (remote, local, room) VALUES (?, ?, ?)", sent, evt.event_id, room)
+        try:  # Weft's ✓ beside the message: the server there took it (the mautrix bridges' send status event)
+            await self.az.intent.send_message_event(RoomID(room), SEND_STATUS, {
+                "m.relates_to": {"rel_type": "m.reference", "event_id": evt.event_id}, "status": "SUCCESS", "network": "matrix"})
+        except Exception as err:
+            log.warning("no send status in %s: %s", room, err)
 
     # -------------------------------------------------- provisioning
 

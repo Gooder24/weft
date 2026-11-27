@@ -205,6 +205,14 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   127.0.0.1:29334 behind Caddy's `/_typing/`) follows the bridgev2 bridges' journal for „Sent typing event“; legacy
   Discord logs no success, so it shows nothing. Checks: `overenie/typing-out/run.sh`, `overenie/typing-seen/`
   (`service_test.py`, `run.sh`).
+- How far Karchi's message got (`sendState`/`sendMark` in app.js), beside each of his bubbles: paper plane = on its way
+  to Weft's server, plane in a circle = on it but the network has not taken it, ✓ = the network took it, ✓ in a circle
+  = delivered to the person's device, then the face of whoever read up to it (Messenger-like: only at the newest message
+  each person read), and one word under the newest. Only what something says: the bridges' `com.beeper.message_send_status`
+  from the room's own bridge bot (mautrix `message_status_events: true` on asus since 2026-11-27, also the guests'
+  bridges; Teams, Matrix and EduPage send SUCCESS themselves), `delivered_to_users` only from WhatsApp and Messenger's
+  encrypted chats and only one-to-one, read receipts. Weft's messages from before `SEND_STATUS_SINCE` have no mark.
+  Checks: `overenie/stav-spravy/ui.cjs`, `tests/edupage/reply_test.py`, `tests/matrix/run.py`, `overenie/microsoft/check.py`.
 - Mentions (like Beeper): „@“ in a Messenger, Instagram, WhatsApp or Discord chat lists its people; a picked or fully
   typed „@Name“ goes out as a Matrix mention (`formatted_body` matrix.to link + `m.mentions`), which the mautrix
   bridges turn into the network's own. A picked name stays that person (two of the same name, text typed after it,

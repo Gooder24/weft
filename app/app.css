@@ -496,6 +496,9 @@ kbd { margin-left: auto; font-family: inherit; font-size: var(--fs); color: var(
 .mcall { display: flex; align-items: center; gap: 6px; }
 .mcall.missed { color: var(--error); }
 .mtime { display: block; text-align: right; font-size: var(--fs); opacity: .6; margin-top: 1px; }
+/* Beside Karchi's own message: how far it got (sendMark), or the face of whoever read up to it. */
+.mstate { flex: none; min-width: 24px; min-height: 24px; display: inline-flex; align-items: flex-end; justify-content: center; gap: 2px; color: var(--muted); }
+.mstate.seen { align-items: center; }
 .mthread { display: block; font-size: var(--fs); color: var(--link); margin-top: 1px; }
 .bubble.sticker { padding: 0; background: none; }
 .bubble.sticker .mimg { background: none; border-radius: 0; }

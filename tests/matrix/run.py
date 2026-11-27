@@ -292,6 +292,12 @@ namespaces:
         ok("a message from Weft arrives there", bool(got))
         ok("…end-to-end encrypted", bool(got) and got.event_id in seen["encrypted"])
 
+        async def status_of_sent():
+            _, page = await local.call("GET", f"/rooms/{room}/messages?dir=b&limit=50")
+            return [(e["sender"].split(":")[0], e["content"].get("status")) for e in page.get("chunk", [])
+                    if e["type"] == "com.beeper.message_send_status" and e["content"].get("m.relates_to", {}).get("event_id") == sent.get("event_id")] or None
+        ok("…and the bridge's bot says it went (Weft's ✓)", await until(status_of_sent) == [("@matrixbot", "SUCCESS")])
+
         # There → Weft, encrypted, as a reply to it.
         content = TextMessageEventContent(msgtype=MessageType.TEXT, body="Ahoj späť")
         content.set_reply(got)

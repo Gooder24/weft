@@ -72,7 +72,7 @@ const WINDOW = 'sk.karchi.window';
 const NETWORKS = { facebookgo: 'messenger', facebook: 'messenger', instagramgo: 'instagram', instagram: 'instagram', discordgo: 'discord', discord: 'discord', whatsapp: 'whatsapp', teams: 'teams', matrix: 'matrix', 'github.com/Gooder24/matrix-matrix': 'matrix', vinted: 'vinted', packeta: 'packeta', sms: 'sms', phone: 'phone' };
 /** Matrix localpart of an agent bot -> app; its plain (unbridged) chat with Karchi shows in the inbox. */
 const AGENTS = { '@hermes': 'hermes' };
-const isBot = (id) => /^@(messenger|instagram|discord|edupage|whatsapp|teams|matrix)bot:/.test(id);
+const isBot = (id) => /^@(messenger|instagram|discord|edupage|whatsapp|teams|matrix)(guest)?bot:/.test(id);
 /** A message sent again after it did not go out names the one it replaces; that one leaves the chat. */
 const RESEND_OF = 'sk.karchi.resend_of';
 /** A bridge's „⚠️ Your message was not bridged: …“ notice: what it is about and why, or null. The legacy Discord
@@ -101,7 +101,17 @@ const DISCORD_POLL = 'sk.karchi.discord.poll';
 const POLL_TYPES = [...POLL_START, ...POLL_RESPONSE, ...POLL_END];
 // What a room's bridge says the network allows (edit, delete and their limits); read by msgRules.
 const ROOM_FEATURES = 'com.beeper.room_features';
-const TIMELINE_TYPES = ['m.room.message', 'm.sticker', 'm.reaction', 'm.room.redaction', 'm.room.create', 'm.room.member', 'm.room.name', 'm.room.avatar', 'm.bridge', ROOM_FEATURES, ...POLL_TYPES];
+// A bridge's word about Karchi's message (the mautrix bridges' MSS, also Teams, Matrix and EduPage): status SUCCESS once
+// the network took it, `delivered_to_users` once it reached the person's phone (WhatsApp, and Messenger's encrypted
+// chats, only one-to-one). Read by sendState.
+const SEND_STATUS = 'com.beeper.message_send_status';
+// Since then every bridge says so; of Weft's own messages before it nobody knows more than that they reached Weft's server.
+const SEND_STATUS_SINCE = Date.UTC(2026, 10, 27, 5, 53);
+// Networks whose bridge says when it took a message; on the others Weft's server is as far as Weft can see.
+const STATUS_APPS = new Set(['whatsapp', 'messenger', 'instagram', 'discord', 'teams', 'matrix']);
+// Marks of a message Karchi wrote in the network's own app: it came from the network, so the network has it.
+const FROM_NETWORK = ['fi.mau.double_puppet_source', 'sk.karchi.teams', 'sk.karchi.matrix.remote'];
+const TIMELINE_TYPES = ['m.room.message', 'm.sticker', 'm.reaction', 'm.room.redaction', 'm.room.create', 'm.room.member', 'm.room.name', 'm.room.avatar', 'm.bridge', ROOM_FEATURES, SEND_STATUS, ...POLL_TYPES];
 const DEFAULT_PREFS = { polls: true, arrivals: false, meals: false };
 const DAYS = [T('Nedeľa'), T('Pondelok'), T('Utorok'), T('Streda'), T('Štvrtok'), T('Piatok'), T('Sobota')];
 const MONTHS = LANG === 'en' ? ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] : ['jan', 'feb', 'mar', 'apr', 'máj', 'jún', 'júl', 'aug', 'sep', 'okt', 'nov', 'dec']; // i18n-ignore: each language's own names
@@ -121,6 +131,7 @@ const S = {
   logins: [],
   roomId: null,
   events: new Map(), // event id -> event, the EduPage room's messages
+  eduSent: new Set(), // Karchi's EduPage replies the bridge said EduPage took (SEND_STATUS)
   pending: new Map(), // txn id -> local reply not yet echoed by the server
   names: new Map(), // mxid -> display name
   account: {}, // account data type -> content
@@ -499,11 +510,14 @@ async function keepNow() {
     if (!r.app || r.space || r.archiveOnly || r.statusRoom) continue;
     const events = [...r.events.values()].filter((ev) => !ev.pending)
       .sort((a, b) => a.origin_server_ts - b.origin_server_ts).slice(-80);
+    const kept = new Set(events.map((ev) => ev.event_id));
     rooms.push({ id: r.id, app: r.app, created: r.created, bridgeName: r.bridgeName, server: r.server, serverId: r.serverId, archiveOnly: !!r.archiveOnly,
-      readAt: r.readAt, unread: r.unread, state: r.state, members: r.members, receipts: r.receipts, receiptAt: r.receiptAt, events });
+      readAt: r.readAt, unread: r.unread, state: r.state, members: r.members, receipts: r.receipts, receiptAt: r.receiptAt, events,
+      bridgebot: r.bridgebot, sent: [...r.sent].filter(([id]) => kept.has(id)) });
   }
+  const eduIds = new Set(edu.map((ev) => ev.event_id));
   const snap = { user: S.userId, at: Date.now(), account: S.account, logins: S.logins, links: S.links,
-    roomId: S.roomId, edu, names: S.names, rooms };
+    roomId: S.roomId, edu, eduSent: [...S.eduSent].filter((id) => eduIds.has(id)), names: S.names, rooms };
   kvDo('readwrite', (st) => st.put(snap, 'snapshot')).catch(() => {});
 }
 
@@ -518,11 +532,13 @@ function hydrate(snap) {
   S.eduKept = true; // the first sync takes the EduPage room over and pages its history again
   for (const [id, name] of snap.names || []) if (!S.names.has(id)) S.names.set(id, name); // the archive's may be in already
   for (const ev of snap.edu || []) S.events.set(ev.event_id, ev);
+  for (const id of snap.eduSent || []) S.eduSent.add(id);
   S.historyDone = true;
   for (const x of snap.rooms || []) {
     const r = roomOf(x.id);
     Object.assign(r, { app: x.app, created: x.created || 0, bridgeName: x.bridgeName, server: x.server || '', serverId: x.serverId || '', archiveOnly: x.archiveOnly,
-      readAt: x.readAt, unread: x.unread || 0, state: x.state || new Map(), members: x.members || new Map(), receipts: x.receipts || new Map(), receiptAt: x.receiptAt || new Map() });
+      readAt: x.readAt, unread: x.unread || 0, state: x.state || new Map(), members: x.members || new Map(), receipts: x.receipts || new Map(), receiptAt: x.receiptAt || new Map(),
+      bridgebot: x.bridgebot || '', sent: new Map(x.sent || []) });
     for (const ev of x.events) r.events.set(ev.event_id, ev);
     if (r.archiveOnly) r.matrixDone = true;
     r.statusRoom = r.app === 'whatsapp' && bridgeChannel(r) === 'status@broadcast'; // a copy kept before it was left out
@@ -1308,6 +1324,8 @@ function roomOf(id) {
       pending: new Map(), // txn id -> own message not yet echoed
       receipts: new Map(), // mxid -> event id read up to
       receiptAt: new Map(), // mxid -> when that receipt was sent (the homeserver's ts)
+      sent: new Map(), // own event id -> { ok, to: [mxid] }: what the bridge said of it (SEND_STATUS)
+      bridgebot: '', // the m.bridge state's bot, the only one whose SEND_STATUS counts
       readAt: 0, // when Karchi last read the room (his receipt's ts)
       typing: [], // mxids the bridge says are typing now (the homeserver ends it when they stop)
       unread: 0, // the server's notification count
@@ -1334,6 +1352,7 @@ function roomState(r, ev) {
   } else if (ev.type === 'm.bridge' && NETWORKS[ev.content?.protocol?.id]) {
     r.app = NETWORKS[ev.content.protocol.id];
     r.bridgeName = ev.content.channel?.displayname;
+    r.bridgebot = ev.content.bridgebot || '';
     // A Discord server's channel: its server, so "#general" says whose (and a search for the server finds it).
     const net = ev.content.network;
     const guild = r.app === 'discord' && net?.id && net.id !== ev.content.channel?.id;
@@ -1426,10 +1445,21 @@ function roomEvent(r, ev, old = false) {
     if (ev.type === 'm.room.member' && ev.event_id) r.events.set(ev.event_id, ev); // for "X je teraz v skupine"
     return;
   }
+  if (ev.type === SEND_STATUS) return sendStatusIn(r, ev);
   if (!['m.room.message', 'm.sticker', 'm.reaction', 'm.room.redaction', ...POLL_TYPES].includes(ev.type)) return;
   const txn = ev.unsigned?.transaction_id;
   if (txn) { r.pending.delete(txn); r.events.delete(txn); }
   r.events.set(ev.event_id, ev);
+}
+
+/** Keeps what the room's bridge said of one of Karchi's messages. Only the bridge's own bot is believed; a later
+ *  word never takes back an earlier one (a delivery after the network took it, receipts in any order). */
+function sendStatusIn(r, ev) {
+  const id = ev.content?.['m.relates_to']?.event_id;
+  if (!id || ev.sender === S.userId || (ev.sender !== r.bridgebot && !isBot(ev.sender))) return;
+  const was = r.sent.get(id) || { ok: false, to: [] };
+  const to = Array.isArray(ev.content.delivered_to_users) ? ev.content.delivered_to_users.filter((u) => typeof u === 'string' && u !== S.userId) : [];
+  r.sent.set(id, { ok: was.ok || ev.content.status === 'SUCCESS', to: [...new Set([...was.to, ...to])] });
 }
 
 function updateRoom(r, data) {
@@ -1870,7 +1900,8 @@ function roomModel(r) {
     const target = own.get(id) || r.events.get(id);
     const about = target?.type === 'm.room.redaction' ? (target.redacts || target.content?.redacts) : null;
     if (about ? !failed.has(about) : !own.has(id)) return true;
-    if (!about) failed.set(id, { reason: failReason(f.reason), sure: f.sure });
+    // „may not have been bridged“ and then the bridge's SUCCESS (a retry that went through): it went.
+    if (!about && (f.sure || !r.sent?.get(id)?.ok)) failed.set(id, { reason: failReason(f.reason), sure: f.sure });
     return false;
   });
   if (failed.size || resent.size) messages = messages.filter((ev) => !resent.has(ev.event_id) && !(failed.has(ev.event_id) && redacted.has(ev.event_id)));
@@ -4505,10 +4536,16 @@ function refresh() {
 function resetRoom() {
   S.roomId = null;
   S.events.clear();
+  S.eduSent.clear();
   S.historyDone = false;
 }
 
 function addEvent(ev) {
+  if (ev.type === SEND_STATUS) {
+    const id = ev.content?.['m.relates_to']?.event_id;
+    if (id && isBot(ev.sender) && ev.content.status === 'SUCCESS') S.eduSent.add(id);
+    return;
+  }
   if (ev.type === 'm.room.member') {
     if (ev.content?.displayname) S.names.set(ev.state_key, ev.content.displayname);
     return;
@@ -5799,9 +5836,17 @@ function detailView(t) {
         },
         bot ? null : h('div', { class: 'sq', style: { background: color, color: textOn(color) } }, initials(r.sender)),
         h('div', { class: 'rt' }, bot ? null : [h('b', {}, nameOf(r.sender)), ': '], linkified(eduParts(r).text, findIn(r)), eduFiles(r), eduActions(r)),
-        h('div', { class: 'rd' }, r.pending ? 'odosielam' : `${shortDate(r.origin_server_ts)} ${timeLabel(r.origin_server_ts)}`));
+        h('div', { class: 'rd' }, r.pending ? 'odosielam' : `${shortDate(r.origin_server_ts)} ${timeLabel(r.origin_server_ts)}`, r.sender === S.userId ? eduMark(r) : null));
       })),
       notice ? null : composeView(t.id, root)));
+}
+
+/** Beside Karchi's EduPage reply: on its way to Weft's server, on it, or taken by EduPage (the bridge's SEND_STATUS). */
+function eduMark(ev) {
+  const state = ev.pending ? 'sending' : S.eduSent.has(ev.event_id) ? 'sent' : ev.origin_server_ts >= SEND_STATUS_SINCE ? 'server' : null;
+  if (!state) return null;
+  const why = state === 'sending' ? T('Ide na server Weftu') : state === 'sent' ? T`${'EduPage'} ju prijal, doručenie nehlási` : T`Je na serveri Weftu, ${'EduPage'} ju ešte neprijal`;
+  return h('span', { class: `mstate ${state}`, title: why, 'aria-label': why }, icon(SEND_ICONS[state]));
 }
 
 /** To whom a reply goes, where EduPage lets Karchi choose: the author alone (the default, as nothing reaches a whole
@@ -8034,7 +8079,7 @@ function galleryViewerView(o) {
   o.index < g.total - 1 ? h('button', { class: 'vnav vnext', title: T('Ďalší (Ctrl+→)'), onclick: (e) => { stop(e); stepViewer(1); } }, icon('chevron-right')) : null);
 }
 
-function bubbleView(r, m, ev, grouped, group, sug = null) {
+function bubbleView(r, m, ev, grouped, group, sug = null, read = null) {
   const mine = ev.sender === S.userId;
   const gone = isRedacted(m, ev);
   const reply = ev.content?.['m.relates_to']?.['m.in_reply_to']?.event_id;
@@ -8069,7 +8114,7 @@ function bubbleView(r, m, ev, grouped, group, sug = null) {
       e.currentTarget.append(msgActs(r, m, ev, mine));
     } : null,
   },
-    mine ? null : grouped ? h('div', { class: 'mav' }) : r.archiveOnly ? avatar(member?.avatar, memberName(r, ev.sender), 28, 'mav') : h('button', {
+    mine ? (fail ? null : sendMark(r, ev, read)) : grouped ? h('div', { class: 'mav' }) : r.archiveOnly ? avatar(member?.avatar, memberName(r, ev.sender), 28, 'mav') : h('button', {
       class: 'mavbtn', title: T`Profil: ${memberName(r, ev.sender)}`,
       onclick: (e) => openPersonCard(e, r, ev.sender),
     }, avatar(member?.avatar, memberName(r, ev.sender), 28, 'mav')),
@@ -8101,18 +8146,18 @@ let bubbleMemoRoom = null;
 const modelSeq = new WeakMap();
 let modelSeqN = 0;
 let bubbleMemoSeq = 0;
-function bubbleKept(r, m, ev, grouped, group, sug = null) {
+function bubbleKept(r, m, ev, grouped, group, sug = null, read = null) {
   let seq = modelSeq.get(m);
   if (!seq) modelSeq.set(m, (seq = ++modelSeqN));
   // Every kept bubble belongs to one model of one room: a new model (sync, history dropped on a gap) frees the
   // old bubbles and the history their handlers hold.
   if (bubbleMemoRoom !== r.id || bubbleMemoSeq !== seq) { bubbleMemo.clear(); bubbleMemoRoom = r.id; bubbleMemoSeq = seq; }
   const id = ev.event_id;
-  const sig = `${seq}|${lookClass(r, ev.sender)}|${grouped}|${group}|${S.focusEvent === id}|${S.actsFor === id}|${S.pick?.event === id}|${hoverMsg === id}|${hoverMsg === id || S.actsFor === id || S.pick?.event === id ? receiptSeq : ''}|${S.focusEvent === id ? S.findQuery || '' : ''}|${!!ev.pending}|${!!ev.waiting}|${linkVer.get(id) || 0}|${sug ? calSugKey(sug) : ''}`;
+  const sig = `${seq}|${lookClass(r, ev.sender)}|${grouped}|${group}|${S.focusEvent === id}|${S.actsFor === id}|${S.pick?.event === id}|${hoverMsg === id}|${hoverMsg === id || S.actsFor === id || S.pick?.event === id ? receiptSeq : ''}|${S.focusEvent === id ? S.findQuery || '' : ''}|${!!ev.pending}|${!!ev.waiting}|${linkVer.get(id) || 0}|${sug ? calSugKey(sug) : ''}|${ev.sender === S.userId ? markSig(r, ev, read) : ''}`;
   const hit = bubbleMemo.get(id);
   if (hit?.sig === sig && hit.el.isConnected) return ref(hit.el);
   mediaAwaited = false;
-  const el = bubbleView(r, m, ev, grouped, group, sug);
+  const el = bubbleView(r, m, ev, grouped, group, sug, read);
   if (ev.pending || ev.waiting || mediaAwaited || ev.content?.msgtype === 'm.audio') { bubbleMemo.delete(id); return el; }
   const memo = { sig, el };
   el._live = (live) => { if (bubbleMemo.get(id) === memo) memo.el = live; };
@@ -8120,21 +8165,97 @@ function bubbleKept(r, m, ev, grouped, group, sug = null) {
   return el;
 }
 
+/** How far Karchi's message `ev` got, as far as anything says: 'sending' (not yet on Weft's server), 'server' (on it,
+ *  the network has not said it took it), 'sent' (the network took it), 'delivered' (it reached the person's phone),
+ *  or null when nothing is known (one sent from Weft before the bridges said, an archived one, a network without a
+ *  bridge that tells). Seen comes from the receipts (readAt). */
+function sendState(r, ev) {
+  if (ev.pending) return 'sending';
+  const said = r.sent?.get(ev.event_id);
+  if (said?.to.length) return 'delivered';
+  if (said?.ok || FROM_NETWORK.some((k) => ev.content?.[k])) return 'sent';
+  if (ev.archived) return null;
+  if (Object.values(AGENTS).includes(r.app)) return 'sent'; // an agent on Weft's own server has it
+  if (!STATUS_APPS.has(r.app) || ev.origin_server_ts < SEND_STATUS_SINCE) return null;
+  return 'server';
+}
+const SEND_ICONS = { sending: 'send', server: 'send-circle', sent: 'check', delivered: 'check-circle' };
+/** One word for the state under Karchi's newest message, and the whole truth for the icon's tooltip. */
+function sendWords(r, state) {
+  const net = appOf(r.app)?.name || r.app;
+  const tells = r.app === 'whatsapp' || r.app === 'messenger'; // their bridges say when a one-to-one message arrived
+  if (state === 'sending') return [T('Odosiela sa'), T('Ide na server Weftu')];
+  if (state === 'server') return [T('Na serveri'), T`Je na serveri Weftu, ${net} ju ešte neprijal`];
+  if (state === 'delivered') return [T('Doručené'), T('Doručené do zariadenia')];
+  if (!STATUS_APPS.has(r.app)) return [T('Odoslané'), T('Je na serveri Weftu')];
+  return [T('Odoslané'), tells && dmPartner(r) ? T`${net} ju prijal, doručenie zatiaľ nehlási` : T`${net} ju prijal, doručenie nehlási`];
+}
+/** Beside each of Karchi's messages: the face of whoever read up to exactly it (and wrote nothing since), nothing when
+ *  someone read further (their face is lower), else the icon of how far it got. `read` from readMarks. */
+function sendMark(r, ev, read) {
+  const here = read?.at.get(ev.event_id);
+  if (here?.length) {
+    const ids = here.map(([id]) => id);
+    const label = seenText(r, here, here.length === 1 && dmPartner(r) ? dmPartner(r) : null, Infinity);
+    return h('span', { class: 'mstate seen', title: label, 'aria-label': label },
+      ids.slice(0, 3).map((id) => avatar(r.members.get(id)?.avatar, memberName(r, id), 24, 'reader-av')),
+      ids.length > 3 ? h('span', { class: 'reader-more' }, `+${ids.length - 3}`) : null);
+  }
+  if (read && ev.origin_server_ts <= (read.far.get(r.id) ?? -1)) return h('span', { class: 'mstate' });
+  const state = sendState(r, ev);
+  if (!state) return h('span', { class: 'mstate' });
+  const [, why] = sendWords(r, state);
+  return h('span', { class: `mstate ${state}`, title: why, 'aria-label': why }, icon(SEND_ICONS[state]));
+}
+const markSig = (r, ev, read) => `${sendState(r, ev)}|${(read?.at.get(ev.event_id) || []).map(([id, ts]) => `${id}@${ts}`).join()}|${ev.origin_server_ts <= (read?.far.get(r.id) ?? -1)}`;
+/** Where each person of a chat's rooms stopped reading Karchi's messages: `at` own event id -> [[mxid, ts]] of the
+ *  people whose newest read message of his it is (left out when they wrote after it: their answer says they saw it),
+ *  `far` room id -> the time of the furthest anyone read. */
+function readMarks(t) {
+  const at = new Map(), far = new Map();
+  const own = new Map(), lastBy = new Map();
+  for (const ev of t.msgs) {
+    const x = t.roomOf(ev);
+    if (ev.sender === S.userId) { if (!ev.pending) (own.get(x) || own.set(x, []).get(x)).push(ev); }
+    else lastBy.set(`${x.id}|${ev.sender}`, ev.origin_server_ts);
+  }
+  for (const [x, mine] of own) {
+    const tsOf = (id) => x.events.get(id)?.origin_server_ts;
+    for (const [id] of joinedPeople(x)) {
+      let upTo = tsOf(x.receipts.get(id)) ?? -1;
+      for (const e of x.receiptLog || []) if (e.user === id) upTo = Math.max(upTo, e.event_ts ?? tsOf(e.event) ?? -1);
+      if (upTo < 0) continue;
+      far.set(x.id, Math.max(far.get(x.id) ?? -1, upTo));
+      const last = mine.findLast((ev) => ev.origin_server_ts <= upTo);
+      if (!last || (lastBy.get(`${x.id}|${id}`) ?? -1) > last.origin_server_ts) continue;
+      const when = seenWhen(x, last, id);
+      at.set(last.event_id, [...(at.get(last.event_id) || []), [id, when]]);
+    }
+  }
+  return { at, far };
+}
+
 /** Who saw Karchi's message `ev` and when: [[mxid, ts]], ts null when they saw it but when is not known.
  *  Someone saw it once their receipt reached it, at the time of the receipt that first did. From the archive's log
  *  (receiptLogFor); a base receipt only knows its own message's time. Without the log, the current receipt. */
 function seenOf(r, ev) {
   if (ev.pending) return [];
-  const at = ev.origin_server_ts;
-  const tsOf = (x) => x.event_ts ?? r.events.get(x.event)?.origin_server_ts ?? -1;
   const out = [];
   for (const [id] of joinedPeople(r)) {
-    const first = r.receiptLog?.find((x) => x.user === id && tsOf(x) >= at);
-    if (first) { out.push([id, !first.base || first.event === ev.event_id ? first.ts : null]); continue; }
-    const cur = r.events.get(r.receipts.get(id));
-    if (cur && cur.origin_server_ts >= at) out.push([id, cur.event_id === ev.event_id ? r.receiptAt.get(id) || null : null]);
+    const when = seenWhen(r, ev, id);
+    if (when !== undefined) out.push([id, when]);
   }
   return out;
+}
+/** When `id` saw Karchi's message `ev`: a time, null when they saw it but when is not known, undefined when not. */
+function seenWhen(r, ev, id) {
+  const at = ev.origin_server_ts;
+  const tsOf = (x) => x.event_ts ?? r.events.get(x.event)?.origin_server_ts ?? -1;
+  const first = r.receiptLog?.find((x) => x.user === id && tsOf(x) >= at);
+  if (first) return !first.base || first.event === ev.event_id ? first.ts : null;
+  const cur = r.events.get(r.receipts.get(id));
+  if (cur && cur.origin_server_ts >= at) return cur.event_id === ev.event_id ? r.receiptAt.get(id) || null : null;
+  return undefined;
 }
 /** "Videné 14:32" in a one-to-one chat, else "Videli: Jana 14:32, Peter" with at most `most` names. */
 function seenText(r, seen, partner, most) {
@@ -8879,6 +9000,7 @@ function chatView(r, e = null) {
   // Notes older than the first drawn message are not drawn either. A merged chat is one-to-one chats: no notes.
   const notes = merged ? [] : m.notes;
   const sugs = calSuggestions(t, msgs, from);
+  const read = readMarks(t);
   if (from > 0) while (n < notes.length && notes[n].ts <= last.origin_server_ts) n++;
   const notesUntil = (ts) => {
     for (; n < notes.length && notes[n].ts <= ts; n++) {
@@ -8913,7 +9035,7 @@ function chatView(r, e = null) {
     // The chat opened with unread messages: they start below this line, and the chat opens on it.
     if (S.newFrom?.room === er.id && S.newFrom.event === ev.event_id) { items.push(h('div', { class: 'cnew' }, T('Nové správy'))); prev = null; }
     const grouped = !!prev && prev.sender === ev.sender && ev.origin_server_ts - prev.origin_server_ts < 5 * 60e3;
-    items.push(bubbleKept(er, roomModel(er), ev, grouped, !partner, sugs.get(ev.event_id)));
+    items.push(bubbleKept(er, roomModel(er), ev, grouped, !partner, sugs.get(ev.event_id), read));
     prev = last = ev;
     lastRoom = er;
   }
@@ -8921,7 +9043,9 @@ function chatView(r, e = null) {
   const mineLast = msgs.findLast((ev) => ev.sender === S.userId);
   const mineRoom = mineLast && t.roomOf(mineLast);
   const seen = mineLast ? seenOf(mineRoom, mineLast) : [];
+  const state = mineLast === msgs[msgs.length - 1] && !seen.length && !mineLast.failed && !roomModel(mineRoom).failed.has(mineLast.event_id) ? sendState(mineRoom, mineLast) : null;
   if (seen.length) items.push(h('div', { class: 'seen' }, seenView(mineRoom, seen, dmPartner(mineRoom))));
+  else if (state) items.push(h('div', { class: 'seen', title: sendWords(mineRoom, state)[1] }, sendWords(mineRoom, state)[0]));
   items.push(typingLine(t.parts, partner));
   items.push(typingMine(t.parts));
   for (const x of t.parts) items.push(...laterBubbles(x, roomModel(x)));
