@@ -1029,6 +1029,51 @@ const settled = (p, id) => until(() => { const it = item(p, id); return it && ![
     assert.deepEqual(at, { new: true, old: false });
   });
 
+  await check('an older scan answering after a newer one failed does not undo where it listens', async () => {
+    let call = 0;
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const k = createPeer({ dir: path.join(tmp, 'k22', 'in'), statePath: path.join(tmp, 'k22.json'), alias: 'Weft k22', lan: false, port: await freePort(), trusted: () => true,
+      tailnet: async () => { const n = ++call; if (n === 2) { await gate; return { self: '127.0.0.72', peers: [] }; } if (n === 3) throw new Error('tailscale status failed'); return { self: '127.0.0.73', peers: [] }; }, log: () => {} });
+    await k.start(); // Tailscale at .73
+    const slow = k.scan(); // asked first, answers last
+    await k.scan(); // fails
+    release();
+    await slow;
+    const knock = (host) => new Promise((r) => { const c = require('node:net').connect(k.port, host); c.once('connect', () => { c.destroy(); r(true); }); c.once('error', () => r(false)); });
+    const at = { kept: await knock('127.0.0.73'), stale: await knock('127.0.0.72') };
+    await k.stop();
+    assert.deepEqual(at, { kept: true, stale: false });
+  });
+
+  await check('an older scan whose bind waited probes nothing once a newer scan says Tailscale is gone', async () => {
+    let asked = 0;
+    const phone = http.createServer((req, res) => { if (req.url.endsWith('/register')) asked++; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ alias: 'Telefón', fingerprint: 'fp-k23', deviceType: 'mobile', protocol: 'http' })); });
+    await new Promise((r) => phone.listen(0, '127.0.0.9', r));
+    let call = 0;
+    const k = createPeer({ dir: path.join(tmp, 'k23', 'in'), statePath: path.join(tmp, 'k23.json'), alias: 'Weft k23', lan: false, port: await freePort(), probePort: phone.address().port, trusted: () => true,
+      tailnet: async () => { const n = ++call; if (n === 1) return { self: '127.0.0.74', peers: [] }; if (n === 2) return { self: '127.0.0.75', peers: [{ ip: '127.0.0.9', online: true }] }; return { self: null, peers: [] }; }, log: () => {} });
+    await k.start(); // Tailscale at .74, no devices
+    const netm = require('node:net');
+    const listenOrig = netm.Server.prototype.listen;
+    let entered = false;
+    let open;
+    const held = new Promise((r) => { open = r; });
+    netm.Server.prototype.listen = function (...a) { if (a[1] === '127.0.0.75') { entered = true; held.then(() => listenOrig.apply(this, a)); return this; } return listenOrig.apply(this, a); };
+    try {
+      const older = k.scan(); // Tailscale moved to .75 with the phone online; its bind waits
+      await until(() => entered);
+      const newer = k.scan(); // Tailscale is gone
+      open();
+      await Promise.all([older, newer]);
+    } finally { netm.Server.prototype.listen = listenOrig; }
+    const devices = k.state().devices.map((d) => d.alias);
+    const me = k.state().me;
+    await k.stop();
+    phone.close();
+    assert.deepEqual({ asked, devices, error: me.error }, { asked: 0, devices: [], error: 'no-tailnet' });
+  });
+
   await check('a probe that stop() caught midway asks nothing more', async () => {
     let held = null, afterStop = 0, done = false;
     const phone = require('node:net').createServer((c) => { if (done) { afterStop++; c.destroy(); } else held = c; });

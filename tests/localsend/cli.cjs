@@ -198,8 +198,52 @@ console.log('runtime', process.versions.electron ? `Electron ${process.versions.
   const has = (g, d) => !!g[d]?.includes('A70000E0');
   check('a scan follows the interfaces: a new local network joins, the new Tailscale address leaves, the old one joins',
     has(g6before, 'd1') && !has(g6before, 'd2') && has(g6, 'd3') && !has(g6, 'd1') && has(g6, 'd2') && has(g6, 'd0'), JSON.stringify({ g6before, g6 }));
+  // An address taken away and given back on the same interface (the kernel kept its membership) still counts as
+  // joined: when it then becomes Tailscale's, that interface leaves.
+  execFileSync('sh', ['-c', 'ip addr del 10.78.0.1/24 dev d3']);
+  await p6.scan();
+  execFileSync('sh', ['-c', 'ip addr add 10.78.0.1/24 dev d3']);
+  await p6.scan();
+  ts6 = '10.78.0.1';
+  await p6.scan();
+  const g6moved = joined();
+  check('an address given back on the same interface, then Tailscale\'s, leaves the group there', !has(g6moved, 'd3') && has(g6moved, 'd1') && has(g6moved, 'd0'), JSON.stringify(g6moved));
   await p6.stop();
   execFileSync('sh', ['-c', 'ip link del d3']);
+
+  // 7b. Where the system's multicast route leads to Tailscale, announcements still go out on each local network, and
+  //     none from Tailscale's address.
+  execFileSync('sh', ['-c', 'ip route replace 224.0.0.0/4 dev d2']);
+  const from8 = [];
+  const cap8 = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+  cap8.on('message', (b, r) => { try { if (JSON.parse(b).alias === 'Weft p8') from8.push(r.address); } catch { /* not LocalSend */ } });
+  await new Promise((r) => cap8.bind(53317, r));
+  for (const a of ['10.77.0.1', '100.110.0.1', '100.101.0.1']) cap8.addMembership('224.0.0.167', a);
+  const p8 = createPeer({ dir: `${D}/mine8`, statePath: `${D}/board8.json`, alias: 'Weft p8', port: 53560, trusted: () => true,
+    tailnet: async () => ({ self: '100.101.0.1', peers: [] }), log: () => {} });
+  await p8.start();
+  await until(() => from8.includes('10.77.0.1') && from8.includes('100.110.0.1'), 5000);
+  await p8.scan(); // announces again
+  await until(() => from8.filter((a) => a === '10.77.0.1').length >= 2, 5000);
+  check('announcements go out on each local network even where the multicast route leads to Tailscale', from8.includes('10.77.0.1') && from8.includes('100.110.0.1') && !from8.includes('100.101.0.1'), JSON.stringify(from8));
+  await p8.stop();
+  cap8.close();
+  execFileSync('sh', ['-c', 'ip route replace 224.0.0.0/4 dev d0']);
+
+  // 7c. With no local network up it does not say it multicasts; once one comes up, the next scan does.
+  execFileSync('sh', ['-c', 'for d in d0 d1 d2; do ip link set $d down; done']);
+  const p9 = createPeer({ dir: `${D}/mine9`, statePath: `${D}/board9.json`, alias: 'Weft p9', port: 53570, trusted: () => true,
+    tailnet: async () => ({ self: null, peers: [] }), log: () => {} });
+  await p9.start();
+  // 53317 bound: Node runs the bind's callback in the same task, so the board has had its say by now.
+  const udpBound = await until(() => fs.readFileSync('/proc/net/udp', 'utf8').includes(':D045 '), 5000);
+  const alone = p9.state().me;
+  execFileSync('sh', ['-c', 'ip link set d0 up && ip route replace 224.0.0.0/4 dev d0']);
+  await p9.scan();
+  const up9 = await until(() => p9.state().me.multicast, 5000);
+  check('with no local network up it does not say it multicasts, and once one is up a scan does', udpBound && alone.listening && !alone.multicast && up9, JSON.stringify({ udpBound, alone, up9 }));
+  await p9.stop();
+  execFileSync('sh', ['-c', 'ip link set d1 up && ip link set d2 up']);
 
   // 8. Where another program holds UDP 53317 alone, it never says it multicasts; once the port is free, a scan does.
   const udpBlock = dgram.createSocket({ type: 'udp4' });
