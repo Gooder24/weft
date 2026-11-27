@@ -27,7 +27,7 @@ object Outbox {
         while (true) {
             val done = store.results()
             val res = Net.post(server, store.ca, "/_connect/phone/outbox",
-                JSONObject().put("done", JSONArray(done)).put("wait", if (done.isEmpty() && store.write) wait else 0), token)
+                JSONObject().put("done", JSONArray(done)).put("wait", if (done.isEmpty() && store.write) wait else 0).put("take", store.write), token)
             store.reported(done.map { it.getString("id") })
             val items = res.getJSONArray("items")
             for (i in 0 until items.length()) handle(context, items.getJSONObject(i))

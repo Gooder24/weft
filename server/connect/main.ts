@@ -134,9 +134,9 @@ async function phone(req: Request, url: URL) {
     const device = phones.auth(req.headers.get('Authorization'));
     if (!device) return json({ errcode: 'M_UNKNOWN_TOKEN' }, 401);
     const done = reports(body);
-    const wait = (body as { wait?: unknown } | null)?.wait;
+    const { wait, take } = (body ?? {}) as { wait?: unknown; take?: unknown };
     if (!done) return json({ errcode: 'M_BAD_JSON' }, 400);
-    return json({ items: await host.outbox.next(device, done, typeof wait === 'number' ? Math.min(Math.max(wait, 0), 50) : 0) });
+    return json({ items: await host.outbox.next(device, done, typeof wait === 'number' ? Math.min(Math.max(wait, 0), 50) : 0, take !== false) });
   }
   if (url.pathname === '/_connect/phone/items') {
     const device = phones.auth(req.headers.get('Authorization'));

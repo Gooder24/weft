@@ -465,6 +465,49 @@ describe('outbox', () => {
     expect(await waiting).toHaveLength(1);
   });
 
+  test('what a phone took but never got is not handed out again after the hour', async () => {
+    let now = NOW;
+    const s = await chats();
+    const host = new Host({ ...s.host.opts, now: () => now });
+    await s.say(s.smsRoom, '$k1', { msgtype: 'm.text', body: 'Ahoj' });
+    now += 59 * 60_000;
+    expect(await host.outbox.next(s.dev, [], 0.01)).toHaveLength(1); // its answer is lost on the way
+    now += 2 * 60_000;
+    expect(await host.outbox.next(s.dev, [])).toEqual([]);
+  });
+
+  test('a phone with sending off only reports, and another phone gets what is free', async () => {
+    const s = await chats();
+    const phones = new Phones(s.host.db, () => NOW);
+    const other = phones.claim(phones.code().code, 'Druhý')!.id;
+    s.host.db.exec("UPDATE posted SET device = NULL"); // no phone known for the number
+    await s.say(s.smsRoom, '$k1', { msgtype: 'm.text', body: 'Ahoj' });
+    expect(await s.host.outbox.next(s.dev, [], 0, false)).toEqual([]);
+    expect(await s.host.outbox.next(other, [])).toHaveLength(1);
+  });
+
+  test('a message posted before phones were told apart is answered only while one phone is paired', async () => {
+    const s = await chats();
+    s.host.db.exec("UPDATE posted SET device = NULL");
+    const phones = new Phones(s.host.db, () => NOW);
+    phones.claim(phones.code().code, 'Druhý');
+    await s.say(s.appRoom, '$k1', { msgtype: 'm.text', body: 'Áno', 'm.relates_to': { 'm.in_reply_to': { event_id: s.event } } });
+    expect(notices(s.hs.calls)).toEqual(['Nevedno, z ktorého telefónu táto správa prišla. Odpovedz na novšiu.']);
+  });
+
+  test('an SMS from another phone is never taken for the echo; a plain SMS keeps a first line like „> <3“', async () => {
+    const s = await chats();
+    const phones = new Phones(s.host.db, () => NOW);
+    const other = phones.claim(phones.code().code, 'Druhý')!.id;
+    await s.say(s.smsRoom, '$k1', { msgtype: 'm.text', body: '> <3\nVidíme sa' });
+    expect(await s.host.outbox.next(s.dev, [])).toEqual([{ id: '$k1', kind: 'sms', to: '+421900123456', text: '> <3\nVidíme sa' }]);
+    const before = sends(s.hs.calls).length;
+    await s.host.phone(other, [{ ...sms('7', '0900123456', '> <3\nVidíme sa', NOW + 1000), out: true }]);
+    expect(sends(s.hs.calls).length).toBe(before + 1); // the other phone's own SMS is posted
+    await s.host.phone(s.dev, [{ ...sms('8', '0900123456', '> <3\nVidíme sa', NOW + 2000), out: true }]);
+    expect(sends(s.hs.calls).length).toBe(before + 1); // this phone's is the echo
+  });
+
   test('without a paired phone nothing waits', async () => {
     const { hs, host, smsRoom, say } = await chats();
     host.db.exec('DELETE FROM phones');

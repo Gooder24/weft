@@ -85,7 +85,7 @@ export class Host {
       for (const p of items.toSorted((a, b) => a.ts - b.ts)) {
         const made = phoneItem(p);
         const key = `phone:${phoneKey(p)}`;
-        const echo = made && !this.db.query('SELECT 1 FROM posted WHERE key = ?').get(key) ? this.outbox.echo(p) : null;
+        const echo = made && !this.db.query('SELECT 1 FROM posted WHERE key = ?').get(key) ? this.outbox.echo(p, device) : null;
         if (made && echo) {
           // Karchi wrote it in Weft and the phone sent it: his message is already in the chat.
           this.db.query('INSERT INTO posted (key, connector, room, event, ts, device) VALUES (?, ?, ?, ?, ?, ?)').run(key, made[0].id, echo.room, echo.event, p.ts, device);

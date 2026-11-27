@@ -9649,11 +9649,13 @@ function chatCompose(r, m, t = null) {
     placeholder: T('Napíš správu…'),
     'data-root': r.id,
     oninput: (e) => {
-      const was = slashWord(S.drafts.get(r.id) || '');
+      const before = S.drafts.get(r.id) || '';
+      const was = slashWord(before);
       setDraft(r.id, e.target.value);
-      // An app's chat from the phone: the first letter fixes whom the answer goes to, the person the note named, shown
-      // as a reply from then on; a message that comes meanwhile changes nothing.
-      if (r.app === 'phone' && S.replyTo?.room !== r.id && e.target.value.trim()) {
+      // An app's chat from the phone: the first letter in an empty box fixes whom the answer goes to, the person the
+      // note named, shown as a reply from then on; a message that comes meanwhile changes nothing. A draft kept from
+      // before (a reload) names no one: Karchi picks with Odpovedať.
+      if (r.app === 'phone' && S.replyTo?.room !== r.id && !before.trim() && e.target.value.trim()) {
         const to = phoneTarget(r);
         if (to) S.replyTo = { room: r.id, event: to.event_id };
       }

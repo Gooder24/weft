@@ -65,7 +65,7 @@ export class Outbox {
     const rel = c['m.relates_to'];
     if (rel?.rel_type === 'm.replace') return 'Úpravu do telefónu poslať nejde, platí pôvodná správa.';
     if (c.msgtype !== 'm.text' || typeof c.body !== 'string') return 'Cez telefón ide zatiaľ len text.';
-    const text = plain(c.body).trim();
+    const text = (rel?.['m.in_reply_to'] ? plain(c.body) : c.body).trim();
     if (!text) return 'Prázdna správa sa neposiela.';
     if (text.length > MAX) return `Správa je dlhšia než ${MAX} znakov, neodišla.`;
     if (!this.db.query("SELECT 1 FROM sqlite_master WHERE name = 'phones'").get() || !this.db.query('SELECT 1 FROM phones LIMIT 1').get()) return 'Nemáš spárovaný telefón (Nastavenia → Účty → Telefón).';
@@ -84,14 +84,18 @@ export class Outbox {
       : null;
     if (!row) return 'Odpovedz na konkrétnu správu (Odpovedať), aby odišla správnemu človeku.';
     if (row.device && !known(row.device)) return 'Telefón, z ktorého táto správa prišla, už nie je spárovaný.';
+    // Posted before phones were told apart: with one phone it is that one, with more no one knows which has it.
+    if (!row.device && this.db.query<{ n: number }, []>('SELECT count(*) AS n FROM phones').get()!.n > 1) return 'Nevedno, z ktorého telefónu táto správa prišla. Odpovedz na novšiu.';
     return { kind: 'reply', target: row.key.slice('phone:n:'.length), text, device: row.device };
   }
 
   /** A phone's turn: first what it reports, then what it may send. A long poll (`wait` seconds) gets only what is new
    *  and waits for it; a plain request also gets again what this phone took and has not reported (the phone never
-   *  sends one twice, it reports it instead). */
-  async next(device: string, reports: Report[], wait = 0): Promise<Out[]> {
+   *  sends one twice, it reports it instead). A phone with sending off (`take` false) only reports. */
+  async next(device: string, reports: Report[], wait = 0, take = true): Promise<Out[]> {
     await this.report(device, reports);
+    // Off, or unpaired while its reports were being said: nothing more for it.
+    if (!take || !this.paired(device)) return [];
     const again = wait > 0 ? [] : this.taken(device);
     let out = this.lease(device);
     if (out.length || wait <= 0) return [...again, ...out];
@@ -101,7 +105,7 @@ export class Outbox {
       this.waiting.add(wake);
     });
     // Unpaired while it waited: nothing more for it.
-    if (!this.db.query('SELECT 1 FROM phones WHERE id = ?').get(device)) return [];
+    if (!this.paired(device)) return [];
     out = this.lease(device);
     return out;
   }
@@ -113,8 +117,14 @@ export class Outbox {
     return rows.filter((r) => mark.run(device, this.now(), r.event).changes > 0).map(out);
   }
 
+  private paired(device: string) {
+    return !!this.db.query('SELECT 1 FROM phones WHERE id = ?').get(device);
+  }
+
+  /** Again only within the hour since Karchi wrote it: a phone that never got the first answer must not send it late. */
   private taken(device: string): Out[] {
-    return this.db.query<Row, [string]>("SELECT event, room, kind, target, text FROM outbox WHERE state = 'out' AND device = ? ORDER BY created LIMIT 20").all(device).map(out);
+    return this.db.query<Row, [string, number]>("SELECT event, room, kind, target, text FROM outbox WHERE state = 'out' AND device = ? AND created >= ? ORDER BY created LIMIT 20")
+      .all(device, this.now() - HOUR).map(out);
   }
 
   private async report(device: string, reports: Report[]) {
@@ -139,11 +149,11 @@ export class Outbox {
 
   /** A sent SMS the phone reads back from its own store is Karchi's message from Weft: the room has it already. Only
    *  one sent after the phone took the message (an SMS he typed on the phone before is his own). */
-  echo(p: PhoneItem) {
+  echo(p: PhoneItem, device: string) {
     if (p.kind !== 'sms' || !p.out || !p.address) return null;
-    const row = this.db.query<{ event: string; room: string }, [string, string, number, number]>(`SELECT event, room FROM outbox
-      WHERE kind = 'sms' AND target = ? AND text = ? AND echoed = 0 AND state IN ('out', 'sent', 'unknown') AND leased BETWEEN ? AND ?
-      ORDER BY created LIMIT 1`).get(number(p.address), p.text.trim(), p.ts - DAY, p.ts + 60_000);
+    const row = this.db.query<{ event: string; room: string }, [string, string, string, number, number]>(`SELECT event, room FROM outbox
+      WHERE kind = 'sms' AND device = ? AND target = ? AND text = ? AND echoed = 0 AND state IN ('out', 'sent', 'unknown') AND leased BETWEEN ? AND ?
+      ORDER BY created LIMIT 1`).get(device, number(p.address), p.text.trim(), p.ts - DAY, p.ts + 60_000);
     if (row) this.db.query('UPDATE outbox SET echoed = 1 WHERE event = ?').run(row.event);
     return row;
   }
