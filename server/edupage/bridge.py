@@ -119,7 +119,7 @@ SIGNIN_KEY = "sk.karchi.edupage.signin"
 # Each homework's material is read once; a handful per poll keeps a fresh login's backfill gentle.
 MATERIALS_PER_POLL = 5
 MAX_FILE_BYTES = 25 * 1024 * 1024
-EDUPAGE_FILES = re.compile(r"cloud-[a-z0-9]+\.edupage\.org")
+EDUPAGE_FILES = re.compile(r"cloud-([0-9]+|[a-z])\.edupage\.org")
 WEEKDAYS = ["pondelok", "utorok", "streda", "štvrtok", "piatok", "sobota", "nedeľa"]
 # Content key on everything the bridge posts, so its own events are never sent back to EduPage.
 MARK = "sk.karchi.edupage"

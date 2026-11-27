@@ -5728,7 +5728,8 @@ function eduActions(ev) {
 // An EduPage message's attachments: the bridge writes them under its text as „Prílohy:“ lines, `- name: address`.
 // Weft shows them like a homework's files; the bridge copies each from EduPage only when it is shown (a picture) or
 // clicked (a file), POST /attachment, and keeps the copy.
-const EDU_ATT_BLOCK = /\n*Prílohy:\n((?:- .+: https:\/\/[a-z0-9-]+\.edupage\.org\/\S+[ \t]*(?:\n|$))+)\s*$/;
+const EDU_ATT_BLOCK = /\n*Prílohy:\n((?:- .+: https:\/\/\S+[ \t]*(?:\n|$))+)\s*$/;
+const EDU_SITE = /^https:\/\/[a-z0-9-]+\.edupage\.org\//; // only these the bridge copies; any other stays a link
 const EDU_PICTURE = /\.(jpe?g|png|gif|webp)$/i;
 const eduAtt = new Map(); // edupage.org address -> its Matrix copy { name, url, mimetype, size, w, h } | 'loading' | 'failed'
 const eduAttWait = new Map(); // edupage.org address -> the bridge's answer on its way
@@ -5752,6 +5753,7 @@ function eduParts(ev) {
     const at = line.lastIndexOf(': https://');
     const src = line.slice(at + 2).trim();
     const name = line.slice(2, at);
+    if (!EDU_SITE.test(src)) return { name, src, state: 'away' };
     const got = eduAtt.get(src);
     return typeof got === 'object' ? { ...got, src } : { name, src, mimetype: EDU_PICTURE.test(name) ? 'image/*' : '', state: got };
   });
@@ -5765,8 +5767,9 @@ function eduFiles(ev) {
   const pictures = eduPictures(ev);
   return h('div', { class: 'edufiles' }, files.map((f, i) => {
     if (typeof f?.url !== 'string' && f?.src) {
-      if (f.state === 'failed') {
-        return h('a', { class: 'mfile', href: f.src, target: '_blank', rel: 'noopener noreferrer', title: T('Weft ju nevedel načítať, otvorí sa na EduPage.') }, icon('file'), f.name);
+      if (f.state === 'failed' || f.state === 'away') {
+        const title = f.state === 'away' ? T('Otvorí sa v prehliadači.') : T('Weft ju nevedel načítať, otvorí sa na EduPage.');
+        return h('a', { class: 'mfile', href: f.src, target: '_blank', rel: 'noopener noreferrer', title }, icon('file'), f.name);
       }
       if (EDU_PICTURE.test(f.name)) {
         if (!f.state) eduAttFetch(f.src);

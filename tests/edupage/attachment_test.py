@@ -79,6 +79,8 @@ class Session:
             return Resp(b"", "text/html", 301, "https://ina.edupage.org/cloud?z")
         if "cloud-2.edupage.org" in url:
             return Resp(JPEG, "image/jpeg")
+        if "mixcloud" in url:
+            return Resp(b"", "text/html", 301, "https://cloud-a1.edupage.org/cloud?z")
         if "barecloud" in url:
             return Resp(b"", "text/html", 301, "https://cloud.edupage.org/cloud?z")
         if self.login:
@@ -152,8 +154,8 @@ except b.ApiError as err:
     check("over 25 MB without a stated size: reading stops, not copied", err.status == 413 and len(uploads) == 2
           and b.ACCOUNT.edu.session.chunks == b.MAX_FILE_BYTES // (1 << 20) + 1, (err.status, b.ACCOUNT.edu.session.chunks))
 
-for key, name in (("/elearning/away", "von.pdf"), ("/elearning/moved", "presun.jpg"), ("/elearning/tocloud", "c.jpg"), ("/elearning/tocloudb", "e.pdf"), ("/elearning/othercloud", "d.jpg"), ("/elearning/barecloud", "f.jpg")):
-    db.execute("INSERT INTO raw VALUES (?, 'sprava', 0, ?)", (len(key), json.dumps({**item, "timelineid": len(key), "data": json.dumps({"attachements": {key: name}})})))
+for n, (key, name) in enumerate((("/elearning/away", "von.pdf"), ("/elearning/moved", "presun.jpg"), ("/elearning/tocloud", "c.jpg"), ("/elearning/tocloudb", "e.pdf"), ("/elearning/othercloud", "d.jpg"), ("/elearning/barecloud", "f.jpg"), ("/elearning/mixcloud", "g.jpg"))):
+    db.execute("INSERT INTO raw VALUES (?, 'sprava', 0, ?)", (100 + n, json.dumps({**item, "timelineid": 100 + n, "data": json.dumps({"attachements": {key: name}})})))
 try:
     b.message_attachment(db, BASE + "/elearning/away")
     check("a redirect off the school's site is not followed", False, "no error")
@@ -173,6 +175,12 @@ try:
 except b.ApiError as err:
     check("a redirect to a file store host without its number is not followed", err.status == 502
           and not any(g.startswith("https://cloud.edupage.org") for g in b.ACCOUNT.edu.session.gets), err.status)
+try:
+    b.message_attachment(db, BASE + "/elearning/mixcloud")
+    check("a redirect to a file store host neither numbered nor lettered is not followed", False, "no error")
+except b.ApiError as err:
+    check("a redirect to a file store host neither numbered nor lettered is not followed", err.status == 502
+          and not any("cloud-a1" in g for g in b.ACCOUNT.edu.session.gets), err.status)
 offsite = {**item, "timelineid": 4, "data": json.dumps({"attachements": {"https://example.org/subor.pdf": "subor.pdf"}})}
 db.execute("INSERT INTO raw VALUES (4, 'sprava', 0, ?)", (json.dumps(offsite),))
 gets = len(b.ACCOUNT.edu.session.gets)
