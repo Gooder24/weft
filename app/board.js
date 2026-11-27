@@ -100,7 +100,7 @@ export function createBoard({ h, render, isOpen, open }) {
     if (it.text != null) return copy(it);
     const can = whole(it);
     if (can.length === 1) return api.call('open', it.id, can[0]);
-    return api.call('show', it.id, can[0] ?? 0);
+    if (can.length) return api.call('show', it.id, can[0]);
   }
   const primaryLabel = (it) => (it.text != null && (it.dir === 'in' || it.status === 'done') ? (b.copied === it.id ? T('Skopírované') : T('Kopírovať'))
     : it.dir === 'out' && it.status !== 'done' ? T('Skúsiť znova') : whole(it).length === 1 ? T('Otvoriť') : T('Priečinok'));
@@ -158,8 +158,8 @@ export function createBoard({ h, render, isOpen, open }) {
       h('small', { class: bad ? 'err' : '' }, [dirLabel, time(it.at), status].filter(Boolean).join(' · ')),
       busy ? h('progress', { max: it.total || 1, value: it.got || 0 }) : null),
     h('div', { class: 'board-acts' },
-      busy ? null : h('button', { class: 'ghost', type: 'button', onclick: () => primary(it) }, primaryLabel(it)),
-      it.files && it.dir === 'in' && !busy && it.files.length === 1 ? h('button', { class: 'ghost', type: 'button', onclick: () => api.call('show', it.id, 0) }, T('Priečinok')) : null,
+      busy || (it.text == null && !whole(it).length) ? null : h('button', { class: 'ghost', type: 'button', onclick: () => primary(it) }, primaryLabel(it)),
+      it.files && it.dir === 'in' && !busy && whole(it).length === 1 ? h('button', { class: 'ghost', type: 'button', onclick: () => api.call('show', it.id, whole(it)[0]) }, T('Priečinok')) : null,
       busy ? null : h('button', { class: 'ghost', type: 'button', title: T('Zmazať z nástenky (súbor na disku ostane)'), 'aria-label': T('Zmazať z nástenky'), onclick: () => remove(it) }, icon('trash'))));
   }
 
