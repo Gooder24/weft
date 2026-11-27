@@ -172,7 +172,7 @@ said = []
 
 class Rooms(b.Rooms):
     def school_room(self): return ("!room", "@edupage_school:test")
-    def say(self, room, text, answers=""): said.append(text)
+    def say(self, room, text, answers="", txn=""): said.append(text)
     def join(self, room, mxid): pass
 
 
@@ -269,7 +269,7 @@ check("a connection that never reached EduPage: said at once", len(said) == 2 an
 # A gateway's 504 after EduPage took it is not a failure either; the same Matrix event delivered again is not sent again;
 # one that shows up only after its "neodišla" is linked, gets its ✓, and that notice is taken back.
 class Rooms2(Rooms):
-    def say(self, room, text, answers=""):
+    def say(self, room, text, answers="", txn=""):
         said.append(text)
         return f"$notice{len(said)}"
 
@@ -325,6 +325,34 @@ check("…and taken back after the next poll, without saying „neodišla“ aga
 db.execute("INSERT INTO unsure VALUES ('$late', '!room', '2020-01-01 00:00:00', '$n')")  # linked, its redaction still due
 Rooms2(db)
 check("a linked send's pending redaction survives a restart's cleanup", db.execute("SELECT 1 FROM unsure WHERE event_id = '$late'").fetchone())
+db.execute("DELETE FROM unsure")
+
+# The homeserver takes the "neodišla" but its answer is lost: the retry after the next poll is the same notice.
+class Rooms3(b.Rooms):
+    def school_room(self): return ("!room", "@edupage_school:test")
+    def join(self, room, mxid): pass
+
+
+acct.edu = Edu()
+Session.lost = 504
+acct.outbox.put(("!room", "$twice", "$own", "Dvakrát", "", [], ""))
+acct.send_outbox(rooms)
+Session.lost = None
+db.execute("UPDATE unsure SET at = '2020-01-01 00:00:00' WHERE event_id = '$twice'")
+txns = []
+def lost_answer(method, path, body=None, **k):
+    txns.append(path)
+    if len(txns) == 1:
+        raise b.urllib.error.URLError("answer lost")
+    return {"event_id": "$said"}
+b.matrix = lost_answer
+for _ in range(2):
+    try:
+        Rooms3(db).settle_unsure()
+    except b.urllib.error.URLError:
+        pass
+check("a notice whose answer was lost is sent again as the same transaction", len(txns) == 2 and txns[0] == txns[1]
+      and db.execute("SELECT notice FROM unsure WHERE event_id = '$twice'").fetchone() == ("$said",), txns)
 db.execute("DELETE FROM unsure")
 
 old = sqlite3.connect(":memory:")

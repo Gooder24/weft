@@ -501,12 +501,13 @@ class Rooms:
         self.db.execute("INSERT OR IGNORE INTO items VALUES (?, ?, ?)", (item_id, root, event_id))
         self.db.commit()
 
-    def say(self, room_id: str, text: str, answers: str = "") -> str:
-        """A bot notice, as a reply to the admin's message it is about when there is one; returns its event id."""
+    def say(self, room_id: str, text: str, answers: str = "", txn: str = "") -> str:
+        """A bot notice, as a reply to the admin's message it is about when there is one; returns its event id. The same
+        `txn` sent again is the same notice (the homeserver keeps transaction ids), so a retry never says it twice."""
         content = {"msgtype": "m.notice", "body": text, MARK: 0}
         if answers:
             content["m.relates_to"] = {"m.in_reply_to": {"event_id": answers}}
-        return str((matrix("PUT", f"/rooms/{q(room_id)}/send/m.room.message/{uuid.uuid4().hex}", content) or {}).get("event_id") or "")
+        return str((matrix("PUT", f"/rooms/{q(room_id)}/send/m.room.message/{txn or uuid.uuid4().hex}", content) or {}).get("event_id") or "")
 
     def take_back(self, event_id: str, room_id: str, notice: str) -> None:
         """A send with a lost answer that EduPage showed after all: its early "neodišla" goes (tried again after each
@@ -528,7 +529,8 @@ class Rooms:
         cut = (datetime.now(LOCAL) - timedelta(minutes=UNSURE_MINUTES)).strftime("%Y-%m-%d %H:%M:%S")
         for event_id, room_id in self.db.execute("SELECT event_id, room_id FROM unsure WHERE at < ? AND notice = ''"
                                                  " AND event_id NOT IN (SELECT event_id FROM items)", (cut,)).fetchall():
-            notice = self.say(room_id, "Táto správa neodišla do EduPage. Skús to znova alebo odpovedz na edupage.org.", event_id)
+            notice = self.say(room_id, "Táto správa neodišla do EduPage. Skús to znova alebo odpovedz na edupage.org.", event_id,
+                              "unsure-" + hashlib.sha256(event_id.encode()).hexdigest()[:32])
             # The unnamed row stays its day: if EduPage shows it later after all, the poll links it and takes this back.
             self.db.execute("UPDATE unsure SET notice = ? WHERE event_id = ?", (notice or "-", event_id))
             self.db.commit()
