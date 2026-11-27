@@ -247,7 +247,8 @@ function createPeer(opts) {
   // A device known by a certificate's fingerprint (64 hex digits, as LocalSend's) must show that certificate again.
   const call = (dev, method, pathq, o = {}) => request(dev, method, pathq, { ...o, tls: st.tls, expect: CERT_FP.test(dev.fingerprint || '') ? dev.fingerprint : null });
   const snapshot = () => ({
-    me: { alias, port, lan: st.lan, multicast: !!sock, tailnet: !!selfIp, listening: listeningOn.length > 0, error: listenError, dir },
+    // Listening only where the setting wants it: while it moves (Tailscale only ↔ every interface), not yet.
+    me: { alias, port, lan: st.lan, multicast: !!sock, tailnet: !!selfIp, listening: listeningOn.length > 0 && listeningOn.join() === wanted().join(), error: listenError, dir },
     devices: Object.values(st.devices).map((d) => ({ ...d, online: Date.now() - d.seen < ONLINE_MS })).sort((a, b) => b.seen - a.seen),
     items: st.items,
     ask: asking && { id: asking.id, device: asking.device, count: asking.count, size: asking.size, names: asking.names, text: asking.text },
@@ -606,8 +607,9 @@ function createPeer(opts) {
       if (stopped) return;
       syncMulticast();
       dropUnheard();
-      emit('state'); // where it listens now, before the probes take their time
-      await Promise.all(peers.filter((p) => p.online).map((p) => probe(p.ip)));
+      const asked = peers.filter((p) => p.online);
+      if (asked.length) emit('state'); // where it listens now, before the probes take their time (it says so again after)
+      await Promise.all(asked.map((p) => probe(p.ip)));
     } catch (err) {
       log('board scan', err.message);
     }
@@ -634,7 +636,7 @@ function createPeer(opts) {
     }
   }
   /** Multicast while in the local network and listening (an announcement names a port that answers). */
-  const syncMulticast = () => multicast(st.lan && listeningOn.length > 0);
+  const syncMulticast = () => multicast(st.lan && listeningOn.includes('0.0.0.0'));
   function multicast(on) {
     if (!on) { try { sock?.close(); } catch { /* closed */ } sock = null; return; }
     if (sock || stopped) return;
@@ -661,16 +663,19 @@ function createPeer(opts) {
     listening = listening.then(rebind, rebind);
     return listening;
   }
+  /** Where the board listens: in the local network on every interface, else on its Tailscale address (and hosts). */
+  function wanted() { return st.lan ? ['0.0.0.0'] : [...new Set([selfIp, ...extraHosts].filter(Boolean))]; }
   async function rebind() {
     if (stopped) return;
-    const want = st.lan ? ['0.0.0.0'] : [...new Set([selfIp, ...extraHosts].filter(Boolean))];
+    const want = wanted();
     if (want.join() === listeningOn.join() && servers.length) return;
+    const had = servers.length > 0;
     // Closing stops listening at once; what is still open on it (a transfer) ends on its own, or at stop().
     for (const s of servers) { retired.add(s); s.close(() => retired.delete(s)); s.closeIdleConnections?.(); }
     servers = [];
     listeningOn = [];
     listenError = want.length ? '' : 'no-tailnet';
-    emit('state'); // not listening until the new bind is done
+    if (had) emit('state'); // not listening until the new bind is done (a retry where nothing listened changes nothing)
     // 53317 is LocalSend's; when the LocalSend app has it, the next free one (the board says which).
     for (const candidate of [wantPort, wantPort + 1, wantPort + 2, wantPort + 3]) {
       const opened = [];

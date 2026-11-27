@@ -988,6 +988,22 @@ const settled = (p, id) => until(() => { const it = item(p, id); return it && ![
     await k.stop();
   });
 
+  await check('a scan that changes nothing tells the page once', async () => {
+    // Without Tailscale, off the local network: nowhere to listen, nothing to probe, the same state on every scan.
+    const events = [];
+    const k = createPeer({ dir: path.join(tmp, 'k19', 'in'), statePath: path.join(tmp, 'k19.json'), alias: 'Weft k19', lan: false, port: await freePort(),
+      trusted: () => true, tailnet: async () => ({ self: null, peers: [] }), onEvent: (ev) => events.push(ev), log: () => {} });
+    await k.start();
+    const from = events.length;
+    await k.scan();
+    await k.scan();
+    const seen = events.slice(from).filter((e) => e.type === 'state').map((e) => JSON.stringify(e.state.me));
+    await k.stop();
+    assert.equal(seen.length, 2, seen.join('\n'));
+    assert.equal(seen[0], seen[1]);
+    assert.ok(seen[0].includes('"error":"no-tailnet"'), seen[0]);
+  });
+
   await check('a probe that stop() caught midway asks nothing more', async () => {
     let held = null, afterStop = 0, done = false;
     const phone = require('node:net').createServer((c) => { if (done) { afterStop++; c.destroy(); } else held = c; });

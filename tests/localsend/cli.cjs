@@ -105,6 +105,33 @@ console.log('runtime', process.versions.electron ? `Electron ${process.versions.
   await done;
   const landed = path.join(D, 'mine2', 'napoly.bin');
   check('the transfer halfway then still lands whole', upStatus === 200 && fs.existsSync(landed) && fs.readFileSync(landed).equals(big), String(upStatus));
+
+  // Off, and on again while off still binds its Tailscale address: until every interface listens, no state says it
+  // listens in the local network or multicasts (an announcement would name a port that refuses), then both do.
+  await p2.setLan(true);
+  const netm = require('node:net');
+  const listenOrig = netm.Server.prototype.listen;
+  let entered = false;
+  let open;
+  const held = new Promise((r) => { open = r; });
+  netm.Server.prototype.listen = function (...a) {
+    if (a[1] === '0.0.0.0' && typeof a[2] === 'function') { const cb = a[2]; a[2] = (...x) => { p2events.push({ type: 'bound-everywhere' }); cb(...x); }; }
+    if (a[1] === '100.101.0.1') { entered = true; held.then(() => listenOrig.apply(this, a)); return this; }
+    return listenOrig.apply(this, a);
+  };
+  const from = p2events.length;
+  const toggled = p2.setLan(false);
+  await until(() => entered, 5000);
+  const back = p2.setLan(true);
+  open();
+  await Promise.all([toggled, back]);
+  netm.Server.prototype.listen = listenOrig;
+  const seen = p2events.slice(from);
+  const bound = seen.findIndex((e) => e.type === 'bound-everywhere');
+  const early = seen.slice(0, bound < 0 ? seen.length : bound).filter((e) => e.state?.me.lan && (e.state.me.multicast || e.state.me.listening)).map((e) => e.state.me);
+  const end = p2.state().me;
+  check('off and at once on again: nothing says local network or multicasts before every interface listens, then both', entered && bound >= 0 && !early.length && end.lan && end.listening && end.multicast && await knock('127.0.0.1'),
+    JSON.stringify({ entered, bound, early, end: { lan: end.lan, listening: end.listening, multicast: end.multicast } }));
   await p2.stop();
 
   // 4. Turned on where its port is taken on the local network, it announces the port it got instead.
@@ -129,11 +156,18 @@ console.log('runtime', process.versions.electron ? `Electron ${process.versions.
 
   // 5. Turned on where every port it tries is taken on the local network, it announces nothing: no port answers.
   const blockers = await Promise.all([53520, 53521, 53522, 53523].map((port) => new Promise((r) => { const b = require('node:net').createServer().listen(port, '10.77.0.1', () => r(b)); })));
+  const p5events = [];
   const p5 = createPeer({ dir: `${D}/mine5`, statePath: `${D}/board5.json`, alias: 'Weft p5', port: 53520, lan: false, trusted: () => true,
-    tailnet: async () => ({ self: '100.101.0.1', peers: [] }), log: () => {} });
+    tailnet: async () => ({ self: '100.101.0.1', peers: [] }), onEvent: (e) => p5events.push(e), log: () => {} });
   await p5.start();
   await p5.setLan(true);
   check('turned on where every port is taken, it announces nothing', p5.state().me.listening === false && p5.state().me.multicast === false, JSON.stringify(p5.state().me));
+  // Its next scans try the ports again; the page keeps hearing „ports taken“, never „starting“ in between.
+  const p5from = p5events.length;
+  await p5.scan();
+  await p5.scan();
+  const p5said = p5events.slice(p5from).map((e) => e.state.me.error);
+  check('while every port stays taken, a scan never says it is starting', p5said.length > 0 && p5said.every((x) => x === 'port'), JSON.stringify(p5said));
   await p5.stop();
   for (const b of blockers) b.close();
 
