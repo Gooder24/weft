@@ -960,6 +960,23 @@ const settled = (p, id) => until(() => { const it = item(p, id); return it && ![
     assert.equal(k.saved().items.filter((x) => x.dir === 'in').length, 1);
   });
 
+  await check('where it listens is told at once, before its first probes end', async () => {
+    let held = null;
+    const phone = require('node:net').createServer((c) => { held = c; });
+    await new Promise((r) => phone.listen(0, '127.0.0.7', r));
+    const events = [];
+    const s = createPeer({ dir: path.join(tmp, 's3', 'in'), statePath: path.join(tmp, 's3.json'), alias: 'Weft s3', lan: false, hosts: ['127.0.0.1'], port: await freePort(),
+      probePort: phone.address().port, tailnet: async () => ({ self: '127.0.0.250', peers: [{ ip: '127.0.0.7', online: true }] }), onEvent: (ev) => events.push(ev), log: () => {} });
+    const starting = s.start();
+    await until(() => held); // its first probe hangs, as a sleeping phone's does
+    const told = events.some((e) => e.state.me.listening);
+    held.destroy();
+    await starting;
+    await s.stop();
+    phone.close();
+    assert.ok(told, 'the page heard nothing while the probe hung');
+  });
+
   await check('a probe that stop() caught midway asks nothing more', async () => {
     let held = null, afterStop = 0, done = false;
     const phone = require('node:net').createServer((c) => { if (done) { afterStop++; c.destroy(); } else held = c; });

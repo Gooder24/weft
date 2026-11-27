@@ -116,7 +116,7 @@ export function createBoard({ h, render, isOpen, open }) {
 
   function statusLine() {
     const me = b.st?.me;
-    if (!me) return T('Spúšťam LocalSend…');
+    if (!me || (!me.listening && !me.error)) return T('Spúšťam LocalSend…'); // the first scan is still looking for Tailscale
     if (!me.listening && me.error === 'no-tailnet') return T('Tailscale na tomto počítači nebeží, takže nič neprijme. Zapni ho alebo „Aj v miestnej sieti“.');
     if (!me.listening) return me.error === 'port' ? T('Porty 53317 až 53320 sú obsadené, takže nič neprijme.') : T`Neprijíma: ${me.error}`;
     return [

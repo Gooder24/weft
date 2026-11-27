@@ -606,6 +606,7 @@ function createPeer(opts) {
       if (stopped) return;
       syncMulticast();
       dropUnheard();
+      emit('state'); // where it listens now, before the probes take their time
       await Promise.all(peers.filter((p) => p.online).map((p) => probe(p.ip)));
     } catch (err) {
       log('board scan', err.message);
