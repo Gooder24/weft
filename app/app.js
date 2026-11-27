@@ -10839,32 +10839,41 @@ function newChatView(o) {
   const mx = o.only ? null : matrixAsk(o);
   const waIcon = LINKS.find((a) => a.id === 'whatsapp').icon;
   const mxApp = LINKS.find((a) => a.id === 'matrix');
+  const mxRow = mx ? [{ go: () => matrixStart(o, mx),
+    av: [h('div', { class: 'icon grpicon' }, icon(mx.room ? 'users' : 'plus')), h('img', { class: 'badge', src: mxApp.icon, alt: '' })],
+    title: mx.user ? T`Nový chat na Matrixe s ${mx.user}` : mx.room ? T`Vstúpiť do ${mx.room}` : T('Nový chat na Matrixe'),
+    note: mx.user || mx.room ? appLabel(mxApp) : T('Napíš @meno:server alebo #miestnosť:server') }] : [];
+  // Typed straight hits (a number, a mail address, @name:server) come first; then Nedávni, and under them where to
+  // start on each network.
+  const starts = o.link || o.only ? [] : startNets(o, query, mailTo);
   const top = [
+    ...(mailTo ? starts : []),
     ...(number ? [{ go: () => { openRemote(o, 'whatsapp'); remoteSearch(o); },
       av: [h('div', { class: 'icon grpicon' }, icon('search')), h('img', { class: 'badge', src: waIcon, alt: '' })],
       title: T`Napísať na WhatsApp +${number}`, note: T('WhatsApp najprv overí, či toto číslo má') }] : []),
-    ...(o.link || o.only ? [] : startNets(o, query, mailTo)),
+    ...(mx && (mx.user || mx.room) ? mxRow : []),
+  ];
+  const nets = [
+    ...(mailTo ? [] : starts),
     ...(group ? [{ go: () => openGroup(o),
       av: [h('div', { class: 'icon grpicon' }, icon('users')), h('img', { class: 'badge', src: waIcon, alt: '' })],
       title: T('Nová skupina na WhatsAppe'), note: T('Vyber ľudí a názov · WhatsApp im to hneď oznámi') }] : []),
-    ...(mx ? [{ go: () => matrixStart(o, mx),
-      av: [h('div', { class: 'icon grpicon' }, icon(mx.room ? 'users' : 'plus')), h('img', { class: 'badge', src: mxApp.icon, alt: '' })],
-      title: mx.user ? T`Nový chat na Matrixe s ${mx.user}` : mx.room ? T`Vstúpiť do ${mx.room}` : T('Nový chat na Matrixe'),
-      note: mx.user || mx.room ? appLabel(mxApp) : T('Napíš @meno:server alebo #miestnosť:server') }] : []),
+    ...(mx && !mx.user && !mx.room ? mxRow : []),
   ];
-  o.flat = [...top.map((t) => t.go), ...people.map(({ x }) => () => startChat(x)), ...(o.only ? [] : [outside])];
+  o.flat = [...top.map((t) => t.go), ...people.map(({ x }) => () => startChat(x)), ...nets.map((t) => t.go), ...(o.only ? [] : [outside])];
   if (o.index >= o.flat.length) o.index = 0;
   const shift = top.length;
+  const startRow = (t, i) => resultRow(o, null, i, [h('div', { class: 'avwrap' }, t.av), h('div', { class: 'rmeta' }, h('b', {}, t.title), h('small', {}, t.note))]);
   const onlyApp = o.only && APPS.find((a) => a.id === o.only);
   return [
     cmdInput(o, o.link ? T`Kto je ${S.rooms.get(o.link)?.bridgeName || 'to'}? Jeho stará história pôjde s ním` : o.only ? ONLY_ASK[o.only]() : T('Komu chceš napísať?')),
     h('div', { class: 'results', ...listScroll(o) },
-      top.length && !query ? h('div', { class: 'rsec' }, T('Začať nový chat')) : null,
-      top.map((t, i) => resultRow(o, null, i, [h('div', { class: 'avwrap' }, t.av), h('div', { class: 'rmeta' }, h('b', {}, t.title), h('small', {}, t.note))])),
+      top.map(startRow),
       people.length ? [h('div', { class: 'rsec' }, onlyApp ? onlyApp.name : query ? T('Ľudia') : T('Nedávni')), people.map(({ x }, i) => resultRow(o, x, i + shift, [
         h('div', { class: 'avwrap' }, avatar(x.avatar, x.name, 40), APPS.find((a) => a.id === x.app) ? h('img', { class: 'badge', src: APPS.find((a) => a.id === x.app).icon, alt: '' }) : null),
         h('div', { class: 'rmeta' }, h('b', {}, highlighted(x.name, o.query)), h('small', {}, [APPS.find((a) => a.id === x.app)?.name || '', x.note].filter(Boolean).join(' · '))),
       ]))] : h('div', { class: 'empty' }, T('Nikoho takého nepoznám.')),
+      nets.length ? [h('div', { class: 'rsec' }, T('Začať nový chat')), nets.map((t, i) => startRow(t, i + shift + people.length))] : null,
       o.only ? h('div', { class: 'rnote dim' }, T('Esc sa vráti ku všetkým sieťam.')) : resultRow(o, null, o.flat.length - 1, [
         h('div', { class: 'avwrap' }, h('div', { class: 'icon outside' }, icon('search'))),
         h('div', { class: 'rmeta' }, h('b', {}, o.query.trim() ? T`Hľadať „${o.query.trim()}“ mimo kontaktov` : T('Hľadať mimo kontaktov')),
