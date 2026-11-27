@@ -31,7 +31,7 @@ describe('render', () => {
     expect(out).toContain('elements = { 201:db8::1, 300::2 }');
     expect(out).toContain('iifname "tun9" ip6 saddr @contacts tcp dport 8449 accept');
     expect(out).toContain('iifname "tun9" drop');
-    expect(out).toContain('ip6 daddr 200::/7 oifname != "tun9" reject');
+    expect(out).toContain('ip6 daddr 200::/7 oifname != { "tun9", "lo" } reject');
   });
   test('the allowlist names the same servers, with or without a port', () => {
     const out = allowlist(p);

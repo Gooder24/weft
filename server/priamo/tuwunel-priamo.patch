@@ -1,5 +1,5 @@
 diff --git a/Cargo.lock b/Cargo.lock
-index 85e3867..96d7931 100644
+index 85e38672f..96d7931ad 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
 @@ -5642,6 +5642,7 @@ dependencies = [
@@ -11,10 +11,10 @@ index 85e3867..96d7931 100644
   "sd-notify",
   "serde",
 diff --git a/src/core/config/mod.rs b/src/core/config/mod.rs
-index 415a55b..ca464e0 100644
+index 415a55bf2..616367716 100644
 --- a/src/core/config/mod.rs
 +++ b/src/core/config/mod.rs
-@@ -3432,6 +3432,27 @@ pub struct Config {
+@@ -3432,6 +3432,30 @@ pub struct Config {
  	#[serde(default = "default_startup_netburst_keep")]
  	pub startup_netburst_keep: i64,
  
@@ -27,15 +27,18 @@ index 415a55b..ca464e0 100644
 +	#[serde(default)]
 +	pub startup_hello: bool,
 +
-+	/// Accept any TLS certificate from a federation peer whose server name is
-+	/// an IPv6 address in Yggdrasil's 200::/7.
++	/// Accept any TLS certificate from a federation peer reached at an IPv6
++	/// address in Yggdrasil's 200::/7: its server name, or where its name
++	/// delegates.
 +	///
 +	/// Yggdrasil derives such an address from the node's public key and
 +	/// encrypts traffic to it end to end, so the overlay already authenticates
 +	/// the peer. Enable this only where 200::/7 can leave the machine through
 +	/// the Yggdrasil interface alone (a firewall rule); otherwise anyone who
-+	/// routes that range could pose as a peer. Every other name's certificate
-+	/// is verified as usual.
++	/// routes that range could pose as a peer. For the same reason federation
++	/// then connects directly, never through a proxy. Every other address's
++	/// certificate is verified as usual, and the other clients (media, URL
++	/// previews, pushers) are not affected.
 +	#[serde(default)]
 +	pub yggdrasil_trust_overlay: bool,
 +
@@ -43,7 +46,7 @@ index 415a55b..ca464e0 100644
  	/// remote), and block non-admin users from receiving remote room invites.
  	///
 diff --git a/src/service/Cargo.toml b/src/service/Cargo.toml
-index 4ce0b6e..2e9243d 100644
+index 4ce0b6e36..2e9243d1b 100644
 --- a/src/service/Cargo.toml
 +++ b/src/service/Cargo.toml
 @@ -112,6 +112,7 @@ regex.workspace = true
@@ -55,7 +58,7 @@ index 4ce0b6e..2e9243d 100644
  rustyline-async.optional = true
  serde_html_form.workspace = true
 diff --git a/src/service/client/mod.rs b/src/service/client/mod.rs
-index 48e075b..4467e38 100644
+index 48e075b74..e35d7ecbd 100644
 --- a/src/service/client/mod.rs
 +++ b/src/service/client/mod.rs
 @@ -16,6 +16,7 @@
@@ -66,27 +69,39 @@ index 48e075b..4467e38 100644
  #[cfg(test)]
  mod tests;
  
-@@ -325,11 +326,16 @@ fn base(config: &Config, proxy: &ProxySnapshot, name: Option<&str>) -> Result<Cl
- 		.pool_max_idle_per_host(config.request_idle_per_host.into())
- 		.user_agent(user_agent)
- 		.redirect(Policy::limited(6))
--		.danger_accept_invalid_certs(config.allow_invalid_tls_certificates)
- 		.connection_verbose(cfg!(debug_assertions))
- 		// Check if env var is set to avoid locking the keyfile mutex on every connection open
- 		.tls_sslkeylogfile(std::env::var_os("SSLKEYLOGFILE").is_some());
+@@ -237,7 +238,8 @@ fn make_federation(
+ 	services: &Services,
+ 	configure: impl Fn(ClientBuilder) -> ClientBuilder,
+ ) -> Result<Federation> {
+-	let builder = || base(&services.config, &services.client.proxy, None);
++	let builder = || base(&services.config, &services.client.proxy, None)
++		.and_then(|builder| overlay(&services.config, builder));
+ 	let direct = builder()?.dns_resolver(Arc::clone(&services.resolver.resolver));
+ 	let srv = builder()?.dns_resolver(Arc::clone(&services.resolver.resolver.hooked));
  
-+	let builder = if config.yggdrasil_trust_overlay && !config.allow_invalid_tls_certificates {
-+		builder.tls_backend_preconfigured(overlay_tls::config()?)
-+	} else {
-+		builder.danger_accept_invalid_certs(config.allow_invalid_tls_certificates)
-+	};
+@@ -247,6 +249,19 @@ fn make_federation(
+ 	})
+ }
+ 
++/// With `yggdrasil_trust_overlay` the federation clients take the overlay's
++/// certificate rule and connect directly: through a proxy the route to an
++/// address in 200::/7 would no longer be the overlay that vouches for it.
++fn overlay(config: &Config, builder: ClientBuilder) -> Result<ClientBuilder> {
++	if !config.yggdrasil_trust_overlay || config.allow_invalid_tls_certificates {
++		return Ok(builder);
++	}
 +
- 	let encodings: [(bool, DisableEncoding); 3] = [
- 		(config.request_gzip, ClientBuilder::no_gzip),
- 		(config.request_brotli, ClientBuilder::no_brotli),
++	Ok(builder
++		.tls_backend_preconfigured(overlay_tls::config()?)
++		.no_proxy())
++}
++
+ /// Construction for the URL preview client: bound to the configured
+ /// interface and resolving through the CIDR-validating resolver.
+ ///
 diff --git a/src/service/client/overlay_tls.rs b/src/service/client/overlay_tls.rs
 new file mode 100644
-index 0000000..fc6ba20
+index 000000000..fc6ba2092
 --- /dev/null
 +++ b/src/service/client/overlay_tls.rs
 @@ -0,0 +1,105 @@
@@ -197,7 +212,7 @@ index 0000000..fc6ba20
 +}
 diff --git a/src/service/sending/hello.rs b/src/service/sending/hello.rs
 new file mode 100644
-index 0000000..7f144c6
+index 000000000..7f144c6d5
 --- /dev/null
 +++ b/src/service/sending/hello.rs
 @@ -0,0 +1,61 @@
@@ -263,7 +278,7 @@ index 0000000..7f144c6
 +		.await;
 +}
 diff --git a/src/service/sending/mod.rs b/src/service/sending/mod.rs
-index 28afcff..f03cbce 100644
+index 28afcffde..f03cbce2e 100644
 --- a/src/service/sending/mod.rs
 +++ b/src/service/sending/mod.rs
 @@ -1,6 +1,7 @@
@@ -275,7 +290,7 @@ index 28afcff..f03cbce 100644
  #[cfg(test)]
  mod tests;
 diff --git a/src/service/sending/worker.rs b/src/service/sending/worker.rs
-index 30653a2..fdbc334 100644
+index 30653a2e7..fdbc33441 100644
 --- a/src/service/sending/worker.rs
 +++ b/src/service/sending/worker.rs
 @@ -35,6 +35,13 @@ pub(super) async fn run(self: Arc<Self>) -> Result {

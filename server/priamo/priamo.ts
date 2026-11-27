@@ -12,6 +12,9 @@
 //                      while the overlay carries them; Tuwunel's yggdrasil_trust_overlay relies on that)
 //   allowlist.toml     Tuwunel's allowed_remote_server_names_experimental for the same contacts (reloadable)
 // Apply with `nft -f priamo.nft` (root) and pass allowlist.toml to Tuwunel as a second `-c`.
+// A contact's server name must be its address as Yggdrasil prints it (lower case, zeros compressed): another
+// spelling of the same address is refused. A removed contact is refused at once by the reloaded allowlist; the
+// firewall stops only its new connections.
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { isIPv6 } from 'node:net';
@@ -73,7 +76,7 @@ ${set}\t}
 
 \tchain output {
 \t\ttype filter hook output priority -10; policy accept;
-\t\tip6 daddr 200::/7 oifname != "${p.interface}" reject
+\t\tip6 daddr 200::/7 oifname != { "${p.interface}", "lo" } reject
 \t}
 }
 `;

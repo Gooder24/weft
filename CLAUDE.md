@@ -337,8 +337,8 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   `tests/sendlater/gap_test.py`.
 - `server/priamo/` is Weft Priamo (design `docs/navrhy/2026-11-priamo/`): Matrix between two people's own
   homeservers over Yggdrasil, without a public IP, domain or certificate. Built so far: `tuwunel-priamo.patch` on
-  Tuwunel 1.9.4 (`yggdrasil_trust_overlay`: a name in 200::/7 may present any certificate, every other name is
-  verified; `startup_hello`: an empty transaction to every peer after start, so it delivers what it held), built by
+  Tuwunel 1.9.4 (`yggdrasil_trust_overlay`: a federation peer at an address in 200::/7 may present any certificate,
+  every other address is verified, and federation then never goes through a proxy; `startup_hello`: an empty transaction to every peer after start, so it delivers what it held), built by
   `build-tuwunel-priamo` into asus `~/build/tuwunel-priamo`; `bun priamo.ts render priamo.json <dir>` makes the
   firewall (`priamo.nft`: on the Yggdrasil interface only contacts reach the port, 200::/7 never leaves through
   another interface) and Tuwunel's allowlist from one contact list. Nothing of it runs on asus yet. Checks:

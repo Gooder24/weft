@@ -40,7 +40,9 @@ Z toho vyplynuli dve veci, ktoré Matrix cez Yggdrasil sám nevie, a krok 1 ich 
   `~/build/tuwunel-priamo` na asuse). Pridáva dve voľby, obe predvolene vypnuté:
   - `yggdrasil_trust_overlay`: server s menom v 200::/7 smie ukázať akýkoľvek certifikát, aj vlastnoručne
     podpísaný. Adresu odvodzuje Yggdrasil z kľúča uzla a šifruje k nej celú cestu, takže kto na nej odpovie, je ten
-    uzol. Podpis TLS spojenia sa overuje ďalej. Certifikát každého iného mena sa overuje ako doteraz.
+    uzol. Podpis TLS spojenia sa overuje ďalej. Certifikát každej inej adresy sa overuje ako doteraz. Výnimka platí
+    len pre federáciu (médiá, náhľady odkazov a pushery overujú všetko) a federácia potom nejde cez proxy, lebo
+    za proxy by cesta k adrese už nebola Yggdrasil.
   - `startup_hello`: päť sekúnd po štarte pošle server prázdnu transakciu každému serveru, s ktorým zdieľa
     miestnosť. Ten tým zistí, že je späť, a hneď pošle, čo preň drží.
 - **`server/priamo/priamo.ts`** (Bun): z `priamo.json` so zoznamom kontaktov vyrobí dva súbory:
@@ -48,7 +50,9 @@ Z toho vyplynuli dve veci, ktoré Matrix cez Yggdrasil sám nevie, a krok 1 ich 
     nesmú odísť iným rozhraním. Bez toho by ich mohol podstrčiť ktokoľvek v miestnej sieti a výnimka
     `yggdrasil_trust_overlay` by mu verila.
   - `allowlist.toml`: Tuwunelova `allowed_remote_server_names_experimental` pre tých istých kontaktov. Prázdny
-    zoznam nepustí nikoho.
+    zoznam nepustí nikoho. Meno servera kontaktu musí byť adresa tak, ako ju píše Yggdrasil (malými písmenami,
+    skrátená); iný zápis tej istej adresy sa odmietne. Odobratý kontakt odmietne Tuwunel hneď po načítaní
+    zoznamu, firewall mu zastaví až nové spojenia.
 
   Testy: `bun test server/priamo`.
 - **Lab:** `overenie/prenos-lab/run.sh priamo` spustí upravený Tuwunel (M3) za NAT so zapnutým overovaním
@@ -60,7 +64,7 @@ Výsledok behu z 27. 11. 2026:
 
 | Kontrola | M3 (Priamo) | Bežný Matrix cez Yggdrasil (M2) |
 |---|---|---|
-| Oba domy za NAT, prvá správa | doručí za 6–10 ms, certifikáty sa overujú | doručí, ale bez overovania certifikátov |
+| Oba domy za NAT, prvá správa | doručí za 6–10 ms; vlastnoručne podpísaný certifikát adresy v Yggdrasile prijme výnimka, inde sa overuje | doručí, ale overovanie má vypnuté pre všetky servery |
 | Výpadok 2 / 10 / 30 min | doručí 5,9 / 5,6 / 5,6 s po návrate | 644 s / 796 s / ani za 15 min |
 | Cudzí server na Yggdrasile | zahodí firewall | nemá ho čím odmietnuť (neskúšané) |
 | Cudzí server, firewall vypnutý | odmietne Tuwunel (403, nie je v zozname) | nemá ho čím odmietnuť (neskúšané) |
