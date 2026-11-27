@@ -119,7 +119,7 @@ SIGNIN_KEY = "sk.karchi.edupage.signin"
 # Each homework's material is read once; a handful per poll keeps a fresh login's backfill gentle.
 MATERIALS_PER_POLL = 5
 MAX_FILE_BYTES = 25 * 1024 * 1024
-EDUPAGE_FILES = re.compile(r"cloud(-[a-z0-9]+)?\.edupage\.org")
+EDUPAGE_FILES = re.compile(r"cloud-[a-z0-9]+\.edupage\.org")
 WEEKDAYS = ["pondelok", "utorok", "streda", "štvrtok", "piatok", "sobota", "nedeľa"]
 # Content key on everything the bridge posts, so its own events are never sent back to EduPage.
 MARK = "sk.karchi.edupage"
@@ -841,23 +841,22 @@ def upload_file(edu: Edupage, base: str, file: dict) -> dict | None:
             raise requests.RequestException("a redirect off EduPage")
     else:
         raise requests.RequestException("too many redirects")
-    resp.raise_for_status()
-    if int(resp.headers.get("Content-Length") or 0) > MAX_FILE_BYTES:  # said before it is read
-        resp.close()
-        return None
-    mimetype = resp.headers.get("Content-Type", "application/octet-stream").split(";")[0].strip()
-    mimetype = {"image/x-png": "image/png", "image/pjpeg": "image/jpeg"}.get(mimetype, mimetype)
-    if mimetype == "text/html":
-        raise ValueError("login page instead of a file")
-    if mimetype in ("application/octet-stream", "application/force-download", ""):  # elearning links say this for any file
-        mimetype = mimetypes.guess_type(str(file.get("name") or ""))[0] or "application/octet-stream"
-    body = bytearray()
-    for chunk in resp.iter_content(1 << 16):  # also when EduPage does not say the size
-        body += chunk
-        if len(body) > MAX_FILE_BYTES:
-            resp.close()
+    with resp:  # closed on every way out, an error too
+        resp.raise_for_status()
+        if int(resp.headers.get("Content-Length") or 0) > MAX_FILE_BYTES:  # said before it is read
             return None
-    content = bytes(body)
+        mimetype = resp.headers.get("Content-Type", "application/octet-stream").split(";")[0].strip()
+        mimetype = {"image/x-png": "image/png", "image/pjpeg": "image/jpeg"}.get(mimetype, mimetype)
+        if mimetype == "text/html":
+            raise ValueError("login page instead of a file")
+        if mimetype in ("application/octet-stream", "application/force-download", ""):  # elearning links say this for any file
+            mimetype = mimetypes.guess_type(str(file.get("name") or ""))[0] or "application/octet-stream"
+        body = bytearray()
+        for chunk in resp.iter_content(1 << 16):  # also when EduPage does not say the size
+            body += chunk
+            if len(body) > MAX_FILE_BYTES:
+                return None
+        content = bytes(body)
     name = str(file.get("name") or "subor")
     req = urllib.request.Request(
         f"{HOMESERVER}/_matrix/media/v3/upload?" + urllib.parse.urlencode({"user_id": BOT, "filename": name}),
@@ -895,6 +894,8 @@ def message_attachment(db: sqlite3.Connection, url: str) -> dict:
                 break
     if not name:
         raise ApiError(404, "M_NOT_FOUND", "Takú prílohu žiadna správa nemá.")
+    if urllib.parse.urlsplit(url).netloc != urllib.parse.urlsplit(base).netloc:
+        raise ApiError(404, "M_NOT_FOUND", "Príloha nie je na stránke školy, otvor ju v správe na EduPage.")
 
     def fetch(e: Edupage) -> dict | None:
         return upload_file(e, base, {"src": url, "name": name})

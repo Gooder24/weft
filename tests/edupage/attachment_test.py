@@ -46,6 +46,8 @@ class Resp:
         self.headers = {"Content-Type": ctype, **({"Location": location} if location else {})}
     def raise_for_status(self): pass
     def close(self): self.closed = True
+    def __enter__(self): return self
+    def __exit__(self, *a): self.close()
     def iter_content(self, size):
         if isinstance(self.content, bytes):
             yield self.content
@@ -77,8 +79,11 @@ class Session:
             return Resp(b"", "text/html", 301, "https://ina.edupage.org/cloud?z")
         if "cloud-2.edupage.org" in url:
             return Resp(JPEG, "image/jpeg")
+        if "barecloud" in url:
+            return Resp(b"", "text/html", 301, "https://cloud.edupage.org/cloud?z")
         if self.login:
-            return Resp(b"<html>login</html>", "text/html; charset=utf-8")
+            self.last = Resp(b"<html>login</html>", "text/html; charset=utf-8")
+            return self.last
         if "big" in url:  # says its size; its body is never read
             r = Resp(None, "application/pdf")
             r.headers["Content-Length"] = str(b.MAX_FILE_BYTES + 1)
@@ -147,7 +152,7 @@ except b.ApiError as err:
     check("over 25 MB without a stated size: reading stops, not copied", err.status == 413 and len(uploads) == 2
           and b.ACCOUNT.edu.session.chunks == b.MAX_FILE_BYTES // (1 << 20) + 1, (err.status, b.ACCOUNT.edu.session.chunks))
 
-for key, name in (("/elearning/away", "von.pdf"), ("/elearning/moved", "presun.jpg"), ("/elearning/tocloud", "c.jpg"), ("/elearning/tocloudb", "e.pdf"), ("/elearning/othercloud", "d.jpg")):
+for key, name in (("/elearning/away", "von.pdf"), ("/elearning/moved", "presun.jpg"), ("/elearning/tocloud", "c.jpg"), ("/elearning/tocloudb", "e.pdf"), ("/elearning/othercloud", "d.jpg"), ("/elearning/barecloud", "f.jpg")):
     db.execute("INSERT INTO raw VALUES (?, 'sprava', 0, ?)", (len(key), json.dumps({**item, "timelineid": len(key), "data": json.dumps({"attachements": {key: name}})})))
 try:
     b.message_attachment(db, BASE + "/elearning/away")
@@ -162,6 +167,21 @@ try:
     check("a redirect to another school is not followed", False, "no error")
 except b.ApiError as err:
     check("a redirect to another school is not followed", err.status == 502, err.status)
+try:
+    b.message_attachment(db, BASE + "/elearning/barecloud")
+    check("a redirect to a file store host without its number is not followed", False, "no error")
+except b.ApiError as err:
+    check("a redirect to a file store host without its number is not followed", err.status == 502
+          and not any(g.startswith("https://cloud.edupage.org") for g in b.ACCOUNT.edu.session.gets), err.status)
+offsite = {**item, "timelineid": 4, "data": json.dumps({"attachements": {"https://example.org/subor.pdf": "subor.pdf"}})}
+db.execute("INSERT INTO raw VALUES (4, 'sprava', 0, ?)", (json.dumps(offsite),))
+gets = len(b.ACCOUNT.edu.session.gets)
+try:
+    b.message_attachment(db, "https://example.org/subor.pdf")
+    check("an attachment named off the school's site: said so, not as too big", False, "no error")
+except b.ApiError as err:
+    check("an attachment named off the school's site: said so, not as too big", err.status == 404
+          and len(b.ACCOUNT.edu.session.gets) == gets, err.status)
 moved = b.message_attachment(db, BASE + "/elearning/moved")
 check("a redirect within the school's site is followed", moved["mimetype"] == "image/jpeg" and b.ACCOUNT.edu.session.gets[-1].endswith("abcimg?z%3Aplagat"), moved)
 
@@ -183,6 +203,7 @@ try:
     check("EduPage still refusing: said plainly", False, "no error")
 except b.ApiError as err:
     check("EduPage still refusing: said plainly", err.status == 502, err.status)
+check("the refused answer's connection is closed", getattr(b.ACCOUNT.edu.session.last, "closed", False))
 
 # A real requests session against a local server: a redirect with a large body is answered without reading that body.
 import http.server, socket
