@@ -8245,8 +8245,14 @@ function readMarks(t) {
     else lastBy.set(`${x.id}|${ev.sender}`, i);
   });
   // Where a receipt points in the chat: its message's place, else (a reaction, an event not drawn) after every
-  // message up to its time.
-  const place = (x, event, ts) => pos.get(event) ?? (ts == null ? -1 : t.msgs.findLastIndex((ev) => ev.origin_server_ts <= ts));
+  // message before its time and, in its millisecond, those before it in the room (seenWhen's rule; an event Weft
+  // does not have reaches none of its millisecond).
+  const place = (x, event, ts) => {
+    if (pos.has(event)) return pos.get(event);
+    if (ts == null) return -1;
+    const order = eventOrder(x);
+    return t.msgs.findLastIndex((ev) => ev.origin_server_ts < ts || (ev.origin_server_ts === ts && order.has(event) && t.roomOf(ev) === x && order.get(ev.event_id) < order.get(event)));
+  };
   for (const [x, mine] of own) {
     for (const [id] of joinedPeople(x)) {
       let upTo = x.receipts.has(id) ? place(x, x.receipts.get(id), x.events.get(x.receipts.get(id))?.origin_server_ts) : -1;
