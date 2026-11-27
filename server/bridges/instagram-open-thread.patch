@@ -1,4 +1,4 @@
-From e6d097f42b49bed8c9de1d8c280e5b21dd17a192 Mon Sep 17 00:00:00 2001
+From bc41c057ee14bfcd0e1fa583c1c8ee65f2a94e0e Mon Sep 17 00:00:00 2001
 From: Gooder24 <162874774+Gooder24@users.noreply.github.com>
 Date: Thu, 26 Nov 2026 08:24:39 +0100
 Subject: [PATCH] igconnector: open an existing thread by its FBID through
@@ -10,17 +10,17 @@ so it could not be written to again from Matrix.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- pkg/igconnector/openthread.go | 139 ++++++++++++++++++++++++++++++++++
+ pkg/igconnector/openthread.go | 150 ++++++++++++++++++++++++++++++++++
  pkg/igconnector/startchat.go  |   3 +
- 2 files changed, 142 insertions(+)
+ 2 files changed, 153 insertions(+)
  create mode 100644 pkg/igconnector/openthread.go
 
 diff --git a/pkg/igconnector/openthread.go b/pkg/igconnector/openthread.go
 new file mode 100644
-index 0000000..014f767
+index 0000000..e2d88cb
 --- /dev/null
 +++ b/pkg/igconnector/openthread.go
-@@ -0,0 +1,139 @@
+@@ -0,0 +1,150 @@
 +package igconnector
 +
 +import (
@@ -87,10 +87,7 @@ index 0000000..014f767
 +		if err != nil {
 +			return nil, fmt.Errorf("failed to get existing portal: %w", err)
 +		} else if portal != nil && portal.MXID != "" {
-+			// A room the bridge itself is making right now gets the user in a moment. Still not in after it: the
-+			// user left that room, and provisioning makes a new one (as for a DM).
-+			ic.waitUserInRoom(ctx, portal.MXID)
-+			return &bridgev2.ResolveIdentifierResponse{Chat: &bridgev2.CreateChatResponse{PortalKey: portal.PortalKey, Portal: portal}}, nil
++			return ic.handBack(ctx, portal)
 +		}
 +	}
 +	// One thread info request, the same one the bridge makes for a group it has just created.
@@ -110,15 +107,28 @@ index 0000000..014f767
 +	if err != nil {
 +		return nil, fmt.Errorf("failed to get portal: %w", err)
 +	}
-+	// The room is made here and handed back only once the user is in it: provisioning's CleanupOrphanedDM would
-+	// delete a room the user has not got into yet. The portal's event loop runs one creation at a time, so a
-+	// second open of the same thread gets the same room.
-+	// Without the request's cancellation: an open the app gave up on still finishes its room, members included.
-+	if err = portal.CreateMatrixRoom(context.WithoutCancel(ctx), ic.UserLogin, ic.wrapChatInfo(thread)); err != nil {
++	// The room is made here, not by provisioning, so that it is whole before anyone sees it. The portal's event loop
++	// runs one creation at a time, so a second open of the same thread gets the same room. Without the request's
++	// cancellation: an open the app gave up on still finishes its room, members included (bounded, as the lock is held).
++	createCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
++	defer cancel()
++	if err = portal.CreateMatrixRoom(createCtx, ic.UserLogin, ic.wrapChatInfo(thread)); err != nil {
 +		return nil, fmt.Errorf("failed to create portal room: %w", err)
 +	}
-+	ic.waitUserInRoom(ctx, portal.MXID)
-+	return &bridgev2.ResolveIdentifierResponse{Chat: &bridgev2.CreateChatResponse{PortalKey: key, Portal: portal}}, nil
++	return ic.handBack(ctx, portal)
++}
++
++// handBack gives provisioning a room only while the request is alive and the user is in it. Its CleanupOrphanedDM
++// deletes a room the user is not in, and under a cancelled request it cannot read the members and drops the room's
++// ID; refused, the room stays as it is and the next open finds it.
++func (ic *IGClient) handBack(ctx context.Context, portal *bridgev2.Portal) (*bridgev2.ResolveIdentifierResponse, error) {
++	in := ic.waitUserInRoom(ctx, portal.MXID)
++	if err := ctx.Err(); err != nil {
++		return nil, err
++	} else if !in {
++		return nil, bridgev2.WrapRespErr(fmt.Errorf("user is not in the thread's room %s", portal.MXID), mautrix.MForbidden)
++	}
++	return &bridgev2.ResolveIdentifierResponse{Chat: &bridgev2.CreateChatResponse{PortalKey: portal.PortalKey, Portal: portal}}, nil
 +}
 +
 +var threadOpenLocks sync.Map // login ID → chan struct{} of capacity 1
@@ -144,17 +154,18 @@ index 0000000..014f767
 +}
 +
 +// waitUserInRoom waits up to ten seconds for the user to get into a room that is being created.
-+func (ic *IGClient) waitUserInRoom(ctx context.Context, roomID id.RoomID) {
++func (ic *IGClient) waitUserInRoom(ctx context.Context, roomID id.RoomID) bool {
 +	for range 20 {
 +		if ic.userInRoom(ctx, roomID) {
-+			return
++			return true
 +		}
 +		select {
 +		case <-time.After(500 * time.Millisecond):
 +		case <-ctx.Done():
-+			return
++			return false
 +		}
 +	}
++	return false
 +}
 +
 +func cutThreadIdentifier(identifier string) (string, bool) {

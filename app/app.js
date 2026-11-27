@@ -9382,6 +9382,7 @@ async function openIgThread(r) {
     alert(T`Chat sa nepodarilo otvoriť: ${err.name === 'TimeoutError' ? T('most neodpovedá')
       : err.status === 404 ? T('Instagram tento chat nenašiel, možno si zo skupiny odišiel')
       : err.status === 400 ? T('most je starší a chat otvoriť nevie')
+      : err.status === 403 ? T('jeho chat vo Wefte už je, ale odišiel si z neho')
       : err.message}`);
   } finally {
     r.reaching = null;

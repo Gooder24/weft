@@ -670,6 +670,7 @@ export default {
   "Otvoriť na Instagrame ↗": "Open on Instagram ↗",
   "{} je odpojený. Pripoj ho v Nastaveniach → Účty.": "{} is disconnected. Connect it in Settings → Accounts.",
   "Instagram tento chat nenašiel, možno si zo skupiny odišiel": "Instagram did not find this chat; maybe you left the group",
+  "jeho chat vo Wefte už je, ale odišiel si z neho": "its chat is already in Weft, but you left it",
   "Starý chat z Discordu · iba na čítanie. Most tento kanál nepozná.": "Old Discord chat · read-only. The bridge does not know this channel.",
   "Starý chat z Discordu. Otvorením sa z neho stane živý chat s poslednými správami; písať sa dá priateľom.": "An old Discord chat. Opening it makes it a live chat with its latest messages; you can write to friends.",
   "Správu, na ktorú odpovedáš, Discord nepozná, takže odpoveď neodišla.": "Discord does not know the message you are replying to, so the reply did not go out.",
