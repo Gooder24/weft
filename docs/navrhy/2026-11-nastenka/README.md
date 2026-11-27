@@ -32,8 +32,10 @@ do tej istej nástenky.
   Tailscale, ktoré je online, či na porte 53317 beží LocalSend (najprv HTTPS ako appka LocalSend, potom HTTP).
   Multicast cez Tailscale nejde, preto takto.
 - **Počúva aj v miestnej sieti:** „Aj v miestnej sieti“ je zapnuté, kým ho Karchi nevypne (Karchi, 27. 11.), takže
-  nástenka počúva na všetkých rozhraniach a hľadá multicastom ako appka LocalSend (doma, v škole bez Tailscale). Čo
-  príde zo zariadenia Tailscale, prijme bez pýtania. Súbory aj text od zariadenia mimo Tailscale čakajú v rohovom okne na Prijať (Enter) alebo Odmietnuť (Esc), 60 sekúnd. Enter
+  nástenka počúva na všetkých rozhraniach a hľadá multicastom ako appka LocalSend (doma, v škole bez Tailscale). Bez
+  pýtania prijme, čo pošle zariadenie zo zoznamu `tailscale status` na adresu Tailscale tohto počítača (adresu
+  z rozsahu Tailscale môže mať aj zariadenie v miestnej sieti, preto nestačí), a čo pošle zariadenie, ktoré už raz
+  bolo v Tailscale, odkiaľkoľvek s tým istým certifikátom (mobil doma cez Wi-Fi). Súbory aj text od iných čakajú v rohovom okne na Prijať (Enter) alebo Odmietnuť (Esc), 60 sekúnd. Enter
   platí až sekundu po tom, čo sa okno ukáže, aby ho neprijal Enter mienený pre inbox. Kým otázka čaká, vlastné
   zariadenia z Tailscale posielajú ďalej. Vypnuté počúva len na adrese Tailscale tohto počítača.
 - **Port:** 53317 je port LocalSendu. Keď ho má appka LocalSend na tom istom počítači, nástenka vezme ďalší voľný

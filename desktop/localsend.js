@@ -160,12 +160,15 @@ function request(dev, method, pathq, { json, stream, length, timeout = 10_000, t
 /**
  * opts: dir (where received files go), statePath (the board's JSON), alias, tailnet() → { self, peers: [{ ip, name,
  * online }] }, onEvent({ type, state, ... }), log(...), and for tests: port, hosts (extra addresses to listen on),
- * trusted(ip) (default: a Tailscale address), probePort.
+ * trusted(ip, local) (default: see below), probePort, lan.
  */
 function createPeer(opts) {
   const { dir, statePath, alias, deviceModel = 'Weft', onEvent = () => {}, log = () => {} } = opts;
   const tailnet = opts.tailnet || (async () => ({ self: null, peers: [] }));
-  const trusted = opts.trusted || ((ip) => tailnetIp(ip));
+  // A device of the tailnet is one tailnet() lists, and what it sends comes in over this machine's Tailscale address
+  // (local; undefined when the board itself dialled it): in a local network a device may hold an address of
+  // Tailscale's range, and over the Tailscale address only a listed one gets an answer back.
+  const trusted = opts.trusted || ((ip, local) => peerIps.has(ip) && (local === undefined || (!!selfIp && local === selfIp)));
   const wantPort = opts.port || PORT;
   const probePort = opts.probePort || PORT;
   const extraHosts = opts.hosts || [];
@@ -187,6 +190,7 @@ function createPeer(opts) {
   }, {});
 
   let selfIp = null;
+  let peerIps = new Set(); // the tailnet's devices at the last scan
   let servers = [];
   let listeningOn = [];
   let port = wantPort;
@@ -233,7 +237,7 @@ function createPeer(opts) {
   /** A device that announced itself, registered or answered a probe; keyed by its fingerprint. Devices of the tailnet
    *  are default targets from the start, ones of the local network only once Karchi says so. `proven` is the hash of
    *  the certificate the claim came with (the client certificate of its request, or the server's of our probe). */
-  function remember(body, ip, how, proven = null) {
+  function remember(body, ip, how, proven = null, local = undefined) {
     const fp = fpKey(body?.fingerprint || `${ip}:${body?.port || PORT}`);
     if (fp === st.fingerprint) return null;
     const was = st.devices[fp];
@@ -248,11 +252,11 @@ function createPeer(opts) {
       save();
       return was;
     }
-    const via = trusted(ip) ? 'tailnet' : 'lan';
+    const via = how !== 'multicast' && trusted(ip, local) ? 'tailnet' : 'lan'; // multicast never crosses Tailscale
     const dev = {
       fingerprint: fp, alias: String(body?.alias || was?.alias || ip).slice(0, 80), ip, port, protocol,
       deviceType: body?.deviceType || was?.deviceType || null, deviceModel: body?.deviceModel || was?.deviceModel || null,
-      via, seen: Date.now(),
+      via, seen: Date.now(), tailnet: !!was?.tailnet || via === 'tailnet', // once seen on the tailnet, Karchi's own
       // Seen on the tailnet it becomes a default, unless Karchi took it off himself; never the other way by itself.
       default: was ? was.default || (!was.chosen && via === 'tailnet') : via === 'tailnet', chosen: was?.chosen || false,
     };
@@ -289,6 +293,7 @@ function createPeer(opts) {
   async function handle(req, res) {
     const url = new URL(req.url, 'http://localsend');
     const ip = bare(req.socket.remoteAddress);
+    const local = bare(req.socket.localAddress);
     const proven = provenBy(req.socket);
     const reply = (code, body) => {
       if (res.headersSent) return;
@@ -300,10 +305,10 @@ function createPeer(opts) {
       if (route === `GET ${API}/info`) return reply(200, info());
       if (route === `POST ${API}/register`) {
         const body = JSON.parse((await readBody(req)).toString() || '{}');
-        if ((!proven || sameFp(proven, body?.fingerprint)) && remember(body, ip, 'register', proven)) emitSoon();
+        if ((!proven || sameFp(proven, body?.fingerprint)) && remember(body, ip, 'register', proven, local)) emitSoon();
         return reply(200, info());
       }
-      if (route === `POST ${API}/prepare-upload`) return await prepare(req, ip, reply, proven);
+      if (route === `POST ${API}/prepare-upload`) return await prepare(req, ip, reply, proven, local);
       if (route === `POST ${API}/upload`) return await upload(req, url, ip, reply);
       if (route === `POST ${API}/cancel`) {
         if (session && session.id === url.searchParams.get('sessionId') && session.ip === ip) endSession('cancelled');
@@ -318,20 +323,22 @@ function createPeer(opts) {
 
   const sessionLive = () => session && Date.now() - session.touched < IDLE_MS;
 
-  async function prepare(req, ip, reply, proven) {
+  async function prepare(req, ip, reply, proven, local) {
     const body = JSON.parse((await readBody(req)).toString() || '{}');
     const files = Object.values(body?.files && typeof body.files === 'object' ? body.files : {})
       .filter((f) => f && typeof f.id === 'string' && typeof f.fileName === 'string');
     if (!body?.info || !files.length) return reply(400, { message: 'Invalid body' });
     if (proven && !sameFp(proven, body.info.fingerprint)) return reply(403, { message: 'Fingerprint does not match the client certificate' });
-    const dev = remember(body.info, ip, 'upload', proven) || { fingerprint: '', alias: ip };
+    // His own device may also come over the local network, proving the certificate it showed on the tailnet.
+    const own = trusted(ip, local) || (!!proven && !!st.devices[fpKey(proven)]?.tailnet);
+    const dev = remember(body.info, ip, 'upload', proven, local) || { fingerprint: '', alias: ip };
     // LocalSend's „Message“: one text file whose text is its preview; nothing is uploaded.
     const text = files.length === 1 && /^text\//.test(files[0].fileType || '') && typeof files[0].preview === 'string' ? files[0].preview.slice(0, 100_000) : null;
     // A question to Karchi holds back only others from outside; his own devices go on.
-    if ((asking && !trusted(ip)) || (text == null && sessionLive())) return reply(409, { message: 'Blocked by another session' });
+    if ((asking && !own) || (text == null && sessionLive())) return reply(409, { message: 'Blocked by another session' });
     const size = files.reduce((n, f) => n + (Number(f.size) || 0), 0);
     // Files and text from outside the tailnet wait for Prijať.
-    if (!trusted(ip)) {
+    if (!own) {
       const ok = await new Promise((resolve) => {
         const timer = setTimeout(() => resolve(false), ASK_MS);
         asking = { id: newId(), device: who(dev), count: files.length, size, names: text == null ? files.slice(0, 5).map((f) => f.fileName) : [],
@@ -526,6 +533,7 @@ function createPeer(opts) {
     try {
       const t = await tailnet();
       selfIp = t.self || null;
+      peerIps = new Set((t.peers || []).map((p) => p.ip).filter(Boolean));
       await listen();
       await Promise.all((t.peers || []).filter((p) => p.online && p.ip && p.ip !== selfIp).map((p) => probe(p.ip)));
     } catch (err) {

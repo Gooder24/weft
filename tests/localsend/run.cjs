@@ -471,6 +471,44 @@ const settled = (p, id) => until(() => { const it = item(p, id); return it && ![
     blocker.close();
   });
 
+  await check('by default only a device tailnet() lists, over the Tailscale address, gets in without Prijať; on the local network its certificate does', async () => {
+    // 127.0.0.1 stands in for this machine's Tailscale address and 127.0.0.3 for its local network's; tailnet() lists
+    // 127.0.0.5. A local device may hold an address of Tailscale's range, like 127.0.0.5 coming in over 127.0.0.3.
+    const z = createPeer({ dir: path.join(tmp, 'z', 'in'), statePath: path.join(tmp, 'z.json'), alias: 'Weft z', lan: false, hosts: ['127.0.0.3'],
+      port: await freePort(), tailnet: async () => ({ self: '127.0.0.1', peers: [{ ip: '127.0.0.5', online: false }] }), log: () => {} });
+    await z.start();
+    const text = (t, fp) => ({ info: { alias: fp, fingerprint: fp }, files: { f: { id: 'f', fileName: 't.txt', size: t.length, fileType: 'text/plain', preview: t } } });
+    const to = (host, from, p, body, tls = {}) => raw(z.port, 'POST', `${API}/${p}`, body, { host, localAddress: from, ...tls });
+    const waits = async (host, from, body, tls) => {
+      const r = to(host, from, 'prepare-upload', body, tls);
+      const ask = await until(() => z.state().ask);
+      z.respond(ask.id, false);
+      assert.equal((await r).status, 403);
+    };
+    assert.equal((await to('127.0.0.1', '127.0.0.5', 'prepare-upload', text('môj', 'fp-moj'))).status, 204);
+    assert.equal(z.state().items[0].text, 'môj');
+    await waits('127.0.0.3', '127.0.0.5', text('zvonka', 'fp-cez-lan'));
+    await waits('127.0.0.1', '127.0.0.6', text('zvonka', 'fp-neznamy'));
+    assert.equal(z.state().items.length, 1);
+    await to('127.0.0.3', '127.0.0.5', 'register', { alias: 'lan', fingerprint: 'fp-lan', port: 1, protocol: 'http' });
+    z.onMulticast(Buffer.from(JSON.stringify({ alias: 'mc', fingerprint: 'fp-mc', port: 1, protocol: 'http', announce: false })), { address: '127.0.0.5' });
+    await to('127.0.0.1', '127.0.0.5', 'register', { alias: 'ts', fingerprint: 'fp-ts', port: 1, protocol: 'http' });
+    const by = (fp) => { const d = z.state().devices.find((x) => x.fingerprint === fp); return d && [d.via, d.default]; };
+    assert.deepEqual([by('fp-lan'), by('fp-mc'), by('fp-ts'), by('fp-moj')], [['lan', false], ['lan', false], ['tailnet', true], ['tailnet', true]]);
+    // His phone, seen on the tailnet with its certificate, sends at home over the local network (its own address there).
+    const phone = selfSigned('z-phone');
+    const pfp = fpOf(new crypto.X509Certificate(phone.cert).raw);
+    await to('127.0.0.1', '127.0.0.5', 'register', { alias: 'iPhone', fingerprint: pfp, port: 1, protocol: 'https' }, phone);
+    assert.equal((await to('127.0.0.3', '127.0.0.7', 'prepare-upload', text('z domu', pfp), phone)).status, 204);
+    assert.ok(z.state().items.some((x) => x.text === 'z domu'));
+    // Naming its fingerprint without its certificate is not enough; a stranger's own certificate is not either.
+    await waits('127.0.0.3', '127.0.0.7', text('podvrh', pfp));
+    const stranger = selfSigned('z-stranger');
+    await waits('127.0.0.3', '127.0.0.8', text('cudzí', fpOf(new crypto.X509Certificate(stranger.cert).raw)), stranger);
+    assert.equal(z.state().items.filter((x) => x.text === 'podvrh' || x.text === 'cudzí').length, 0);
+    await z.stop();
+  });
+
   await check('a first start is in the local network, also after an earlier build saved it off; turned off it stays off', async () => {
     // Never started and never switched on, so it listens nowhere: only the setting is looked at.
     const opts = { dir: path.join(tmp, 'n', 'in'), statePath: path.join(tmp, 'n.json'), alias: 'Weft n', log: () => {} };
