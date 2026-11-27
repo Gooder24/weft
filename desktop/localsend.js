@@ -188,6 +188,9 @@ function createPeer(opts) {
       : { ...d, fingerprint: k };
     return all;
   }, {});
+  // A record of an earlier build has no `tailnet`: that build took any address of Tailscale's range for the tailnet, so
+  // its defaults wait until a scan shows them on the tailnet again; what Karchi clicked himself stays.
+  for (const d of Object.values(st.devices)) if (d.tailnet === undefined) { d.tailnet = false; if (!d.chosen) d.default = false; }
 
   let selfIp = null;
   let peerIps = new Set(); // the tailnet's devices at the last scan
@@ -246,13 +249,16 @@ function createPeer(opts) {
     // A device known by its certificate moves (address, port) or drops encryption only on a claim that certificate
     // proves. Anyone can name its fingerprint (LocalSend announces it), so another claim only makes us ask the claimed
     // address over HTTPS, pinned to that certificate, and changes nothing meanwhile.
+    const via = how !== 'multicast' && trusted(ip, local) ? 'tailnet' : 'lan'; // multicast never crosses Tailscale
     if (was && CERT_FP.test(fp) && was.protocol === 'https' && !sameFp(proven, fp)) {
       if (was.ip !== ip || was.port !== port || protocol !== 'https') { confirm(fp, ip, port); return null; }
       was.seen = Date.now();
       save();
       return was;
     }
-    const via = how !== 'multicast' && trusted(ip, local) ? 'tailnet' : 'lan'; // multicast never crosses Tailscale
+    // One of his devices without a certificate (LocalSend over HTTP) has nothing to prove itself with: only the tailnet
+    // moves or renames it; from outside, its name is someone else's claim.
+    if (was?.tailnet && via !== 'tailnet' && !sameFp(proven, fp)) return null;
     const dev = {
       fingerprint: fp, alias: String(body?.alias || was?.alias || ip).slice(0, 80), ip, port, protocol,
       deviceType: body?.deviceType || was?.deviceType || null, deviceModel: body?.deviceModel || was?.deviceModel || null,
@@ -341,7 +347,7 @@ function createPeer(opts) {
     if (!own) {
       const ok = await new Promise((resolve) => {
         const timer = setTimeout(() => resolve(false), ASK_MS);
-        asking = { id: newId(), device: who(dev), count: files.length, size, names: text == null ? files.slice(0, 5).map((f) => f.fileName) : [],
+        asking = { id: newId(), device: who(dev), count: files.length, size, overLan: !selfIp || local !== selfIp, names: text == null ? files.slice(0, 5).map((f) => f.fileName) : [],
           text: text == null ? undefined : text.slice(0, 300), resolve: (yes) => { clearTimeout(timer); resolve(yes); } };
         emit('ask');
       });
@@ -533,9 +539,11 @@ function createPeer(opts) {
     try {
       const t = await tailnet();
       selfIp = t.self || null;
-      peerIps = new Set((t.peers || []).map((p) => p.ip).filter(Boolean));
+      // Without Tailscale running (no own address) its peers' addresses lead into the local network, if anywhere.
+      const peers = selfIp ? (t.peers || []).filter((p) => p.ip && p.ip !== selfIp) : [];
+      peerIps = new Set(peers.map((p) => p.ip));
       await listen();
-      await Promise.all((t.peers || []).filter((p) => p.online && p.ip && p.ip !== selfIp).map((p) => probe(p.ip)));
+      await Promise.all(peers.filter((p) => p.online).map((p) => probe(p.ip)));
     } catch (err) {
       log('board scan', err.message);
     }
@@ -570,7 +578,8 @@ function createPeer(opts) {
     s.on('error', (err) => { log('board multicast', err.message); if (sock === s) sock = null; try { s.close(); } catch { /* closed */ } });
     s.bind(PORT, () => {
       for (const list of Object.values(os.networkInterfaces())) {
-        for (const a of list || []) if (a.family === 'IPv4' && !a.internal && !tailnetIp(a.address)) { try { s.addMembership(GROUP, a.address); } catch { /* not this one */ } }
+        // A local network may hand out addresses of Tailscale's range too: only Tailscale's own is left out.
+        for (const a of list || []) if (a.family === 'IPv4' && !a.internal && a.address !== selfIp) { try { s.addMembership(GROUP, a.address); } catch { /* not this one */ } }
       }
       announce();
     });
@@ -580,15 +589,17 @@ function createPeer(opts) {
 
   /** Listens where it should now; calls queue, so a quick on/off of „Aj v miestnej sieti“ ends as the last one says. */
   let listening = Promise.resolve();
+  const retired = new Set(); // servers that stopped listening and still hold connections
   function listen() {
     listening = listening.then(rebind, rebind);
     return listening;
   }
   async function rebind() {
     if (stopped) return;
-    const want = st.lan ? ['0.0.0.0'] : [selfIp, ...extraHosts].filter(Boolean);
+    const want = st.lan ? ['0.0.0.0'] : [...new Set([selfIp, ...extraHosts].filter(Boolean))];
     if (want.join() === listeningOn.join() && servers.length) return;
-    await Promise.all(servers.map((s) => new Promise((r) => s.close(r))));
+    // Closing stops listening at once; what is still open on it (a transfer) ends on its own, or at stop().
+    for (const s of servers) { retired.add(s); s.close(() => retired.delete(s)); s.closeIdleConnections?.(); }
     servers = [];
     listeningOn = [];
     listenError = want.length ? '' : 'no-tailnet';
@@ -621,8 +632,9 @@ function createPeer(opts) {
     st.lan = !!on;
     st.lanChosen = true;
     save();
-    await listen();
     multicast(st.lan);
+    if (!st.lan && asking?.overLan) asking.resolve(false); // asked over the local network, which it no longer hears
+    await listen();
     emit('state');
   }
 
@@ -676,7 +688,7 @@ function createPeer(opts) {
     await saving; // a write in flight must not land after the last one
     try { fs.writeFileSync(statePath, JSON.stringify(st), { mode: 0o600 }); } catch { /* no disk */ }
     await listening;
-    await Promise.all(servers.map((s) => new Promise((r) => { s.close(r); s.closeAllConnections?.(); })));
+    await Promise.all([...servers, ...retired].map((s) => new Promise((r) => { s.close(r); s.closeAllConnections?.(); })));
     servers = [];
   }
 

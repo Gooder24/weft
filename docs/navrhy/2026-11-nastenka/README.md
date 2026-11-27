@@ -90,7 +90,9 @@ na Tailscale. Vtedy pôjde položka cez asus:
   LocalSendom. Súbory aj text od nich čakajú na Prijať; kto to nechce, prepínač vypne. Vo Weft.exe na Windowse sa pri
   prvom spustení môže ozvať firewall, ako pri appke LocalSend.
 - Starší LocalSend so šifrovaním vypnutým (HTTP) nástenka nájde a pošle mu, ale tie súbory idú v miestnej sieti
-  nešifrovane (cez Tailscale ich šifruje Tailscale).
+  nešifrovane (cez Tailscale ich šifruje Tailscale). Také zariadenie nemá certifikát, ktorým by dokázalo, že je to ono:
+  keď ho nástenka poznala z Tailscale, z miestnej siete ho nikto nepresunie ani nepremenuje a jeho súbory odtiaľ čakajú
+  na Prijať.
 - Mobil bez zapnutého Tailscale nástenka cez Tailscale nenájde, len v tej istej miestnej sieti; inde pomôže krok 2.
   Zariadenie nájdené len v miestnej sieti nie je predvolené (klik ho pridá) a jeho súbory čakajú na Prijať.
 

@@ -41,12 +41,13 @@ const raw = (port, method, p, body, tls = {}) => new Promise((resolve, reject) =
   req.end(data);
 });
 
-/** A peer on 127.0.0.1 whose tailnet is the given ports' peers; off the local network, so nothing reaches a real one. */
+/** A peer on 127.0.0.1 whose tailnet is the given ports' peers (its own Tailscale address stands in as 127.0.0.250);
+ *  off the local network, so nothing reaches a real one. */
 async function peer(name, { trusted = () => true, peers = [], probePort, port } = {}) {
   const events = [];
   const p = createPeer({
     dir: path.join(tmp, name, 'in'), statePath: path.join(tmp, `${name}.json`), alias: `Weft ${name}`, lan: false,
-    tailnet: async () => ({ self: null, peers }), hosts: ['127.0.0.1'], trusted, probePort, port: port || await freePort(),
+    tailnet: async () => ({ self: '127.0.0.250', peers }), hosts: ['127.0.0.1'], trusted, probePort, port: port || await freePort(),
     onEvent: (ev) => events.push(ev), log: () => {},
   });
   await p.start();
@@ -495,6 +496,11 @@ const settled = (p, id) => until(() => { const it = item(p, id); return it && ![
     await to('127.0.0.1', '127.0.0.5', 'register', { alias: 'ts', fingerprint: 'fp-ts', port: 1, protocol: 'http' });
     const by = (fp) => { const d = z.state().devices.find((x) => x.fingerprint === fp); return d && [d.via, d.default]; };
     assert.deepEqual([by('fp-lan'), by('fp-mc'), by('fp-ts'), by('fp-moj')], [['lan', false], ['lan', false], ['tailnet', true], ['tailnet', true]]);
+    // fp-ts has no certificate (HTTP): a claim of its name from the local network does not move it there.
+    await to('127.0.0.3', '127.0.0.9', 'register', { alias: 'podvrh', fingerprint: 'fp-ts', port: 2, protocol: 'http' });
+    z.onMulticast(Buffer.from(JSON.stringify({ alias: 'podvrh', fingerprint: 'fp-ts', port: 2, protocol: 'http', announce: false })), { address: '127.0.0.9' });
+    const ts = z.state().devices.find((x) => x.fingerprint === 'fp-ts');
+    assert.deepEqual([ts.ip, ts.port, ts.alias, ts.default], ['127.0.0.5', 1, 'ts', true]);
     // His phone, seen on the tailnet with its certificate, sends at home over the local network (its own address there).
     const phone = selfSigned('z-phone');
     const pfp = fpOf(new crypto.X509Certificate(phone.cert).raw);
@@ -507,6 +513,46 @@ const settled = (p, id) => until(() => { const it = item(p, id); return it && ![
     await waits('127.0.0.3', '127.0.0.8', text('cudzí', fpOf(new crypto.X509Certificate(stranger.cert).raw)), stranger);
     assert.equal(z.state().items.filter((x) => x.text === 'podvrh' || x.text === 'cudzí').length, 0);
     await z.stop();
+  });
+
+  await check('a tailnet default saved by an earlier build waits for a scan; what Karchi clicked stays', async () => {
+    const statePath = path.join(tmp, 'legacy.json');
+    fs.writeFileSync(statePath, JSON.stringify({ items: [], devices: {
+      'leg-a': { fingerprint: 'leg-a', alias: 'a', ip: '100.90.0.5', port: 1, protocol: 'http', via: 'tailnet', default: true, chosen: false },
+      'leg-b': { fingerprint: 'leg-b', alias: 'b', ip: '192.168.1.5', port: 1, protocol: 'http', via: 'lan', default: true, chosen: true } } }));
+    const l = createPeer({ dir: path.join(tmp, 'legacy', 'in'), statePath, alias: 'Weft l', lan: false, log: () => {} });
+    assert.deepEqual(l.state().devices.map((d) => [d.fingerprint, d.default]).sort(), [['leg-a', false], ['leg-b', true]]);
+    await l.stop();
+  });
+
+  await check('without Tailscale running its peers are not probed; with it they are', async () => {
+    let hits = 0;
+    const phone = http.createServer((req, res) => { req.resume(); req.on('end', () => { hits++; res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ alias: 'mobil', fingerprint: 'fp-probe', port: phone.address().port, protocol: 'http' })); }); });
+    await new Promise((r) => phone.listen(0, '127.0.0.5', r));
+    const mk = async (name, self) => createPeer({ dir: path.join(tmp, name, 'in'), statePath: path.join(tmp, `${name}.json`), alias: name, lan: false, hosts: ['127.0.0.1'],
+      port: await freePort(), probePort: phone.address().port, tailnet: async () => ({ self, peers: [{ ip: '127.0.0.5', online: true }] }), log: () => {} });
+    const off = await mk('p-off', null);
+    await off.start();
+    assert.equal(hits, 0);
+    assert.equal(off.state().devices.length, 0);
+    await off.stop();
+    const on = await mk('p-on', '127.0.0.1');
+    await on.start();
+    assert.ok(hits > 0);
+    assert.deepEqual(on.state().devices.map((d) => [d.fingerprint, d.via, d.default]), [['fp-probe', 'tailnet', true]]);
+    await on.stop();
+    phone.close();
+  });
+
+  await check('turning the local network off answers a question asked over it at once', async () => {
+    const h = await peer('h3', { trusted: (ip) => ip === '127.0.0.1' });
+    const stranger = raw(h.port, 'POST', `${API}/prepare-upload`, { info: { alias: 'Cudzí', fingerprint: 'cudzi3' }, files: { f: { id: 'f', fileName: 'x.txt', size: 1, fileType: 'text/x' } } }, { localAddress: '127.0.0.2' });
+    await until(() => h.state().ask);
+    await h.setLan(false);
+    assert.equal(h.state().ask, null);
+    assert.equal((await stranger).status, 403);
+    await h.stop();
   });
 
   await check('a first start is in the local network, also after an earlier build saved it off; turned off it stays off', async () => {

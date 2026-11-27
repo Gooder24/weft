@@ -64,7 +64,7 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   same one again, and only a claim that certificate proves moves it to another address or off HTTPS. It finds LocalSend by asking each online tailnet device on 53317 (multicast cannot cross
   Tailscale). It takes without asking what a device `tailscale status` lists sends over this machine's Tailscale
   address (a local network may give a device an address of Tailscale's range), and what a device once seen there sends
-  from anywhere with the same certificate. „Aj v miestnej sieti“ is on unless Karchi turns it off (Karchi,
+  from anywhere with the same certificate (one without a certificate moves only over the tailnet). „Aj v miestnej sieti“ is on unless Karchi turns it off (Karchi,
   2026-11-27): it listens on every interface with multicast, and files and text from outside the tailnet wait for
   Prijať in the corner (Enter only after it was a second in sight); off, it listens only on the Tailscale address. Arrivals
   go to Downloads/Weft and show in the corner window like codes (Enter opens or copies). A file goes by the path

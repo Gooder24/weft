@@ -1,6 +1,7 @@
 // The board's LocalSend (desktop/localsend.js) against the official LocalSend CLI, both ways: the board finds the CLI
 // and sends it a file and a text; the CLI finds the board by multicast and sends it a file and a text. Run by cli.sh
-// inside its own network namespace (one dummy interface, nothing reaches a real network).
+// inside its own network namespace (dummy interfaces only, nothing reaches a real network): d0 is the local network,
+// d1 a local network that hands out addresses of Tailscale's range, d2 stands in for Tailscale itself.
 'use strict';
 const { spawn, execFileSync } = require('node:child_process');
 const fs = require('node:fs');
@@ -26,7 +27,7 @@ console.log('runtime', process.versions.electron ? `Electron ${process.versions.
   for (let i = 0; i < 300 && !/Ready to accept/.test(log); i++) await new Promise((r) => setTimeout(r, 100));
   const events = [];
   const peer = createPeer({ dir: `${D}/mine`, statePath: `${D}/board.json`, alias: 'Weft test', port: 53318, hosts: ['10.77.0.1'], trusted: () => true, lan: false,
-    tailnet: async () => ({ self: null, peers: [{ ip: '10.77.0.1', online: true }] }), probePort: 53317, onEvent: (e) => events.push(e), log: (...a) => console.log('  board:', ...a) });
+    tailnet: async () => ({ self: '127.0.0.1', peers: [{ ip: '10.77.0.1', online: true }] }), probePort: 53317, onEvent: (e) => events.push(e), log: (...a) => console.log('  board:', ...a) });
   await peer.start();
   const dev = peer.state().devices.find((d) => d.alias === 'ls-cli');
   check('board finds the LocalSend CLI on 53317', !!dev, JSON.stringify(peer.state().devices));
@@ -53,9 +54,13 @@ console.log('runtime', process.versions.electron ? `Electron ${process.versions.
   // 2. The CLI sends to the board on 53317. A first start is in the local network, so the CLI finds it by multicast.
   const p2events = [];
   const p2 = createPeer({ dir: `${D}/mine2`, statePath: `${D}/board2.json`, alias: 'Weft test', port: 53317, hosts: ['10.77.0.1'], trusted: () => true,
-    tailnet: async () => ({ self: null, peers: [] }), onEvent: (e) => p2events.push(e), log: (...a) => console.log('  board:', ...a) });
+    tailnet: async () => ({ self: '100.101.0.1', peers: [] }), onEvent: (e) => p2events.push(e), log: (...a) => console.log('  board:', ...a) });
   await p2.start();
   check('a first start listens in the local network', p2.state().me.lan === true && p2.state().me.listening, JSON.stringify(p2.state().me));
+  // /proc/net/igmp: a line per interface, then its groups; 224.0.0.167 is A70000E0 there.
+  const joined = () => { const by = {}; let dev = null; for (const l of fs.readFileSync('/proc/net/igmp', 'utf8').split('\n')) { const m = /^\d+\s+(\S+)\s*:/.exec(l); if (m) { dev = m[1]; by[dev] = []; } else if (dev && l.trim()) by[dev].push(l.trim().split(/\s+/)[0]); } return by; };
+  const groups = await until(() => { const g = joined(); return g.d0?.includes('A70000E0') && g; }, 5000);
+  check('multicast on every local network, one with addresses of Tailscale\'s range too, but not on Tailscale', !!groups && groups.d1?.includes('A70000E0') && !groups.d2?.includes('A70000E0'), JSON.stringify(groups));
   const b2 = crypto.randomBytes(200_000);
   fs.writeFileSync(`${D}/src/z-cli.bin`, b2);
   const run = (args) => new Promise((resolve) => {
@@ -80,9 +85,26 @@ console.log('runtime', process.versions.electron ? `Electron ${process.versions.
     s.once('error', () => resolve(false));
   });
   const everywhere = await knock('127.0.0.1');
+  // A transfer halfway through (over the local network) does not hold the switch back, and still lands whole.
+  const https = require('node:https');
+  const ask = (p, headers, cb) => https.request({ host: '127.0.0.1', port: 53317, method: 'POST', path: `/api/localsend/v2/${p}`, rejectUnauthorized: false, agent: false, headers }, cb);
+  const json = (p, o) => new Promise((resolve, reject) => { const b = Buffer.from(JSON.stringify(o));
+    const r = ask(p, { 'Content-Length': b.length }, (res) => { const c = []; res.on('data', (x) => c.push(x)); res.on('end', () => resolve(JSON.parse(Buffer.concat(c)))); });
+    r.on('error', reject); r.end(b); });
+  const big = crypto.randomBytes(2000);
+  const prep = await json('prepare-upload', { info: { alias: 'mobil', fingerprint: 'fp-up' }, files: { f: { id: 'f', fileName: 'napoly.bin', size: big.length, fileType: 'application/octet-stream' } } });
+  let upStatus = null;
+  let up = null;
+  const done = new Promise((resolve) => { up = ask(`upload?sessionId=${prep.sessionId}&fileId=f&token=${prep.files.f}`, { 'Content-Length': big.length },
+    (res) => { upStatus = res.statusCode; res.resume(); res.on('end', resolve); }); up.on('error', resolve); up.write(big.subarray(0, 1000)); });
+  const half = await until(() => p2.state().items.find((x) => x.files?.[0]?.name === 'napoly.bin' && x.got >= 1000), 5000);
   await Promise.all([p2.setLan(false), p2.setLan(true), p2.setLan(false)]);
-  const after = [await knock('127.0.0.1'), await knock('10.77.0.1'), p2.state().me.lan];
-  check('a quick off/on/off of the local network ends listening only on its own address', everywhere && after.join() === 'false,true,false', JSON.stringify({ everywhere, after }));
+  const after = [await knock('127.0.0.1'), await knock('10.77.0.1'), await knock('100.101.0.1'), p2.state().me.lan];
+  check('a quick off/on/off of the local network ends listening only on its own addresses, with a transfer halfway', everywhere && !!half && after.join() === 'false,true,true,false', JSON.stringify({ everywhere, half: !!half, after }));
+  up.end(big.subarray(1000));
+  await done;
+  const landed = path.join(D, 'mine2', 'napoly.bin');
+  check('the transfer halfway then still lands whole', upStatus === 200 && fs.existsSync(landed) && fs.readFileSync(landed).equals(big), String(upStatus));
   await p2.stop();
   console.log(failed ? `${failed} failed` : 'all passed');
   process.exit(failed ? 1 : 0);

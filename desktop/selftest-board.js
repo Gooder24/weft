@@ -57,7 +57,7 @@ module.exports = async function selftestBoard(t) {
   let main = null;
   try {
     const boardPort = await listen(() => {}).then((p) => { servers.pop().close(); return p; }); // a free port for the board
-    t.startBoard({ tailnet: async () => ({ self: null, peers: [{ ip: '127.0.0.1', online: true }] }), hosts: ['127.0.0.1'], port: boardPort, probePort: phonePort, trusted: () => true, lan: false,
+    t.startBoard({ tailnet: async () => ({ self: '127.0.0.2', peers: [{ ip: '127.0.0.1', online: true }] }), hosts: ['127.0.0.1'], port: boardPort, probePort: phonePort, trusted: () => true, lan: false,
       statePath: path.join(tmp, 'board.json') }); // its own state: a profile's saved „Aj v miestnej sieti“ must not count
     t.openMain();
     main = t.getMain();

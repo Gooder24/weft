@@ -14,4 +14,6 @@ mkdir "$D/x" && tar -xzf "$D/cli.tgz" -C "$D/x" localsend-cli
 D="$D" timeout 170 unshare -rn sh -c '
   ip link set lo up && ip link add d0 type dummy && ip addr add 10.77.0.1/24 dev d0 &&
   ip link set d0 multicast on && ip link set d0 up && ip route add 224.0.0.0/4 dev d0 &&
+  ip link add d1 type dummy && ip addr add 100.110.0.1/24 dev d1 && ip link set d1 multicast on && ip link set d1 up &&
+  ip link add d2 type dummy && ip addr add 100.101.0.1/32 dev d2 && ip link set d2 multicast on && ip link set d2 up &&
   ELECTRON_RUN_AS_NODE=1 "${NODE:-node}" "$0"' "$HERE/cli.cjs"
