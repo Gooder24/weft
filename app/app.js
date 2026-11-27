@@ -513,7 +513,7 @@ async function keepNow() {
     const kept = new Set(events.map((ev) => ev.event_id));
     rooms.push({ id: r.id, app: r.app, created: r.created, bridgeName: r.bridgeName, server: r.server, serverId: r.serverId, archiveOnly: !!r.archiveOnly,
       readAt: r.readAt, unread: r.unread, state: r.state, members: r.members, receipts: r.receipts, receiptAt: r.receiptAt, events,
-      bridgebot: r.bridgebot, sent: [...r.sent].filter(([id]) => kept.has(id)) });
+      bridgebot: r.bridgebot, sent: [...r.sent].filter(([id]) => kept.has(id)), talk: talkOf(r) });
   }
   const eduIds = new Set(edu.map((ev) => ev.event_id));
   const snap = { user: S.userId, at: Date.now(), account: S.account, logins: S.logins, links: S.links,
@@ -538,7 +538,7 @@ function hydrate(snap) {
     const r = roomOf(x.id);
     Object.assign(r, { app: x.app, created: x.created || 0, bridgeName: x.bridgeName, server: x.server || '', serverId: x.serverId || '', archiveOnly: x.archiveOnly,
       readAt: x.readAt, unread: x.unread || 0, state: x.state || new Map(), members: x.members || new Map(), receipts: x.receipts || new Map(), receiptAt: x.receiptAt || new Map(),
-      bridgebot: x.bridgebot || '', sent: new Map(x.sent || []) });
+      bridgebot: x.bridgebot || '', sent: new Map(x.sent || []), talkKept: x.talk || [] });
     for (const ev of x.events) r.events.set(ev.event_id, ev);
     if (r.archiveOnly) r.matrixDone = true;
     r.statusRoom = r.app === 'whatsapp' && bridgeChannel(r) === 'status@broadcast'; // a copy kept before it was left out
@@ -558,6 +558,7 @@ function settleChat(r, txn, res, content) {
   if (!res.event_id) return;
   if (local && !r.events.has(res.event_id)) r.events.set(res.event_id, {
     ...local, event_id: res.event_id, content, pending: false, waiting: false,
+    localTs: true, // the time it was sent from here, until sync brings the server's (talkOf does not trust it)
   });
   r.pending.delete(txn);
   r.version++;
@@ -1665,12 +1666,17 @@ function setWork(people, on) {
 function talkOf(r) {
   if (!r) return null;
   if (r.talk?.version !== r.version) {
-    const list = [];
+    // His messages of the last two days stay known when a limited sync empties the room or the kept copy has only
+    // its newest events (`talkKept`, kept with the copy), so an answer that showed never waits again.
+    const from = Date.now() - 2 * 864e5;
+    const set = new Set((r.talkKept || []).filter((t) => t >= from));
     for (const ev of r.events.values()) {
-      if (ev.sender !== S.userId || !ev.event_id?.startsWith('$') || ev.content?.['m.relates_to']?.rel_type === 'm.replace') continue;
-      if (ev.type === 'm.room.message' || ev.type === 'm.sticker' || POLL_START.includes(ev.type)) list.push(ev.origin_server_ts);
+      if (ev.sender !== S.userId || ev.localTs || !ev.event_id?.startsWith('$') || ev.content?.['m.relates_to']?.rel_type === 'm.replace') continue;
+      if (ev.type === 'm.room.message' || ev.type === 'm.sticker' || POLL_START.includes(ev.type)) set.add(ev.origin_server_ts);
     }
-    r.talk = { version: r.version, list: list.sort((a, b) => a - b) };
+    const list = [...set].sort((a, b) => a - b);
+    r.talkKept = list.filter((t) => t >= from);
+    r.talk = { version: r.version, list };
   }
   return r.talk.list;
 }
@@ -1914,8 +1920,10 @@ function roomModel(r) {
   // Messages waiting for their batch are left out here, so the list, previews and the chat agree.
   const waiting = messages.filter((ev) => isHeld(ev, cut, talk) && !redacted.has(ev.event_id));
   const held = waiting.length;
-  // The server counts only what came after Karchi's own last message: held ones before it are not in its count.
-  const heldCounted = waiting.filter((ev) => !talk.length || ev.origin_server_ts > talk.at(-1)).length;
+  // The server counts only what came after Karchi's own last message and his receipt (also one from another
+  // device): held ones before them are not in its count.
+  const counted = Math.max(talk.at(-1) || 0, r.events.get(r.receipts.get(S.userId))?.origin_server_ts || 0);
+  const heldCounted = waiting.filter((ev) => ev.origin_server_ts > counted).length;
   if (held) messages = messages.filter((ev) => !isHeld(ev, cut, talk));
   for (const p of r.pending.values()) messages.push(p);
   const byId = new Map(messages.map((m) => [m.event_id, m]));
@@ -5142,10 +5150,12 @@ function chatEntries(all, extra = null) {
       continue;
     }
     const lastMsg = m.messages.at(-1);
+    // A bubble still sending or that failed is shown last; whether someone else wrote last is the server's order.
+    const lastIn = lastMsg?.pending ? m.messages.findLast((ev) => !ev.pending) : lastMsg;
     list.push({
       key: r.id, kind: 'room', app: r.app, room: r, title: roomTitle(r), lastMsg,
       last: lastMsg?.origin_server_ts || 0,
-      count: lastMsg && lastMsg.sender !== S.userId ? roomUnread(r, m, muted) : 0,
+      count: lastIn && lastIn.sender !== S.userId ? roomUnread(r, m, muted) : 0,
     });
   }
   return list;
