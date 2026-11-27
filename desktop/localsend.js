@@ -1,8 +1,8 @@
 // LocalSend (protocol v2, github.com/localsend/protocol) inside Weft's desktop shell: the board („Nástenka“) sends
 // files and text to Karchi's own devices that run the LocalSend app, and keeps what they send in Downloads/Weft.
 //
-// It takes what devices of the tailnet send without asking. „Aj v miestnej sieti“ (st.lan, on unless Karchi turned it
-// off; opts.lan for a first start) listens on every interface with LocalSend's multicast discovery, like the LocalSend
+// It takes what devices of the tailnet send without asking. „Aj v miestnej sieti“ (st.lan, on until Karchi switches
+// it: st.lanChosen; opts.lan until then, for tests) listens on every interface with LocalSend's multicast discovery, like the LocalSend
 // app itself, and files and text from a device outside the tailnet wait for Prijať on the board; off, it listens only
 // on this machine's Tailscale address.
 //
@@ -170,8 +170,9 @@ function createPeer(opts) {
   const probePort = opts.probePort || PORT;
   const extraHosts = opts.hosts || [];
 
-  let st = { fingerprint: newId(), lan: opts.lan ?? true, devices: {}, items: [] };
+  let st = { fingerprint: newId(), lan: true, lanChosen: false, devices: {}, items: [] };
   try { st = { ...st, ...JSON.parse(fs.readFileSync(statePath, 'utf8')) }; } catch { /* a first start */ }
+  if (!st.lanChosen) st.lan = opts.lan ?? true; // an earlier build saved its default (off), not Karchi's choice
   if (!st.tls?.cert || !st.tls?.key) { st.tls = makeIdentity(); st.fingerprint = st.tls.fingerprint; }
   for (const it of st.items) if (['sending', 'receiving'].includes(it.status)) it.status = 'stopped'; // the app quit midway
   // State of an earlier version may hold one certificate under two spellings: one record (the HTTPS one, which pins
@@ -610,6 +611,7 @@ function createPeer(opts) {
 
   async function setLan(on) {
     st.lan = !!on;
+    st.lanChosen = true;
     save();
     await listen();
     multicast(st.lan);

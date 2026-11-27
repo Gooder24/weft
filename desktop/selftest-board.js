@@ -57,7 +57,8 @@ module.exports = async function selftestBoard(t) {
   let main = null;
   try {
     const boardPort = await listen(() => {}).then((p) => { servers.pop().close(); return p; }); // a free port for the board
-    t.startBoard({ tailnet: async () => ({ self: null, peers: [{ ip: '127.0.0.1', online: true }] }), hosts: ['127.0.0.1'], port: boardPort, probePort: phonePort, trusted: () => true, lan: false });
+    t.startBoard({ tailnet: async () => ({ self: null, peers: [{ ip: '127.0.0.1', online: true }] }), hosts: ['127.0.0.1'], port: boardPort, probePort: phonePort, trusted: () => true, lan: false,
+      statePath: path.join(tmp, 'board.json') }); // its own state: a profile's saved „Aj v miestnej sieti“ must not count
     t.openMain();
     main = t.getMain();
     await new Promise((r) => main.webContents.once('did-finish-load', r));
@@ -123,7 +124,7 @@ module.exports = async function selftestBoard(t) {
   } finally {
     for (const s of servers) s.close();
     // Quitting right after a change keeps it: will-quit waits for the board's last write (main.js).
-    const statePath = path.join(app.getPath('userData'), 'board.json');
+    const statePath = path.join(tmp, 'board.json');
     let last = null;
     try { last = (await main?.webContents.executeJavaScript(`window.desktop.board.send({ text: 'posledné pred zatvorením' })`))?.id; } catch { /* checked below */ }
     process.on('exit', () => {

@@ -471,16 +471,25 @@ const settled = (p, id) => until(() => { const it = item(p, id); return it && ![
     blocker.close();
   });
 
-  await check('a first start is in the local network, and turned off it stays off after a restart', async () => {
+  await check('a first start is in the local network, also after an earlier build saved it off; turned off it stays off', async () => {
     // Never started, so it listens nowhere: only the setting is looked at.
     const opts = { dir: path.join(tmp, 'n', 'in'), statePath: path.join(tmp, 'n.json'), alias: 'Weft n', log: () => {} };
     const n = createPeer(opts);
     assert.equal(n.state().me.lan, true);
-    await n.setLan(false);
     await n.stop();
+    const saved = JSON.parse(fs.readFileSync(opts.statePath, 'utf8'));
+    fs.writeFileSync(opts.statePath, JSON.stringify({ ...saved, lan: false, lanChosen: undefined })); // as the earlier build wrote it
+    const old = createPeer(opts);
+    assert.equal(old.state().me.lan, true);
+    await old.setLan(false);
+    await old.stop();
     const n2 = createPeer(opts);
     assert.equal(n2.state().me.lan, false);
+    await n2.setLan(true);
     await n2.stop();
+    const n3 = createPeer({ ...opts, lan: false });
+    assert.equal(n3.state().me.lan, true, 'his choice beats a caller\'s default');
+    await n3.stop();
   });
 
   await check('the board survives a restart; an unfinished send says „stopped“', async () => {
