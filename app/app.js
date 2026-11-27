@@ -9305,9 +9305,10 @@ async function openDiscord(x, archived = null) {
   }
 }
 
-/** The thread an old Instagram chat of the export is: its folder ends with the thread's id, which Instagram's own
- *  address /direct/t/<id>/ carries too. Its people need no search: the bridge opens that very thread. */
-const igThreadOf = (r) => r.app === 'instagram' && /^archive:instagram:(?:inbox|message_requests)\/[^/]*_(\d{6,20})$/.exec(r.id)?.[1] || '';
+/** The thread an old Instagram chat of the export is: its folder ends with the thread's id (all of a folder whose
+ *  person's name has no letters), which Instagram's own address /direct/t/<id>/ carries too. Its people need no
+ *  search: the bridge opens that very thread. */
+const igThreadOf = (r) => r.app === 'instagram' && /^archive:instagram:(?:inbox|message_requests)\/(?:[^/]*_)?(\d{6,20})$/.exec(r.id)?.[1] || '';
 
 /** Under an old Instagram group (or a chat whose person the export does not name): open that thread as a live chat. */
 function igThreadCompose(r) {

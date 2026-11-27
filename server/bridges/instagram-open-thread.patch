@@ -1,4 +1,4 @@
-From f9fdea1e50e18f90a2da1ac41b3dd5110ae53672 Mon Sep 17 00:00:00 2001
+From eab207a6f79e8b7273f6533a97c8bd46635be76f Mon Sep 17 00:00:00 2001
 From: Gooder24 <162874774+Gooder24@users.noreply.github.com>
 Date: Thu, 26 Nov 2026 08:24:39 +0100
 Subject: [PATCH] igconnector: open an existing thread by its FBID through
@@ -10,17 +10,17 @@ so it could not be written to again from Matrix.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- pkg/igconnector/openthread.go | 95 +++++++++++++++++++++++++++++++++++
- pkg/igconnector/startchat.go  |  3 ++
- 2 files changed, 98 insertions(+)
+ pkg/igconnector/openthread.go | 105 ++++++++++++++++++++++++++++++++++
+ pkg/igconnector/startchat.go  |   3 +
+ 2 files changed, 108 insertions(+)
  create mode 100644 pkg/igconnector/openthread.go
 
 diff --git a/pkg/igconnector/openthread.go b/pkg/igconnector/openthread.go
 new file mode 100644
-index 0000000..27ef886
+index 0000000..fa5d8d4
 --- /dev/null
 +++ b/pkg/igconnector/openthread.go
-@@ -0,0 +1,95 @@
+@@ -0,0 +1,105 @@
 +package igconnector
 +
 +import (
@@ -32,13 +32,15 @@ index 0000000..27ef886
 +
 +	"maunium.net/go/mautrix"
 +	"maunium.net/go/mautrix/bridgev2"
++	"maunium.net/go/mautrix/bridgev2/networkid"
 +	"maunium.net/go/mautrix/id"
 +
 +	"go.mau.fi/mautrix-meta/pkg/instameow/slidetypes"
 +)
 +
-+// threadIdentifierPrefix marks an existing thread (a group too) by its FBID, the number in Instagram's web
-+// address /direct/t/<fbid>/ and in the folder names of Instagram's data export. POST /v3/create_dm/thread:<fbid>
++// threadIdentifierPrefix marks an existing thread by the number in Instagram's web address /direct/t/<id>/ and in
++// the folder names of Instagram's data export: a group's FBID, or a DM's chat ID (its portal is keyed by the other
++// person's FBID instead). POST /v3/create_dm/thread:<fbid>
 +// opens such a thread as a portal; GET /v3/resolve_identifier/thread:<fbid> only says whether one exists.
 +const threadIdentifierPrefix = "thread:"
 +
@@ -47,8 +49,14 @@ index 0000000..27ef886
 +	if err != nil || fbid <= 0 {
 +		return nil, bridgev2.WrapRespErr(fmt.Errorf("invalid thread ID %q", rawID), mautrix.MInvalidParam)
 +	}
-+	for _, isGroup := range []bool{true, false} {
-+		portal, err := ic.Main.Bridge.GetExistingPortalByKey(ctx, ic.makePortalKey(fbid, isGroup))
++	keys := []networkid.PortalKey{ic.makePortalKey(fbid, true), ic.makePortalKey(fbid, false)}
++	if dmFBID, err := ic.Main.DB.GetFBIDForIGChat(ctx, rawID, ic.UserLogin.ID); err != nil {
++		return nil, fmt.Errorf("failed to get chat ID mapping: %w", err)
++	} else if dmFBID != 0 && dmFBID != fbid {
++		keys = append(keys, ic.makePortalKey(dmFBID, false))
++	}
++	for _, key := range keys {
++		portal, err := ic.Main.Bridge.GetExistingPortalByKey(ctx, key)
 +		if err != nil {
 +			return nil, fmt.Errorf("failed to get existing portal: %w", err)
 +		} else if portal != nil && portal.MXID != "" {
@@ -65,29 +73,31 @@ index 0000000..27ef886
 +	if !createChat {
 +		return nil, nil
 +	}
-+	// One thread info request, the same one the bridge makes for a group it has just created. The caller
-+	// (provisioning's create_dm) then creates the room itself, like a new DM's, so it never sees a half-made one.
++	// One thread info request, the same one the bridge makes for a group it has just created.
 +	resp, err := ic.Client.GetThread(ctx, slidetypes.MakeGetThreadInfoRequest(rawID))
 +	if err != nil {
 +		return nil, fmt.Errorf("failed to get thread %d: %w", fbid, err)
 +	}
 +	thread := resp.ThreadInfo.AsIGDirectThread
-+	if thread == nil || thread.ThreadKey != fbid {
++	if thread == nil || (thread.ThreadKey != fbid && thread.ID != rawID && thread.ThreadFBID != rawID) {
 +		return nil, bridgev2.WrapRespErr(fmt.Errorf("thread %d not found", fbid), mautrix.MNotFound)
 +	}
 +	if err = ic.saveThreadMappings(ctx, thread); err != nil {
 +		return nil, fmt.Errorf("failed to save thread mappings: %w", err)
 +	}
 +	key := ic.makePortalKey(thread.ThreadKey, thread.IsGroup)
-+	// Another open made the room meanwhile: that one, once the user is in it.
-+	if portal, err := ic.Main.Bridge.GetExistingPortalByKey(ctx, key); err == nil && portal != nil && portal.MXID != "" {
-+		ic.waitUserInRoom(ctx, portal.MXID)
-+		return &bridgev2.ResolveIdentifierResponse{Chat: &bridgev2.CreateChatResponse{PortalKey: key, Portal: portal}}, nil
++	portal, err := ic.Main.Bridge.GetPortalByKey(ctx, key)
++	if err != nil {
++		return nil, fmt.Errorf("failed to get portal: %w", err)
 +	}
-+	return &bridgev2.ResolveIdentifierResponse{Chat: &bridgev2.CreateChatResponse{
-+		PortalKey:  key,
-+		PortalInfo: ic.wrapChatInfo(thread),
-+	}}, nil
++	// The room is made here and handed back only once the user is in it: provisioning's CleanupOrphanedDM would
++	// delete a room the user has not got into yet. The portal's event loop runs one creation at a time, so a
++	// second open of the same thread gets the same room.
++	if err = portal.CreateMatrixRoom(ctx, ic.UserLogin, ic.wrapChatInfo(thread)); err != nil {
++		return nil, fmt.Errorf("failed to create portal room: %w", err)
++	}
++	ic.waitUserInRoom(ctx, portal.MXID)
++	return &bridgev2.ResolveIdentifierResponse{Chat: &bridgev2.CreateChatResponse{PortalKey: key, Portal: portal}}, nil
 +}
 +
 +func (ic *IGClient) userInRoom(ctx context.Context, roomID id.RoomID) bool {
