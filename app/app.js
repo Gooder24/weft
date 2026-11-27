@@ -4226,7 +4226,8 @@ async function sendReceipt(r, eventId) {
     await call('POST', `/rooms/${q(r.id)}/receipt/m.read/${q(eventId)}`, {});
   } catch {
     if (r.readSent === eventId) r.readSent = '';
-    if (r.readCheck === check) r.readCheck = '';
+    // The server did not answer: asked again in half a minute, not on every render.
+    setTimeout(() => { if (r.readCheck === check) r.readCheck = ''; }, 30000);
   }
 }
 
@@ -4243,8 +4244,9 @@ async function receiptSafe(r, eventId, cut) {
       if (ev.event_id === mine || ev.origin_server_ts <= cut) { reached = true; break; }
       seen.push(ev);
     }
-    from = data.chunk?.length && data.end !== from ? data.end : null;
-    if (!from) reached = true; // the room's beginning
+    // No `end` is the room's beginning; an empty page may still go on, a token that does not move proves nothing.
+    if (!data.end) reached = true;
+    from = data.end && data.end !== from ? data.end : null;
   }
   if (!reached) return false;
   // His messages in that stretch let what came after them through, as on screen.
