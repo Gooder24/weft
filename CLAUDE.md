@@ -117,20 +117,21 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   (ghosts `@teams_<Entra id>`, polled every 20 s): text, mentions, photos, files, replies, edits, deletions and
   reactions both ways, and Karchi's reading as Teams „videné“ (whole chat, only once he reached its newest message); an ended call or meeting comes as a call row („Call (3:12)“ marked `com.beeper.action_message`, `call_log`); Ctrl+N finds people of the school or work directory. No team channels. Checks:
   `overenie/microsoft/` (`check.py` bridge against a fake Microsoft, `races.py`, `run.sh` UI, `cli_mail.sh`).
-- `server/matrix/bridge.py` is Matrix as a network (beta; asus `~/matrix-spike/matrix/`, own venv with
-  `requirements.txt` and Debian's python3-olm, unit `matrix-spike-matrix`, appservice `appservices/matrix.yaml`,
-  127.0.0.1:29333 behind Caddy's `/_bridges/matrix/`). One account on another homeserver (matrix.org, beeper.com),
-  signed in by password or an access token, gets its own encrypted device „Weft“; chats come as rooms with ghosts
-  `@matrix_<escaped id>`: text, files, replies, edits, reactions, receipts and typing both ways, no backfill, no
-  invitations accepted, rooms that are bridges there left out. Ctrl+N starts a DM by `@name:server` and joins
-  `#alias:server`. Sign-out ends the device there and deletes keys, ids and rooms. Weft's homeserver keeps
-  federation off. Check: `tests/matrix/run.py` (two throwaway Tuwunels; `TUWUNEL=~/matrix-spike/bin/tuwunel`).
-  Its encryption is mautrix-python on libolm (python3-olm), which upstream marks deprecated (known timing CVEs,
-  replacement vodozemac); mautrix and its database libraries are pinned in `requirements.txt`, python3-olm comes
-  from Debian. The way out is a bridge on the matrix-rust-sdk (vodozemac) or on mautrix-go without libolm; until
-  then do not unpin. `bridge.db` has `PRAGMA user_version`: a schema change is a new step at the end of
-  `Store.MIGRATIONS`. It runs in WAL mode, so a backup copies `bridge.db*` (or `sqlite3 .backup`). After restoring
-  `state/` from a backup, sign out and in again (old Olm/Megolm state must never come back), or remote keys break.
+- Matrix as a network (beta) is the bridge github.com/Gooder24/matrix-matrix (Go, mautrix-go bridgev2, encryption
+  by goolm without libolm) since 2026-11-27: asus binary `~/matrix-spike/bin/matrix-matrix` (built from that repo),
+  config and `bridge.db` in `~/matrix-spike/matrix-go/` (crypto in `crypto/`, one file per login), unit
+  `matrix-spike-matrix`, the same appservice `appservices/matrix.yaml` (bot `matrixbot`, ghosts `@matrix_<escaped id>`),
+  127.0.0.1:29333 behind Caddy's `/_bridges/matrix/`. One account on another homeserver (matrix.org, beeper.com),
+  signed in by password or an access token, gets its own encrypted device „Weft“; text, files, replies, edits,
+  reactions, receipts and typing both ways, no backfill, no invitations accepted, rooms that are bridges there left out.
+  Its `m.bridge` protocol id is `github.com/Gooder24/matrix-matrix` (`NETWORKS`); Weft shows its English sign-in fields
+  in Slovak (`fields` of the Matrix entry in `LINKS`). Ctrl+N starts a DM by `@name:server` and joins `#alias:server`
+  (`POST /v3/join`). Sign-out ends the device there and deletes its keys and rooms. Weft's homeserver keeps federation
+  off. Checks: the bridge's own tests in its repo, and Weft against it: `tests/matrix/go_ui.cjs` (two throwaway
+  Tuwunels, the page in a browser). Never restore an old `crypto/` file (old Olm/Megolm state breaks encryption): after
+  a restore sign out and in again. The Python bridge before it (`server/matrix/bridge.py` on libolm, check
+  `tests/matrix/run.py`) and its state are in asus `~/matrix-spike/backups/matrix-python-20261127/` for a way back;
+  its device on matrix.org was ended, so going back means signing in again there too.
 - `server/gmail/cleanup.py` and `matrix-spike-gmail-cleanup.timer` move explicitly enabled accounts'
   Gmail Promotions and Social categories to Trash every five minutes on asus, including old mail.
   Policy: `gmail/state/cleanup-policy.json`; private audit/status alongside it. Never empty Trash or
