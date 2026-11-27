@@ -214,6 +214,7 @@ function createPeer(opts) {
   let listenError = '';
   let sock = null; // multicast, only with st.lan
   let session = null; // the one transfer being received
+  const jobs = new Set(); // files being received, which stop() waits for
   let asking = null; // { id, resolve, ... } files from outside the tailnet waiting for Prijať
   let saveTimer = null;
   let stateTimer = null;
@@ -406,56 +407,65 @@ function createPeer(opts) {
     if (f.done) { req.resume(); return reply(200); }
     const s = session;
     s.touched = Date.now();
-    const target = await claim(dir, safeParts(f.name));
-    // Written beside it under a name of its own, never over an existing file, and renamed once whole.
-    const part = path.join(path.dirname(target), `.${path.basename(target)}.${newId()}.part`);
-    const hash = crypto.createHash('sha256');
-    let got = 0;
-    // A sender gone while its file got a name sends no 'close' any more: that upload failed.
-    const ok = req.destroyed ? false : await new Promise((resolve) => {
-      const out = fs.createWriteStream(part, { flags: 'wx', mode: 0o644 });
-      let settled = false;
-      // Either way it waits until its file is closed: a failed one still opening is then there for the cleanup below,
-      // and a whole one is renamed only once closed (Windows refuses to rename an open file).
-      const done = (yes) => {
-        if (settled) return;
-        settled = true;
-        if (out.closed) return resolve(yes);
-        out.once('close', () => resolve(yes));
-        if (!yes) out.destroy();
-      };
-      s.streams.add(req);
-      req.on('data', (c) => { hash.update(c); got += c.length; s.item.got += c.length; s.touched = Date.now(); emitSoon(); });
-      req.on('close', () => { if (!req.readableEnded) done(false); }); // gone before all of it was read
-      out.on('error', () => done(false));
-      out.on('finish', () => done(req.complete));
-      req.pipe(out);
-    });
-    const failed = async (status, message) => {
-      s.streams.delete(req);
-      await fsp.rm(part, { force: true });
-      await fsp.rm(target, { force: true });
+    // This session's transfer until it ends here: meanwhile nothing ends the session for it (endSession() still cuts
+    // it off) and no other starts. stop() waits for it, so a quit leaves no half file behind.
+    s.streams.add(req);
+    const job = receive(s, f, req);
+    jobs.add(job);
+    const r = await job.finally(() => jobs.delete(job));
+    reply(r.status, r.message && { message: r.message });
+  }
+
+  /** Receives one file of session s: written beside its name under one of its own, renamed once whole and closed. */
+  async function receive(s, f, req) {
+    let target = null, part = null, got = 0;
+    const no = (status, message) => Object.assign(new Error(message), { status });
+    try {
+      target = await claim(dir, safeParts(f.name));
+      part = path.join(path.dirname(target), `.${path.basename(target)}.${newId()}.part`);
+      // A sender gone while its file got a name sends no 'close' any more.
+      if (req.destroyed || session !== s) throw no(500, 'Upload failed');
+      const hash = crypto.createHash('sha256');
+      const ok = await new Promise((resolve) => {
+        const out = fs.createWriteStream(part, { flags: 'wx', mode: 0o644 });
+        let settled = false, broke = false;
+        // Either way it waits until its file is closed: a failed one still opening is then there to be removed, and a
+        // whole one is renamed only once closed (Windows refuses to rename an open file) and only if closing went well.
+        const done = (yes) => {
+          if (settled) return;
+          settled = true;
+          if (out.closed) return resolve(yes && !broke);
+          out.once('close', () => resolve(yes && !broke));
+          if (!yes) out.destroy();
+        };
+        req.on('data', (c) => { hash.update(c); got += c.length; s.item.got += c.length; s.touched = Date.now(); emitSoon(); });
+        req.on('close', () => { if (!req.readableEnded) done(false); }); // gone before all of it was read
+        out.on('error', () => { broke = true; done(false); });
+        out.on('finish', () => done(req.complete));
+        req.pipe(out);
+      });
+      if (!ok) throw no(500, 'Upload failed');
+      if (f.sha256 && hash.digest('hex') !== f.sha256) throw no(422, 'Checksum mismatch');
+      await fsp.rename(part, target);
+    } catch (err) {
+      if (part) await fsp.rm(part, { force: true }).catch(() => {});
+      if (target) await fsp.rm(target, { force: true }).catch(() => {});
       s.item.got -= got;
+      s.streams.delete(req);
       dropUnheard(); // its sender may no longer reach the board to cancel
-      return reply(status, { message });
-    };
-    if (!ok || session !== s) return failed(500, 'Upload failed');
-    if (f.sha256 && hash.digest('hex') !== f.sha256) return failed(422, 'Checksum mismatch');
-    // Still this session's transfer until the file has its name: nothing may end the session or start another meanwhile.
-    try { await fsp.rename(part, target); } finally { s.streams.delete(req); }
+      return { status: err.status || 500, message: err.status ? err.message : 'Upload failed' };
+    }
+    s.streams.delete(req);
+    // It arrived whole, so it stays, also when the session ended meanwhile (cancelled, stopped).
     f.done = true;
     Object.assign(s.item.files[f.index], { path: target, name: path.relative(dir, target), done: true });
-    if ([...s.files.values()].every((x) => x.done)) {
-      s.item.status = 'done';
-      if (session === s) session = null;
-      save();
-      emit('arrived', { item: s.item });
-    } else {
-      save();
-      emitSoon();
-      dropUnheard();
-    }
-    reply(200);
+    const all = [...s.files.values()].every((x) => x.done);
+    if (session !== s) s.item.status = all ? 'done' : 'partial';
+    else if (all) { s.item.status = 'done'; session = null; }
+    save();
+    if (all) emit('arrived', { item: s.item });
+    else { emitSoon(); dropUnheard(); }
+    return { status: 200 };
   }
 
   /** The sender cancelled or went quiet: what arrived whole stays, the rest goes. */
@@ -730,6 +740,7 @@ function createPeer(opts) {
     multicast(false);
     if (session) endSession('stopped');
     if (asking) asking.resolve(false);
+    await Promise.all([...jobs]); // cut off above, they only clean up or name a file that arrived whole
     clearTimeout(saveTimer);
     await saving; // a write in flight must not land after the last one
     try { fs.writeFileSync(statePath, JSON.stringify(st), { mode: 0o600 }); } catch { /* no disk */ }

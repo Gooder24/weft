@@ -46,6 +46,26 @@ const raw = (port, method, p, body, tls = {}) => new Promise((resolve, reject) =
 });
 
 const raw2 = (port) => raw(port, 'GET', `${API}/info`);
+/** Holds the first call of obj[key] that pick(args) chooses until release(), the way a slow disk would; inside
+ *  resolves once it is held. Async functions only; restore() puts the original back. */
+function hold(obj, key, pick) {
+  const orig = obj[key];
+  let entered, release, held = false;
+  const inside = new Promise((r) => { entered = r; });
+  const gate = new Promise((r) => { release = r; });
+  obj[key] = async (...args) => { if (!held && pick(...args)) { held = true; entered(); await gate; } return orig.apply(obj, args); };
+  return { inside, release, restore: () => { release(); obj[key] = orig; } };
+}
+/** A board off the local network whose own address is at.ip (a test may change it) and whose senders are all its own. */
+async function lone(name, at = { ip: '127.0.0.250' }) {
+  const k = createPeer({ dir: path.join(tmp, name, 'in'), statePath: path.join(tmp, `${name}.json`), alias: `Weft ${name}`, lan: false, hosts: ['127.0.0.1'],
+    port: await freePort(), trusted: () => true, tailnet: async () => ({ self: at.ip, peers: [] }), log: () => {} });
+  await k.start();
+  return Object.assign(k, { inbox: path.join(tmp, name, 'in') });
+}
+const twoFiles = (fp) => ({ info: { alias: 'mobil', fingerprint: fp }, files: { a: { id: 'a', fileName: 'a.txt', size: 1, fileType: 'text/x' }, b: { id: 'b', fileName: 'b.txt', size: 1, fileType: 'text/x' } } });
+const uploadTo = (k, prep, id, body, host = '127.0.0.1') => raw(k.port, 'POST', `${API}/upload?sessionId=${prep.data.sessionId}&fileId=${id}&token=${prep.data.files[id]}`, Buffer.from(body), { host });
+const left = (k) => fs.readdirSync(k.inbox).filter((n) => n.includes('a.txt'));
 /** A peer on 127.0.0.1 whose tailnet is the given ports' peers (its own Tailscale address stands in as 127.0.0.250);
  *  off the local network, so nothing reaches a real one. */
 async function peer(name, { trusted = () => true, peers = [], probePort, port } = {}) {
@@ -687,7 +707,7 @@ const settled = (p, id) => until(() => { const it = item(p, id); return it && ![
     const item = k.state().items.find((x) => x.files?.[0]?.name === 'a.txt');
     self = '127.0.0.47';
     await k.scan();
-    assert.equal(item && k.state().items.find((x) => x.id === item.id).status, 'stopped');
+    await until(() => item && k.state().items.find((x) => x.id === item.id).status === 'stopped'); // once its leftovers are gone
     assert.equal((await raw(k.port, 'POST', `${API}/prepare-upload`, { ...two, info: { alias: 'mobil', fingerprint: 'fp-k5b' } })).status, 200);
     await until(() => !fs.readdirSync(path.join(tmp, 'k5', 'in')).some((n) => n.includes('a.txt'))); // nothing half left behind
     await k.stop();
@@ -748,6 +768,107 @@ const settled = (p, id) => until(() => { const it = item(p, id); return it && ![
     assert.equal(next.status, 200);
     assert.equal((await raw(k.port, 'POST', `${API}/upload?sessionId=${next.data.sessionId}&fileId=c&token=${next.data.files.c}`, Buffer.from('c'))).status, 200);
     await k.stop();
+  });
+
+  await check('a file that cannot get its name is removed, and its session can still end', async () => {
+    const at = { ip: '127.0.0.50' };
+    const k = await lone('k8', at);
+    const prep = await raw(k.port, 'POST', `${API}/prepare-upload`, twoFiles('fp-k8'), { host: at.ip });
+    const fsp = require('node:fs/promises');
+    const rename = fsp.rename;
+    fsp.rename = async (from, to) => { if (path.basename(String(to)) === 'a.txt') throw Object.assign(new Error('EACCES'), { code: 'EACCES' }); return rename(from, to); };
+    try { assert.equal((await uploadTo(k, prep, 'a', 'a', at.ip)).status, 500); } finally { fsp.rename = rename; }
+    assert.deepEqual(left(k), []);
+    assert.equal(k.state().items.find((x) => x.files?.[0]?.name === 'a.txt')?.got, 0);
+    at.ip = '127.0.0.51';
+    await k.scan();
+    assert.equal(k.state().items.find((x) => x.files?.[0]?.name === 'a.txt')?.status, 'stopped');
+    assert.equal((await raw(k.port, 'POST', `${API}/prepare-upload`, twoFiles('fp-k8b'))).status, 200);
+    await k.stop();
+  });
+
+  await check('a file whose closing fails is not taken', async () => {
+    const k = await lone('k9');
+    const prep = await raw(k.port, 'POST', `${API}/prepare-upload`, twoFiles('fp-k9'));
+    const { open, close } = fs;
+    const parts = new Set();
+    fs.open = (file, ...rest) => { const cb = rest.pop(); open(file, ...rest, (err, fd) => { if (!err && String(file).endsWith('.part')) parts.add(fd); cb(err, fd); }); };
+    fs.close = (fd, cb) => close(fd, (err) => cb(err || (parts.has(fd) ? Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' }) : null)));
+    try { assert.equal((await uploadTo(k, prep, 'a', 'a')).status, 500); } finally { Object.assign(fs, { open, close }); }
+    assert.deepEqual(left(k), []);
+    assert.equal((await uploadTo(k, prep, 'a', 'a')).status, 200); // tried again, it lands
+    await k.stop();
+  });
+
+  await check('a file that arrived whole stays when its sender cancels while it gets its name', async () => {
+    const k = await lone('k10');
+    const prep = await raw(k.port, 'POST', `${API}/prepare-upload`, twoFiles('fp-k10'));
+    const h = hold(require('node:fs/promises'), 'rename', (from, to) => path.basename(String(to)) === 'a.txt');
+    try {
+      const up = later(uploadTo(k, prep, 'a', 'a'));
+      await h.inside;
+      assert.equal((await raw(k.port, 'POST', `${API}/cancel?sessionId=${prep.data.sessionId}`)).status, 200);
+      h.release();
+      assert.equal((await up).status, 200);
+    } finally { h.restore(); }
+    assert.equal(k.state().items.find((x) => x.files?.[0]?.name === 'a.txt')?.status, 'partial');
+    assert.deepEqual(left(k), ['a.txt']);
+    await k.stop();
+  });
+
+  await check('while a file gets its name a left address or a cancel cuts it off cleanly', async () => {
+    const at = { ip: '127.0.0.52' };
+    const k = await lone('k11', at);
+    const fsp = require('node:fs/promises');
+    let prep = await raw(k.port, 'POST', `${API}/prepare-upload`, twoFiles('fp-k11'), { host: at.ip });
+    let h = hold(fsp, 'open', (file) => path.basename(String(file)) === 'a.txt');
+    try {
+      const up = later(uploadTo(k, prep, 'a', 'a', at.ip));
+      await h.inside;
+      at.ip = '127.0.0.53';
+      await k.scan(); // the address it came over is gone, but the file is on its way
+      assert.equal((await raw(k.port, 'POST', `${API}/prepare-upload`, twoFiles('fp-k11b'))).status, 409);
+      h.release();
+      assert.equal((await up).status, 200);
+    } finally { h.restore(); }
+    assert.equal(k.state().items.find((x) => x.files?.[0]?.name === 'a.txt')?.status, 'partial'); // b can no longer come
+    prep = await raw(k.port, 'POST', `${API}/prepare-upload`, twoFiles('fp-k11c'));
+    assert.equal(prep.status, 200);
+    h = hold(fsp, 'open', (file) => path.basename(String(file)) === 'a (1).txt');
+    try {
+      const up = later(uploadTo(k, prep, 'a', 'a'));
+      await h.inside;
+      assert.equal((await raw(k.port, 'POST', `${API}/cancel?sessionId=${prep.data.sessionId}`)).status, 200);
+      h.release();
+      await up.catch(() => {}); // cancelling cut the connection
+      await until(() => !fs.readdirSync(k.inbox).some((n) => n.includes('a (1).txt')));
+    } finally { h.restore(); }
+    await k.stop();
+  });
+
+  await check('quitting while a file comes leaves no half file, and keeps one that is being named', async () => {
+    const k = await lone('k12');
+    const prep = await raw(k.port, 'POST', `${API}/prepare-upload`, twoFiles('fp-k12'));
+    const up = https.request({ host: '127.0.0.1', port: k.port, method: 'POST', path: `${API}/upload?sessionId=${prep.data.sessionId}&fileId=a&token=${prep.data.files.a}`,
+      rejectUnauthorized: false, agent: false, headers: { 'Content-Length': 2 } });
+    up.on('error', () => {});
+    up.write('a');
+    await until(() => k.state().items.find((x) => x.files?.[0]?.name === 'a.txt')?.got === 1);
+    await k.stop();
+    assert.deepEqual(left(k), []); // gone by the time stop() is done, before the app exits
+    const k2 = await lone('k13');
+    const prep2 = await raw(k2.port, 'POST', `${API}/prepare-upload`, twoFiles('fp-k13'));
+    const h = hold(require('node:fs/promises'), 'rename', (from, to) => path.basename(String(to)) === 'a.txt');
+    try {
+      later(uploadTo(k2, prep2, 'a', 'a'));
+      await h.inside;
+      const stopping = k2.stop();
+      h.release();
+      await stopping;
+    } finally { h.restore(); }
+    assert.deepEqual(left(k2), ['a.txt']);
+    const saved = JSON.parse(fs.readFileSync(path.join(tmp, 'k13.json'), 'utf8')).items.find((x) => x.files?.[0]?.name === 'a.txt');
+    assert.deepEqual([saved.status, saved.files[0].done], ['partial', true]);
   });
 
   await check('a probe that stop() caught midway asks nothing more', async () => {
