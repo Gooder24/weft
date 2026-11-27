@@ -1,0 +1,294 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 85e3867..96d7931 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -5642,6 +5642,7 @@ dependencies = [
+  "reqwest",
+  "ruma",
+  "rustls",
++ "rustls-platform-verifier",
+  "rustyline-async",
+  "sd-notify",
+  "serde",
+diff --git a/src/core/config/mod.rs b/src/core/config/mod.rs
+index 415a55b..ca464e0 100644
+--- a/src/core/config/mod.rs
++++ b/src/core/config/mod.rs
+@@ -3432,6 +3432,27 @@ pub struct Config {
+ 	#[serde(default = "default_startup_netburst_keep")]
+ 	pub startup_netburst_keep: i64,
+ 
++	/// Send an empty transaction to every server this one shares a room with,
++	/// shortly after startup.
++	///
++	/// A peer that could not reach this server keeps waiting out its backoff
++	/// even after this server is back, because nothing tells it. The empty
++	/// transaction does, so the peer delivers what it holds at once.
++	#[serde(default)]
++	pub startup_hello: bool,
++
++	/// Accept any TLS certificate from a federation peer whose server name is
++	/// an IPv6 address in Yggdrasil's 200::/7.
++	///
++	/// Yggdrasil derives such an address from the node's public key and
++	/// encrypts traffic to it end to end, so the overlay already authenticates
++	/// the peer. Enable this only where 200::/7 can leave the machine through
++	/// the Yggdrasil interface alone (a firewall rule); otherwise anyone who
++	/// routes that range could pose as a peer. Every other name's certificate
++	/// is verified as usual.
++	#[serde(default)]
++	pub yggdrasil_trust_overlay: bool,
++
+ 	/// Block non-admin local users from sending room invites (local and
+ 	/// remote), and block non-admin users from receiving remote room invites.
+ 	///
+diff --git a/src/service/Cargo.toml b/src/service/Cargo.toml
+index 4ce0b6e..2e9243d 100644
+--- a/src/service/Cargo.toml
++++ b/src/service/Cargo.toml
+@@ -112,6 +112,7 @@ regex.workspace = true
+ reqwest.workspace = true
+ ruma.workspace = true
+ rustls.workspace = true
++rustls-platform-verifier = "0.7"
+ rustyline-async.workspace = true
+ rustyline-async.optional = true
+ serde_html_form.workspace = true
+diff --git a/src/service/client/mod.rs b/src/service/client/mod.rs
+index 48e075b..4467e38 100644
+--- a/src/service/client/mod.rs
++++ b/src/service/client/mod.rs
+@@ -16,6 +16,7 @@
+ 
+ use crate::{Services, resolver::Validating, service};
+ 
++mod overlay_tls;
+ #[cfg(test)]
+ mod tests;
+ 
+@@ -325,11 +326,16 @@ fn base(config: &Config, proxy: &ProxySnapshot, name: Option<&str>) -> Result<Cl
+ 		.pool_max_idle_per_host(config.request_idle_per_host.into())
+ 		.user_agent(user_agent)
+ 		.redirect(Policy::limited(6))
+-		.danger_accept_invalid_certs(config.allow_invalid_tls_certificates)
+ 		.connection_verbose(cfg!(debug_assertions))
+ 		// Check if env var is set to avoid locking the keyfile mutex on every connection open
+ 		.tls_sslkeylogfile(std::env::var_os("SSLKEYLOGFILE").is_some());
+ 
++	let builder = if config.yggdrasil_trust_overlay && !config.allow_invalid_tls_certificates {
++		builder.tls_backend_preconfigured(overlay_tls::config()?)
++	} else {
++		builder.danger_accept_invalid_certs(config.allow_invalid_tls_certificates)
++	};
++
+ 	let encodings: [(bool, DisableEncoding); 3] = [
+ 		(config.request_gzip, ClientBuilder::no_gzip),
+ 		(config.request_brotli, ClientBuilder::no_brotli),
+diff --git a/src/service/client/overlay_tls.rs b/src/service/client/overlay_tls.rs
+new file mode 100644
+index 0000000..fc6ba20
+--- /dev/null
++++ b/src/service/client/overlay_tls.rs
+@@ -0,0 +1,105 @@
++//! TLS for federation peers named by a Yggdrasil address (`yggdrasil_trust_overlay`).
++//!
++//! Yggdrasil derives a node's address in 200::/7 from its public key and
++//! encrypts traffic to it end to end, so reaching the address already proves
++//! who answers. A peer named by such an address may present any certificate,
++//! self-signed included; the handshake signature is still checked against it.
++//! Every other name goes through the platform verifier as before.
++
++use std::{net::IpAddr, sync::Arc};
++
++use rustls::{
++	ClientConfig, DigitallySignedStruct, SignatureScheme,
++	client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
++	crypto::CryptoProvider,
++	pki_types::{CertificateDer, ServerName, UnixTime},
++};
++use tuwunel_core::{Result, err};
++
++/// Whether an address lies in Yggdrasil's range, 200::/7.
++pub(crate) fn is_yggdrasil(ip: IpAddr) -> bool {
++	matches!(ip, IpAddr::V6(ip) if ip.octets()[0] & 0xfe == 0x02)
++}
++
++#[derive(Debug)]
++struct OverlayVerifier {
++	inner: rustls_platform_verifier::Verifier,
++}
++
++impl ServerCertVerifier for OverlayVerifier {
++	fn verify_server_cert(
++		&self,
++		end_entity: &CertificateDer<'_>,
++		intermediates: &[CertificateDer<'_>],
++		server_name: &ServerName<'_>,
++		ocsp_response: &[u8],
++		now: UnixTime,
++	) -> Result<ServerCertVerified, rustls::Error> {
++		if let ServerName::IpAddress(ip) = server_name
++			&& is_yggdrasil(IpAddr::from(*ip))
++		{
++			return Ok(ServerCertVerified::assertion());
++		}
++
++		self.inner
++			.verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now)
++	}
++
++	fn verify_tls12_signature(
++		&self,
++		message: &[u8],
++		cert: &CertificateDer<'_>,
++		dss: &DigitallySignedStruct,
++	) -> Result<HandshakeSignatureValid, rustls::Error> {
++		self.inner.verify_tls12_signature(message, cert, dss)
++	}
++
++	fn verify_tls13_signature(
++		&self,
++		message: &[u8],
++		cert: &CertificateDer<'_>,
++		dss: &DigitallySignedStruct,
++	) -> Result<HandshakeSignatureValid, rustls::Error> {
++		self.inner.verify_tls13_signature(message, cert, dss)
++	}
++
++	fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
++		self.inner.supported_verify_schemes()
++	}
++}
++
++/// A client TLS config like reqwest's own, with the overlay exception.
++pub(crate) fn config() -> Result<ClientConfig> {
++	let provider = CryptoProvider::get_default()
++		.cloned()
++		.unwrap_or_else(|| Arc::new(rustls::crypto::aws_lc_rs::default_provider()));
++
++	let inner = rustls_platform_verifier::Verifier::new(provider.clone())
++		.map_err(|e| err!("TLS verifier for Yggdrasil peers: {e}"))?;
++
++	let mut config = ClientConfig::builder_with_provider(provider)
++		.with_safe_default_protocol_versions()
++		.map_err(|e| err!("TLS versions for Yggdrasil peers: {e}"))?
++		.dangerous()
++		.with_custom_certificate_verifier(Arc::new(OverlayVerifier { inner }))
++		.with_no_client_auth();
++
++	config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
++
++	Ok(config)
++}
++
++#[cfg(test)]
++mod tests {
++	use super::is_yggdrasil;
++
++	#[test]
++	fn yggdrasil_range() {
++		for ip in ["200::1", "201:abcd::1", "300:1::1", "3ff:ffff::1"] {
++			assert!(is_yggdrasil(ip.parse().unwrap()), "{ip}");
++		}
++		for ip in ["1ff:ffff::1", "400::1", "2001:db8::1", "fc00::1", "10.0.0.1", "::ffff:2.0.0.1"] {
++			assert!(!is_yggdrasil(ip.parse().unwrap()), "{ip}");
++		}
++	}
++}
+diff --git a/src/service/sending/hello.rs b/src/service/sending/hello.rs
+new file mode 100644
+index 0000000..7f144c6
+--- /dev/null
++++ b/src/service/sending/hello.rs
+@@ -0,0 +1,61 @@
++//! Tell every peer this server is back (`startup_hello`).
++//!
++//! A peer that failed to reach this server keeps its failure rows until
++//! something arrives from here; only then does `notify_peer_alive` clear them
++//! and flush what it holds. An empty transaction is enough.
++
++use std::{sync::Arc, time::Duration};
++
++use futures::StreamExt;
++use ruma::{
++	MilliSecondsSinceUnixEpoch, OwnedServerName,
++	api::federation::transactions::send_transaction_message::v1::Request,
++};
++use tuwunel_core::{debug, debug_warn, implement, utils::ReadyExt};
++
++use super::Service;
++
++/// Listeners and key caches come up first.
++const HELLO_DELAY: Duration = Duration::from_secs(5);
++const HELLO_CONCURRENCY: usize = 8;
++
++#[implement(Service)]
++pub(super) async fn hello_peers(self: Arc<Self>) {
++	tokio::time::sleep(HELLO_DELAY).await;
++
++	let me = &self.server.name;
++	let peers: Vec<OwnedServerName> = self
++		.services
++		.state_cache
++		.servers()
++		.ready_filter(|server| *server != &**me)
++		.map(ToOwned::to_owned)
++		.collect()
++		.await;
++
++	let ts = MilliSecondsSinceUnixEpoch::now();
++	futures::stream::iter(peers)
++		.for_each_concurrent(HELLO_CONCURRENCY, |server| {
++			let this = &self;
++			async move {
++				let request = Request {
++					transaction_id: format!("hello-{}", ts.get()).into(),
++					origin: me.clone(),
++					origin_server_ts: ts,
++					pdus: Vec::new(),
++					edus: Vec::new(),
++				};
++
++				match this
++					.services
++					.federation
++					.execute_on(&this.services.client.sender, &server, request)
++					.await
++				{
++					| Ok(_) => debug!(%server, "said hello"),
++					| Err(error) => debug_warn!(%server, %error, "hello not delivered"),
++				}
++			}
++		})
++		.await;
++}
+diff --git a/src/service/sending/mod.rs b/src/service/sending/mod.rs
+index 28afcff..f03cbce 100644
+--- a/src/service/sending/mod.rs
++++ b/src/service/sending/mod.rs
+@@ -1,6 +1,7 @@
+ mod data;
+ mod dest;
+ mod device;
++mod hello;
+ mod sender;
+ #[cfg(test)]
+ mod tests;
+diff --git a/src/service/sending/worker.rs b/src/service/sending/worker.rs
+index 30653a2..fdbc334 100644
+--- a/src/service/sending/worker.rs
++++ b/src/service/sending/worker.rs
+@@ -35,6 +35,13 @@ pub(super) async fn run(self: Arc<Self>) -> Result {
+ 				senders
+ 			});
+ 
++	if self.server.config.startup_hello && !self.server.config.maintenance {
++		self.flushes
++			.lock()
++			.expect("locked")
++			.spawn_on(self.clone().hello_peers(), self.server.runtime());
++	}
++
+ 	let result = join_senders(senders).await;
+ 	let mut flushes = take(&mut *self.flushes.lock().expect("locked"));
+ 

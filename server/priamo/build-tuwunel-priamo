@@ -1,0 +1,33 @@
+#!/bin/sh
+# Builds the Tuwunel that Weft Priamo runs: v1.9.4 with tuwunel-priamo.patch (yggdrasil_trust_overlay,
+# startup_hello; docs/navrhy/2026-11-priamo/README.md). Run on asus: a cold build takes about an hour with 6 jobs and
+# ~15 GB in the target directory. The binary lands in ~/build/tuwunel-priamo; Weft's live homeserver is not touched.
+set -eu
+SRC=${SRC:-$HOME/src/tuwunel}
+HERE=$(cd "$(dirname "$0")" && pwd)
+export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$HOME/src/tuwunel-target}
+if [ ! -d "$SRC" ]; then git clone -q https://github.com/matrix-construct/tuwunel "$SRC"; fi
+cd "$SRC"
+git fetch -q --tags
+git checkout -q --detach v1.9.4
+git reset -q --hard && git clean -qfd
+git apply "$HERE/tuwunel-priamo.patch"
+# RocksDB's io_uring wants liburing's headers; without sudo they come unpacked from the Debian package.
+if ! pkg-config --exists liburing; then
+  DEPS=$HOME/src/deps
+  mkdir -p "$DEPS/deb"
+  (cd "$DEPS/deb" && apt download liburing-dev && dpkg -x liburing-dev_*.deb "$DEPS/root")
+  # The package's liburing.so points at a runtime it does not carry; the system's liburing2 is that runtime.
+  ln -sf /usr/lib/x86_64-linux-gnu/liburing.so.2 "$DEPS/root/usr/lib/x86_64-linux-gnu/liburing.so"
+  PC=$DEPS/root/usr/lib/x86_64-linux-gnu/pkgconfig
+  sed -i "s|^prefix=.*|prefix=$DEPS/root/usr|; s|^libdir=.*|libdir=\${prefix}/lib/x86_64-linux-gnu|; s|^includedir=.*|includedir=\${prefix}/include|" "$PC"/*.pc
+  export PKG_CONFIG_PATH=$PC
+  # RocksDB's C++ build takes the header path from neither pkg-config nor cargo, only from the compiler's own variables.
+  export CPLUS_INCLUDE_PATH=$DEPS/root/usr/include C_INCLUDE_PATH=$DEPS/root/usr/include
+  export LIBRARY_PATH=$DEPS/root/usr/lib/x86_64-linux-gnu
+fi
+# direct_tls: Priamo serves federation TLS itself, with no proxy in front of the Yggdrasil address.
+nice -n 10 cargo build --release -j "${JOBS:-6}" --features direct_tls
+mkdir -p "$HOME/build"
+cp "$CARGO_TARGET_DIR/release/tuwunel" "$HOME/build/tuwunel-priamo"
+echo "$HOME/build/tuwunel-priamo"

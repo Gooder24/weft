@@ -335,6 +335,14 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   unit `matrix-spike-sendlater`): it sends the messages Weft keeps in account data `sk.karchi.sendlater` when due.
   An item with `gap` (ms) goes at most one batch per `gap` per network (`net`), also after an outage. Check:
   `tests/sendlater/gap_test.py`.
+- `server/priamo/` is Weft Priamo (design `docs/navrhy/2026-11-priamo/`): Matrix between two people's own
+  homeservers over Yggdrasil, without a public IP, domain or certificate. Built so far: `tuwunel-priamo.patch` on
+  Tuwunel 1.9.4 (`yggdrasil_trust_overlay`: a name in 200::/7 may present any certificate, every other name is
+  verified; `startup_hello`: an empty transaction to every peer after start, so it delivers what it held), built by
+  `build-tuwunel-priamo` into asus `~/build/tuwunel-priamo`; `bun priamo.ts render priamo.json <dir>` makes the
+  firewall (`priamo.nft`: on the Yggdrasil interface only contacts reach the port, 200::/7 never leaves through
+  another interface) and Tuwunel's allowlist from one contact list. Nothing of it runs on asus yet. Checks:
+  `bun run check` there, the local lab `overenie/prenos-lab/run.sh priamo`.
 - Rozoslať (beta, Settings → Správy, account data `sk.karchi.broadcast` `beta`; off shows it nowhere): one message
   to many people in four steps (Komu, Správa, Náhľad, Rozoslané; Ctrl+J or chat menu), each in their own chat with
   their own greeting (`{oslovenie}`, `{meno}`; corrected ones kept in `sk.karchi.people.names`, keys as in
