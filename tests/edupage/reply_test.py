@@ -445,6 +445,21 @@ check("…shown by the next poll: linked with a ✓, not posted again",
       rooms4.sync([{"timelineid": "77", "typ": "sprava", "reakcia_na": "14", "vlastnik": ME, "text": "Nič", "cas_pridania": now}], "skola", ME) == 0
       and db.execute("SELECT event_id FROM items WHERE id = 77").fetchone() == ("$nothing",) and ("SUCCESS", "$nothing") in events and not said, (events, said))
 
+# A send that surely failed is said with settle_unsure's own transaction: if its rows outlive it, no second notice.
+class TxnRooms(Rooms2):
+    def say(self, room, text, answers="", txn=""):
+        said.append((text, txn))
+        return "$t"
+
+
+said.clear()
+acct.edu = Edu()
+Session.lost = b.requests.ConnectTimeout("no route")
+acct.outbox.put(("!room", "$sure", "$own", "Isto nie", "", [], ""))
+acct.send_outbox(TxnRooms(db))
+Session.lost = None
+check("a sure failure is said with the one transaction settle_unsure would use", said == [(b.NOT_SENT, b.unsure_txn("$sure"))], said)
+
 # The database refuses even the pending rows (locked): nothing goes out and Karchi is told.
 class LockedDB:
     def __init__(self, real): self.real = real

@@ -1895,6 +1895,7 @@ class Account:
             noticed = rooms.notices(items, prefs)
             rooms.settle_unsure()
         except (MatrixError, urllib.error.URLError) as err:
+            rooms.db.rollback()  # what sync left half written comes again next poll, never half committed
             log("matrix error:", err)
             return
         log(f"poll ok: {len(items)} source items, posted {posted} messages, {noticed} notices")
@@ -2159,7 +2160,7 @@ class Account:
                     continue
                 log("reply failed:", repr(err))
                 rooms.forget_pending(event_id)
-                rooms.say(room_id, "Táto správa neodišla do EduPage. Skús to znova alebo odpovedz na edupage.org.", event_id)
+                rooms.say(room_id, NOT_SENT, event_id, unsure_txn(event_id))  # settle_unsure's own: never said twice
 
     def run(self) -> None:
         rooms = Rooms(open_db())
@@ -2168,6 +2169,7 @@ class Account:
                 self.send_outbox(rooms)
                 self.poll(rooms)
             except Exception as err:  # keep polling; a bug in one item must not stop the bridge
+                rooms.db.rollback()  # half of a failed write must not be committed by the next one
                 log("poll failed:", repr(err))
             self.wake.wait(POLL_SECONDS)
             self.wake.clear()
