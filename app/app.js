@@ -1456,10 +1456,13 @@ function roomEvent(r, ev, old = false) {
  *  word never takes back an earlier one (a delivery after the network took it, receipts in any order). */
 function sendStatusIn(r, ev) {
   const id = ev.content?.['m.relates_to']?.event_id;
-  if (!id || ev.sender === S.userId || (ev.sender !== r.bridgebot && !isBot(ev.sender))) return;
+  if (!id || ev.sender === S.userId || !(r.bridgebot ? ev.sender === r.bridgebot : isBot(ev.sender))) return;
   const was = r.sent.get(id) || { ok: false, to: [] };
   const to = Array.isArray(ev.content.delivered_to_users) ? ev.content.delivered_to_users.filter((u) => typeof u === 'string' && u !== S.userId) : [];
-  r.sent.set(id, { ok: was.ok || ev.content.status === 'SUCCESS', to: [...new Set([...was.to, ...to])] });
+  const ok = was.ok || ev.content.status === 'SUCCESS';
+  // A refusal without the bridge's notice still says so under the message (roomModel's failed).
+  const fail = !ok && /^FAIL/.test(ev.content.status || '') ? { reason: String(ev.content.message || ev.content.reason || ''), sure: ev.content.status === 'FAIL_PERMANENT' } : was.fail;
+  r.sent.set(id, { ok, to: [...new Set([...was.to, ...to])], ...(fail && !ok ? { fail } : {}) });
 }
 
 function updateRoom(r, data) {
@@ -1904,6 +1907,9 @@ function roomModel(r) {
     if (!about && (f.sure || !r.sent?.get(id)?.ok)) failed.set(id, { reason: failReason(f.reason), sure: f.sure });
     return false;
   });
+  for (const [id, said] of r.sent || []) {
+    if (said.fail && !said.ok && own.has(id) && !failed.has(id)) failed.set(id, { reason: failReason(said.fail.reason) || T('sieť ju neprijala'), sure: said.fail.sure });
+  }
   if (failed.size || resent.size) messages = messages.filter((ev) => !resent.has(ev.event_id) && !(failed.has(ev.event_id) && redacted.has(ev.event_id)));
   // Messages waiting for their batch are left out here, so the list, previews and the chat agree.
   const waiting = messages.filter((ev) => isHeld(ev, cut, talk) && !redacted.has(ev.event_id));
@@ -4548,7 +4554,7 @@ function resetRoom() {
 function addEvent(ev) {
   if (ev.type === SEND_STATUS) {
     const id = ev.content?.['m.relates_to']?.event_id;
-    if (id && isBot(ev.sender) && ev.content.status === 'SUCCESS') S.eduSent.add(id);
+    if (id && /^@edupagebot:/.test(ev.sender) && ev.content.status === 'SUCCESS') S.eduSent.add(id);
     return;
   }
   if (ev.type === 'm.room.member') {
@@ -5853,7 +5859,7 @@ function detailView(t) {
 function eduMark(ev) {
   const state = ev.pending ? 'sending' : S.eduSent.has(ev.event_id) ? 'sent' : ev.origin_server_ts >= SEND_STATUS_SINCE ? 'server' : null;
   if (!state) return null;
-  const why = state === 'sending' ? T('Ide na server Weftu') : state === 'sent' ? T`${'EduPage'} ju prijal, doručenie nehlási` : T`Je na serveri Weftu, ${'EduPage'} ju ešte neprijal`;
+  const why = state === 'sending' ? T('Ide na server Weftu') : state === 'sent' ? T`${'EduPage'} ju prijal, doručenie nehlási` : T`Je na serveri Weftu, ${'EduPage'} zatiaľ nepotvrdil, že ju prijal`;
   return h('span', { class: `mstate ${state}`, title: why, 'aria-label': why }, icon(SEND_ICONS[state]));
 }
 
@@ -8202,7 +8208,7 @@ function sendWords(r, state) {
   const net = appOf(r.app)?.name || r.app;
   const tells = r.app === 'whatsapp' || r.app === 'messenger'; // their bridges say when a one-to-one message arrived
   if (state === 'sending') return [T('Odosiela sa'), T('Ide na server Weftu')];
-  if (state === 'server') return [T('Na serveri'), T`Je na serveri Weftu, ${net} ju ešte neprijal`];
+  if (state === 'server') return [T('Na serveri'), T`Je na serveri Weftu, ${net} zatiaľ nepotvrdil, že ju prijal`];
   if (state === 'delivered') return [T('Doručené'), T('Doručené do zariadenia')];
   if (!STATUS_APPS.has(r.app)) return [T('Odoslané'), T('Je na serveri Weftu')];
   return [T('Odoslané'), tells && dmPartner(r) ? T`${net} ju prijal, doručenie zatiaľ nehlási` : T`${net} ju prijal, doručenie nehlási`];
@@ -8218,38 +8224,40 @@ function sendMark(r, ev, read) {
       ids.slice(0, 3).map((id) => avatar(r.members.get(id)?.avatar, memberName(r, id), 24, 'reader-av')),
       ids.length > 3 ? h('span', { class: 'reader-more' }, `+${ids.length - 3}`) : null);
   }
-  if (read && ev.origin_server_ts <= (read.far.get(r.id) ?? -1)) return h('span', { class: 'mstate' });
+  if (read && (read.pos.get(ev.event_id) ?? Infinity) <= (read.far.get(r.id) ?? -1)) return h('span', { class: 'mstate' });
   const state = sendState(r, ev);
   if (!state) return h('span', { class: 'mstate' });
   const [, why] = sendWords(r, state);
   return h('span', { class: `mstate ${state}`, title: why, 'aria-label': why }, icon(SEND_ICONS[state]));
 }
-const markSig = (r, ev, read) => `${sendState(r, ev)}|${(read?.at.get(ev.event_id) || []).map(([id, ts]) => `${id}@${ts}`).join()}|${ev.origin_server_ts <= (read?.far.get(r.id) ?? -1)}`;
+const markSig = (r, ev, read) => `${sendState(r, ev)}|${(read?.at.get(ev.event_id) || []).map(([id, ts]) => `${id}@${ts}`).join()}|${(read?.pos.get(ev.event_id) ?? Infinity) <= (read?.far.get(r.id) ?? -1)}`;
 /** Where each person of a chat's rooms stopped reading Karchi's messages: `at` own event id -> [[mxid, ts]] of the
  *  people whose newest read message of his it is (left out when they wrote after it: their answer says they saw it),
  *  `far` room id -> the time of the furthest anyone read. */
 function readMarks(t) {
-  const at = new Map(), far = new Map();
+  const at = new Map(), far = new Map(), pos = new Map();
   const own = new Map(), lastBy = new Map();
-  for (const ev of t.msgs) {
+  t.msgs.forEach((ev, i) => {
     const x = t.roomOf(ev);
+    pos.set(ev.event_id, i);
     if (ev.sender === S.userId) { if (!ev.pending) (own.get(x) || own.set(x, []).get(x)).push(ev); }
-    else lastBy.set(`${x.id}|${ev.sender}`, ev.origin_server_ts);
-  }
+    else lastBy.set(`${x.id}|${ev.sender}`, i);
+  });
+  // Where a receipt points in the chat: its message's place, else (a reaction, an event not drawn) after every
+  // message up to its time.
+  const place = (x, event, ts) => pos.get(event) ?? (ts == null ? -1 : t.msgs.findLastIndex((ev) => ev.origin_server_ts <= ts));
   for (const [x, mine] of own) {
-    const tsOf = (id) => x.events.get(id)?.origin_server_ts;
     for (const [id] of joinedPeople(x)) {
-      let upTo = tsOf(x.receipts.get(id)) ?? -1;
-      for (const e of x.receiptLog || []) if (e.user === id) upTo = Math.max(upTo, e.event_ts ?? tsOf(e.event) ?? -1);
+      let upTo = x.receipts.has(id) ? place(x, x.receipts.get(id), x.events.get(x.receipts.get(id))?.origin_server_ts) : -1;
+      for (const e of x.receiptLog || []) if (e.user === id) upTo = Math.max(upTo, place(x, e.event, e.event_ts ?? x.events.get(e.event)?.origin_server_ts));
       if (upTo < 0) continue;
       far.set(x.id, Math.max(far.get(x.id) ?? -1, upTo));
-      const last = mine.findLast((ev) => ev.origin_server_ts <= upTo);
-      if (!last || (lastBy.get(`${x.id}|${id}`) ?? -1) > last.origin_server_ts) continue;
-      const when = seenWhen(x, last, id);
-      at.set(last.event_id, [...(at.get(last.event_id) || []), [id, when]]);
+      const last = mine.findLast((ev) => pos.get(ev.event_id) <= upTo);
+      if (!last || (lastBy.get(`${x.id}|${id}`) ?? -1) > pos.get(last.event_id)) continue;
+      at.set(last.event_id, [...(at.get(last.event_id) || []), [id, seenWhen(x, last, id) ?? null]]);
     }
   }
-  return { at, far };
+  return { at, far, pos };
 }
 
 /** Who saw Karchi's message `ev` and when: [[mxid, ts]], ts null when they saw it but when is not known.
@@ -9065,8 +9073,9 @@ function chatView(r, e = null) {
   notesUntil(Infinity);
   const mineLast = msgs.findLast((ev) => ev.sender === S.userId);
   const mineRoom = mineLast && t.roomOf(mineLast);
-  const seen = mineLast ? seenOf(mineRoom, mineLast) : [];
-  const state = mineLast === msgs[msgs.length - 1] && !seen.length && !mineLast.failed && !roomModel(mineRoom).failed.has(mineLast.event_id) ? sendState(mineRoom, mineLast) : null;
+  const atEnd = !!mineLast && mineLast === msgs.at(-1); // after someone's answer the footer would say what the answer says
+  const seen = atEnd ? seenOf(mineRoom, mineLast) : [];
+  const state = atEnd && !seen.length && !mineLast.failed && !roomModel(mineRoom).failed.has(mineLast.event_id) ? sendState(mineRoom, mineLast) : null;
   if (seen.length) items.push(h('div', { class: 'seen' }, seenView(mineRoom, seen, dmPartner(mineRoom))));
   else if (state) items.push(h('div', { class: 'seen', title: sendWords(mineRoom, state)[1] }, sendWords(mineRoom, state)[0]));
   items.push(typingLine(t.parts, partner));
