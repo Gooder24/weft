@@ -2147,12 +2147,14 @@ class Account:
                     log("session not kept after a send:", repr(err))
             except Unsure as err:  # the pending rows stay: the poll links it with a ✓, else settle_unsure says it did not go
                 log("send answer lost:", err)
+            # A sure failure is said with settle_unsure's own transaction: rows a locked database kept never say it twice.
             except AttachmentRefused as err:
                 rooms.forget_pending(event_id)
-                rooms.say(room_id, f"Táto správa neodišla do EduPage: {err}. Skús iný súbor alebo ju pošli bez neho.", event_id)
+                rooms.say(room_id, f"Táto správa neodišla do EduPage: {err}. Skús iný súbor alebo ju pošli bez neho.", event_id,
+                          unsure_txn(event_id))
             except RecipientsRefused as err:
                 rooms.forget_pending(event_id)
-                rooms.say(room_id, f"Neodoslané: {err}.", event_id)
+                rooms.say(room_id, f"Neodoslané: {err}.", event_id, unsure_txn(event_id))
             except Exception as err:
                 if accepted:  # EduPage has it; a failed write here leaves it pending for the poll to link with its ✓
                     rooms.db.rollback()
@@ -2160,7 +2162,7 @@ class Account:
                     continue
                 log("reply failed:", repr(err))
                 rooms.forget_pending(event_id)
-                rooms.say(room_id, NOT_SENT, event_id, unsure_txn(event_id))  # settle_unsure's own: never said twice
+                rooms.say(room_id, NOT_SENT, event_id, unsure_txn(event_id))
 
     def run(self) -> None:
         rooms = Rooms(open_db())

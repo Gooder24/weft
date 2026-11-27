@@ -459,6 +459,15 @@ acct.outbox.put(("!room", "$sure", "$own", "Isto nie", "", [], ""))
 acct.send_outbox(TxnRooms(db))
 Session.lost = None
 check("a sure failure is said with the one transaction settle_unsure would use", said == [(b.NOT_SENT, b.unsure_txn("$sure"))], said)
+said.clear()
+real_upload = b.upload_attachment
+b.upload_attachment = lambda e, *blob: (_ for _ in ()).throw(b.AttachmentRefused("EduPage neprijal prílohu x.png"))
+real_file, b.matrix_file = b.matrix_file, lambda url: b"x"
+acct.edu = Edu()
+acct.outbox.put(("!room", "$badfile", "$own", "So súborom", "", [{"name": "x.png", "url": "mxc://t/x"}], ""))
+acct.send_outbox(TxnRooms(db))
+b.upload_attachment, b.matrix_file = real_upload, real_file
+check("…a refused file too", len(said) == 1 and said[0][1] == b.unsure_txn("$badfile") and "x.png" in said[0][0], said)
 
 # The database refuses even the pending rows (locked): nothing goes out and Karchi is told.
 class LockedDB:
