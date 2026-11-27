@@ -449,7 +449,7 @@ function offlineBanner() {
 }
 
 function flushAll() {
-  for (const [room, ev] of S.readLater || []) call('POST', `/rooms/${q(room)}/receipt/m.read/${q(ev)}`, {}).catch(() => {});
+  for (const [room, ev] of S.readLater || []) if (S.rooms.has(room)) sendReceipt(S.rooms.get(room), ev);
   S.readLater = null;
   for (const [type, content] of Object.entries(accountOut())) putAccount(type, content).catch(() => {});
   flushOut();
@@ -1337,6 +1337,7 @@ function roomOf(id) {
       loading: false,
       version: 0,
       readSent: '',
+      readCheck: '', // `${event} ${cut}` of the receipt being checked or refused: not asked again
     };
     S.rooms.set(id, r);
   }
@@ -4194,32 +4195,62 @@ function markRoomRead(r, force = false) {
   if (r?.statusRoom) return;
   // Only server events can be read up to; a reaction still on its way has a local id.
   // Member events are kept for the chat's history lines; a bridge may not map a receipt on one to a message.
-  // A message waiting for its batch is not read: the receipt stops before it, so its sender sees no "seen".
+  // A message waiting for its batch is not read: the receipt stops before it (an archived one too), so its sender
+  // sees no "seen".
   const cut = roomCut(r);
-  const last = readUpTo([...r.events.values()].filter((ev) => ev.type !== 'm.room.redaction' && ev.type !== 'm.room.member' && ev.event_id.startsWith('$')), cut, talkOf(r));
+  const evs = [...r.events.values()].filter((ev) => ev.type !== 'm.room.redaction' && ev.type !== 'm.room.member');
+  const talk = talkOf(r);
+  let firstHeld = Infinity;
+  for (const ev of evs) if (isHeld(ev, cut, talk) && ev.origin_server_ts < firstHeld) firstHeld = ev.origin_server_ts;
+  const last = readUpTo(evs.filter((ev) => ev.event_id.startsWith('$') && ev.origin_server_ts < firstHeld), cut, talk);
   if (!last || last.event_id === r.readSent) return;
   if (!force && (document.visibilityState !== 'visible' || !document.hasFocus())) return;
-  // While messages wait, one may be missing from memory (a limited sync emptied the room, the kept copy has only its
-  // newest events): between his receipt, when it is not loaded, and the oldest loaded event, if that came after the
-  // cut. Then no receipt goes (also not with his own „Prečítané“, which reads only here, nor later from offline);
-  // older pages load (at most 20) and the next window lifts it anyway.
-  const mine = r.receipts.get(S.userId) || r.readSent;
-  let oldest = Infinity;
-  for (const ev of r.events.values()) if (ev.event_id.startsWith('$') && ev.origin_server_ts < oldest) oldest = ev.origin_server_ts;
-  const gap = cut !== Infinity && !(mine && r.events.has(mine)) && !r.historyDone && oldest > cut;
-  if (gap) {
-    const pages = r.gapPages?.epoch === r.epoch ? r.gapPages?.n || 0 : 0;
-    if (!r.loading && pages < 20) { r.gapPages = { epoch: r.epoch, n: pages + 1 }; setTimeout(() => loadRoomHistory(r)); }
-    if (!force) return;
-  }
   if (!r.unread && r.receipts.get(S.userId) === last.event_id) return;
   r.unread = 0;
   r.readAt = Math.max(r.readAt, cut === Infinity ? Date.now() : 0, last.origin_server_ts);
-  if (gap) return;
-  // Offline only this window knows; the receipt for exactly what was read goes out after reconnecting.
+  // Offline only this window knows; the receipt goes out after reconnecting, checked again then.
   if (S.offline) return (S.readLater ||= new Map()).set(r.id, last.event_id);
-  r.readSent = last.event_id;
-  call('POST', `/rooms/${q(r.id)}/receipt/m.read/${q(last.event_id)}`, {}).catch(() => { r.readSent = ''; });
+  if (r.readCheck !== `${last.event_id} ${cut}`) return sendReceipt(r, last.event_id);
+}
+
+/** Sends his receipt on an event. While messages wait, memory may lack one before it (a limited sync emptied the
+ *  room, the kept copy has only its newest events, a jump loaded older ones apart), so the server's own timeline from
+ *  the event back to his last receipt, or to the cut, is read first: a waiting message there stops it. */
+async function sendReceipt(r, eventId) {
+  const cut = roomCut(r);
+  const check = r.readCheck = `${eventId} ${cut}`;
+  try {
+    if (cut !== Infinity && !(await receiptSafe(r, eventId, cut))) return;
+    if (r.readCheck !== check) return;
+    r.readSent = eventId;
+    await call('POST', `/rooms/${q(r.id)}/receipt/m.read/${q(eventId)}`, {});
+  } catch {
+    if (r.readSent === eventId) r.readSent = '';
+    if (r.readCheck === check) r.readCheck = '';
+  }
+}
+
+async function receiptSafe(r, eventId, cut) {
+  const mine = r.receipts.get(S.userId);
+  const filter = q(JSON.stringify({ types: TIMELINE_TYPES }));
+  const ctx = await call('GET', `/rooms/${q(r.id)}/context/${q(eventId)}?limit=0&filter=${filter}`);
+  const seen = [];
+  let from = ctx.start;
+  let reached = false;
+  for (let page = 0; page < 10 && from && !reached; page++) {
+    const data = await call('GET', `/rooms/${q(r.id)}/messages?dir=b&limit=100&from=${q(from)}&filter=${filter}`);
+    for (const ev of data.chunk || []) {
+      if (ev.event_id === mine || ev.origin_server_ts <= cut) { reached = true; break; }
+      seen.push(ev);
+    }
+    from = data.chunk?.length && data.end !== from ? data.end : null;
+    if (!from) reached = true; // the room's beginning
+  }
+  if (!reached) return false;
+  // His messages in that stretch let what came after them through, as on screen.
+  const own = seen.filter((ev) => ev.sender === S.userId && (ev.type === 'm.room.message' || ev.type === 'm.sticker' || POLL_START.includes(ev.type)) && ev.content?.['m.relates_to']?.rel_type !== 'm.replace');
+  const talk = [...new Set([...talkOf(r), ...own.map((ev) => ev.origin_server_ts)])].sort((a, b) => a - b);
+  return !seen.some((ev) => ev.type !== 'm.room.redaction' && ev.type !== 'm.room.member' && isHeld(ev, cut, talk));
 }
 window.addEventListener('focus', () => S.view === 'main' && render());
 
