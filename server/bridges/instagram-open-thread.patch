@@ -1,4 +1,4 @@
-From eab207a6f79e8b7273f6533a97c8bd46635be76f Mon Sep 17 00:00:00 2001
+From d31536150e16489601a8e50624f3e124019a8ee4 Mon Sep 17 00:00:00 2001
 From: Gooder24 <162874774+Gooder24@users.noreply.github.com>
 Date: Thu, 26 Nov 2026 08:24:39 +0100
 Subject: [PATCH] igconnector: open an existing thread by its FBID through
@@ -10,17 +10,17 @@ so it could not be written to again from Matrix.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- pkg/igconnector/openthread.go | 105 ++++++++++++++++++++++++++++++++++
+ pkg/igconnector/openthread.go | 135 ++++++++++++++++++++++++++++++++++
  pkg/igconnector/startchat.go  |   3 +
- 2 files changed, 108 insertions(+)
+ 2 files changed, 138 insertions(+)
  create mode 100644 pkg/igconnector/openthread.go
 
 diff --git a/pkg/igconnector/openthread.go b/pkg/igconnector/openthread.go
 new file mode 100644
-index 0000000..fa5d8d4
+index 0000000..73e3122
 --- /dev/null
 +++ b/pkg/igconnector/openthread.go
-@@ -0,0 +1,105 @@
+@@ -0,0 +1,135 @@
 +package igconnector
 +
 +import (
@@ -28,6 +28,7 @@ index 0000000..fa5d8d4
 +	"fmt"
 +	"strconv"
 +	"strings"
++	"sync"
 +	"time"
 +
 +	"maunium.net/go/mautrix"
@@ -41,7 +42,8 @@ index 0000000..fa5d8d4
 +// threadIdentifierPrefix marks an existing thread by the number in Instagram's web address /direct/t/<id>/ and in
 +// the folder names of Instagram's data export: a group's FBID, or a DM's chat ID (its portal is keyed by the other
 +// person's FBID instead). POST /v3/create_dm/thread:<fbid>
-+// opens such a thread as a portal; GET /v3/resolve_identifier/thread:<fbid> only says whether one exists.
++// opens such a thread as a portal; GET /v3/resolve_identifier/thread:<fbid> only says whether its room exists (200
++// without a room ID, else 404).
 +const threadIdentifierPrefix = "thread:"
 +
 +func (ic *IGClient) resolveThread(ctx context.Context, rawID string, createChat bool) (*bridgev2.ResolveIdentifierResponse, error) {
@@ -49,29 +51,44 @@ index 0000000..fa5d8d4
 +	if err != nil || fbid <= 0 {
 +		return nil, bridgev2.WrapRespErr(fmt.Errorf("invalid thread ID %q", rawID), mautrix.MInvalidParam)
 +	}
-+	keys := []networkid.PortalKey{ic.makePortalKey(fbid, true), ic.makePortalKey(fbid, false)}
-+	if dmFBID, err := ic.Main.DB.GetFBIDForIGChat(ctx, rawID, ic.UserLogin.ID); err != nil {
++	// A chat ID the bridge has seen maps to its portal's FBID (a DM's is the other person's); one it has not seen
++	// can only be a group's, whose FBID it is: a DM then goes through GetThread, which checks the ID.
++	keys := []networkid.PortalKey{ic.makePortalKey(fbid, true)}
++	if mapped, err := ic.Main.DB.GetFBIDForIGChat(ctx, rawID, ic.UserLogin.ID); err != nil {
 +		return nil, fmt.Errorf("failed to get chat ID mapping: %w", err)
-+	} else if dmFBID != 0 && dmFBID != fbid {
-+		keys = append(keys, ic.makePortalKey(dmFBID, false))
++	} else if mapped != 0 && mapped != fbid {
++		keys = []networkid.PortalKey{ic.makePortalKey(mapped, false)}
++	} else if mapped == fbid {
++		keys = append(keys, ic.makePortalKey(fbid, false))
 +	}
++	if !createChat {
++		// A lookup never hands provisioning a portal: its CleanupOrphanedDM could delete the room.
++		for _, key := range keys {
++			if portal, err := ic.Main.Bridge.GetExistingPortalByKey(ctx, key); err != nil {
++				return nil, fmt.Errorf("failed to get existing portal: %w", err)
++			} else if portal != nil && portal.MXID != "" {
++				return &bridgev2.ResolveIdentifierResponse{}, nil
++			}
++		}
++		return nil, nil
++	}
++	// One open at a time per login: a second open of the same thread waits until the first one's room has the user
++	// in it, however long its members take, so provisioning's CleanupOrphanedDM never sees it half made.
++	unlock, err := ic.lockThreadOpen(ctx)
++	if err != nil {
++		return nil, err
++	}
++	defer unlock()
 +	for _, key := range keys {
 +		portal, err := ic.Main.Bridge.GetExistingPortalByKey(ctx, key)
 +		if err != nil {
 +			return nil, fmt.Errorf("failed to get existing portal: %w", err)
 +		} else if portal != nil && portal.MXID != "" {
-+			// Provisioning deletes a room the user is not in and makes a new one (CleanupOrphanedDM). A room being
-+			// created right now (another open of the same thread) gets the user in a moment: wait for that, and
-+			// never let a lookup (GET) delete a room.
-+			if !createChat && !ic.userInRoom(ctx, portal.MXID) {
-+				return nil, nil
-+			}
-+			ic.waitUserInRoom(ctx, portal.MXID) // still not in after it: provisioning makes a new room
++			// A room the bridge itself is making right now gets the user in a moment. Still not in after it: the
++			// user left that room, and provisioning makes a new one (as for a DM).
++			ic.waitUserInRoom(ctx, portal.MXID)
 +			return &bridgev2.ResolveIdentifierResponse{Chat: &bridgev2.CreateChatResponse{PortalKey: portal.PortalKey, Portal: portal}}, nil
 +		}
-+	}
-+	if !createChat {
-+		return nil, nil
 +	}
 +	// One thread info request, the same one the bridge makes for a group it has just created.
 +	resp, err := ic.Client.GetThread(ctx, slidetypes.MakeGetThreadInfoRequest(rawID))
@@ -98,6 +115,19 @@ index 0000000..fa5d8d4
 +	}
 +	ic.waitUserInRoom(ctx, portal.MXID)
 +	return &bridgev2.ResolveIdentifierResponse{Chat: &bridgev2.CreateChatResponse{PortalKey: key, Portal: portal}}, nil
++}
++
++var threadOpenLocks sync.Map // login ID → chan struct{} of capacity 1
++
++func (ic *IGClient) lockThreadOpen(ctx context.Context) (func(), error) {
++	ch, _ := threadOpenLocks.LoadOrStore(ic.UserLogin.ID, make(chan struct{}, 1))
++	lock := ch.(chan struct{})
++	select {
++	case lock <- struct{}{}:
++		return func() { <-lock }, nil
++	case <-ctx.Done():
++		return nil, ctx.Err()
++	}
 +}
 +
 +func (ic *IGClient) userInRoom(ctx context.Context, roomID id.RoomID) bool {
