@@ -69,8 +69,11 @@ async function claim(dir, parts) {
 
 function readBody(req, limit = 1 << 20) {
   return new Promise((resolve, reject) => {
+    const gone = () => reject(Object.assign(new Error('sender gone'), { status: 400 }));
+    if (req.destroyed) return gone(); // it ended before anyone read it: no 'end' or 'error' comes any more
     const chunks = [];
     let size = 0;
+    req.on('close', () => { if (!req.readableEnded) gone(); });
     req.on('data', (c) => { size += c.length; if (size > limit) { reject(Object.assign(new Error('too big'), { status: 413 })); req.destroy(); } else chunks.push(c); });
     req.on('end', () => resolve(Buffer.concat(chunks)));
     req.on('error', reject);
@@ -408,13 +411,14 @@ function createPeer(opts) {
     const part = path.join(path.dirname(target), `.${path.basename(target)}.${newId()}.part`);
     const hash = crypto.createHash('sha256');
     let got = 0;
-    const ok = await new Promise((resolve) => {
+    // A sender gone while its file got a name sends no 'close' any more: that upload failed.
+    const ok = req.destroyed ? false : await new Promise((resolve) => {
       const out = fs.createWriteStream(part, { flags: 'wx', mode: 0o644 });
       let settled = false;
       const done = (yes) => { if (settled) return; settled = true; if (!yes) out.destroy(); resolve(yes); };
       s.streams.add(req);
       req.on('data', (c) => { hash.update(c); got += c.length; s.item.got += c.length; s.touched = Date.now(); emitSoon(); });
-      req.on('close', () => { if (!req.complete) done(false); });
+      req.on('close', () => { if (!req.readableEnded) done(false); }); // gone before all of it was read
       out.on('error', () => done(false));
       out.on('finish', () => done(req.complete));
       req.pipe(out);

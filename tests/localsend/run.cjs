@@ -653,6 +653,46 @@ const settled = (p, id) => until(() => { const it = item(p, id); return it && ![
     await k.stop();
   });
 
+  await check('an upload whose sender left while the board named its file ends, also over an address it left', async () => {
+    let self = '127.0.0.46';
+    const k = createPeer({ dir: path.join(tmp, 'k5', 'in'), statePath: path.join(tmp, 'k5.json'), alias: 'Weft k5', lan: false, hosts: ['127.0.0.1'],
+      port: await freePort(), trusted: () => true, tailnet: async () => ({ self, peers: [] }), log: () => {} });
+    await k.start();
+    const two = { info: { alias: 'mobil', fingerprint: 'fp-k5' }, files: { a: { id: 'a', fileName: 'a.txt', size: 2, fileType: 'text/x' }, b: { id: 'b', fileName: 'b.txt', size: 1, fileType: 'text/x' } } };
+    const prep = await raw(k.port, 'POST', `${API}/prepare-upload`, two, { host: '127.0.0.46' });
+    assert.equal(prep.status, 200);
+    // Hold the board while it makes a.txt, the way a slow disk would.
+    const fsp = require('node:fs/promises');
+    const open = fsp.open;
+    let naming, release, named;
+    const inside = new Promise((r) => { naming = r; });
+    const gate = new Promise((r) => { release = r; });
+    const after = new Promise((r) => { named = r; });
+    fsp.open = async (file, ...rest) => {
+      const h = await open(file, ...rest);
+      if (path.basename(String(file)) !== 'a.txt') return h;
+      return { close: async () => { naming(); await gate; await h.close(); setImmediate(named); } }; // named: once the upload went on
+    };
+    try {
+      const up = https.request({ host: '127.0.0.46', port: k.port, method: 'POST', path: `${API}/upload?sessionId=${prep.data.sessionId}&fileId=a&token=${prep.data.files.a}`,
+        rejectUnauthorized: false, agent: false, headers: { 'Content-Length': 2 } });
+      up.on('error', () => {});
+      up.write('a');
+      await inside;
+      up.destroy();
+      await raw2(k.port); // a whole new TLS connection: the board has seen the first one close
+      release();
+      await after;
+    } finally { fsp.open = open; }
+    const item = k.state().items.find((x) => x.files?.[0]?.name === 'a.txt');
+    self = '127.0.0.47';
+    await k.scan();
+    assert.equal(item && k.state().items.find((x) => x.id === item.id).status, 'stopped');
+    assert.equal((await raw(k.port, 'POST', `${API}/prepare-upload`, { ...two, info: { alias: 'mobil', fingerprint: 'fp-k5b' } })).status, 200);
+    await until(() => !fs.readdirSync(path.join(tmp, 'k5', 'in')).some((n) => n.includes('a.txt'))); // nothing half left behind
+    await k.stop();
+  });
+
   await check('a probe that stop() caught midway asks nothing more', async () => {
     let held = null, afterStop = 0, done = false;
     const phone = require('node:net').createServer((c) => { if (done) { afterStop++; c.destroy(); } else held = c; });
