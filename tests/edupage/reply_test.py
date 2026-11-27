@@ -494,6 +494,21 @@ db.execute("DELETE FROM unsure")
 db.execute("DELETE FROM unnamed")
 db.commit()
 
+# A slow poll: what EduPage showed when it was read decides, not the clock when the poll ends.
+said.clear()
+read = b.datetime.now(b.LOCAL)
+due = (read - b.timedelta(minutes=b.UNSURE_MINUTES) + b.timedelta(seconds=30)).strftime("%Y-%m-%d %H:%M:%S")
+db.execute("INSERT OR REPLACE INTO unnamed VALUES ('$slow', 14, 'Pomaly', ?)", (due,))
+db.execute("INSERT OR REPLACE INTO unsure VALUES ('$slow', '!room', ?, '')", (due,))
+db.commit()
+TxnRooms(db).settle_unsure(read)
+check("a send not yet due when EduPage was read is not judged, however long the poll took", not said, said)
+TxnRooms(db).settle_unsure(read + b.timedelta(minutes=1))
+check("…the next poll's read judges it", len(said) == 1, said)
+db.execute("DELETE FROM unsure")
+db.execute("DELETE FROM unnamed")
+db.commit()
+
 # The database refuses even the pending rows (locked): nothing goes out and Karchi is told.
 class LockedDB:
     def __init__(self, real): self.real = real

@@ -553,12 +553,13 @@ class Rooms:
         self.db.execute("DELETE FROM unsure WHERE event_id = ?", (event_id,))
         self.db.commit()
 
-    def settle_unsure(self) -> None:
-        """A send whose answer was lost and that no poll found in UNSURE_MINUTES did not go: said so now."""
+    def settle_unsure(self, read_at: datetime | None = None) -> None:
+        """A send whose answer was lost and that no poll found in UNSURE_MINUTES did not go: said so now. `read_at` is
+        when the poll read EduPage: only a send that was due by then is judged."""
         for event_id, room_id, notice in self.db.execute(
                 "SELECT event_id, room_id, notice FROM unsure WHERE event_id IN (SELECT event_id FROM items)").fetchall():
             self.take_back(event_id, room_id, notice)
-        cut = (datetime.now(LOCAL) - timedelta(minutes=UNSURE_MINUTES)).strftime("%Y-%m-%d %H:%M:%S")
+        cut = ((read_at or datetime.now(LOCAL)) - timedelta(minutes=UNSURE_MINUTES)).strftime("%Y-%m-%d %H:%M:%S")
         for event_id, room_id in self.db.execute("SELECT event_id, room_id FROM unsure WHERE at < ? AND notice IN ('', '?')"
                                                  " AND event_id NOT IN (SELECT event_id FROM items)", (cut,)).fetchall():
             self.db.execute("UPDATE unsure SET notice = '?' WHERE event_id = ?", (event_id,))  # may reach the room unanswered
@@ -1851,6 +1852,7 @@ class Account:
                 edu = self.connect(creds)
             backfill = not creds.get("backfilled")
             since = school_year_start(date.today()) if backfill else date.today() - timedelta(days=RECENT_DAYS)
+            read_at = datetime.now(LOCAL)  # settle_unsure judges by what EduPage showed then, not by when the poll ends
             try:
                 items = fetch_timeline(edu, since)
             except SessionExpired:
@@ -1896,7 +1898,7 @@ class Account:
             posted = rooms.sync(items, creds["school"], creds["user_id"], settle_before)
             prefs = read_prefs()
             noticed = rooms.notices(items, prefs)
-            rooms.settle_unsure()
+            rooms.settle_unsure(read_at)
         except (MatrixError, urllib.error.URLError) as err:
             rooms.db.rollback()  # what sync left half written comes again next poll, never half committed
             log("matrix error:", err)
