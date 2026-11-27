@@ -90,17 +90,20 @@ export function createBoard({ h, render, isOpen, open }) {
     render();
     setTimeout(() => { if (b.copied === it.id) { b.copied = null; render(); } }, 1200);
   }
+  /** The files of an item that can be opened: all that go out, of what came in those that arrived whole. */
+  const whole = (it) => (it.files || []).map((_, i) => i).filter((i) => it.dir === 'out' || it.files[i].done);
   /** Enter on an item: copy a text, open a file (several: their folder), send again what did not go. */
   function primary(it) {
     if (!it || BUSY.has(it.status)) return;
     if (it.text != null && it.dir === 'in') return copy(it);
     if (it.dir === 'out' && !['done'].includes(it.status)) return api.call('retry', it.id).then((ok) => { if (!ok) { b.note = T('Znova to poslať nejde: súbor už nie je na disku alebo zariadenie bolo zabudnuté.'); render(); } });
     if (it.text != null) return copy(it);
-    if (it.files?.length === 1) return api.call('open', it.id, 0);
-    return api.call('show', it.id, 0);
+    const can = whole(it);
+    if (can.length === 1) return api.call('open', it.id, can[0]);
+    return api.call('show', it.id, can[0] ?? 0);
   }
   const primaryLabel = (it) => (it.text != null && (it.dir === 'in' || it.status === 'done') ? (b.copied === it.id ? T('Skopírované') : T('Kopírovať'))
-    : it.dir === 'out' && it.status !== 'done' ? T('Skúsiť znova') : it.files?.length === 1 ? T('Otvoriť') : T('Priečinok'));
+    : it.dir === 'out' && it.status !== 'done' ? T('Skúsiť znova') : whole(it).length === 1 ? T('Otvoriť') : T('Priečinok'));
   function remove(it) {
     if (!it || BUSY.has(it.status)) return;
     const list = items();
@@ -247,7 +250,7 @@ export function createBoard({ h, render, isOpen, open }) {
     return h('div', { class: 'codepop boardpop', role: 'alertdialog', 'aria-label': T('Prišlo na nástenku'), 'data-key': `board:${it.id}` },
       h('div', { class: 'codepop-head' },
         h('span', {}, h('b', {}, T`Z ${it.device?.alias || '?'}`),
-          it.text != null ? null : h('small', {}, it.files.map((f) => f.name).join(', '))),
+          it.text != null ? null : h('small', {}, whole(it).map((i) => it.files[i].name).join(', '))),
         h('button', { class: 'ghost', title: T('Zavrieť (Esc)'), onclick: closePop }, icon('close'), T('Zavrieť'))),
       it.text != null ? h('p', { class: 'board-text boardpop-text' }, it.text) : null,
       h('div', { class: 'board-row' },
