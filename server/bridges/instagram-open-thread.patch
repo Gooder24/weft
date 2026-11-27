@@ -1,4 +1,4 @@
-From d31536150e16489601a8e50624f3e124019a8ee4 Mon Sep 17 00:00:00 2001
+From e6d097f42b49bed8c9de1d8c280e5b21dd17a192 Mon Sep 17 00:00:00 2001
 From: Gooder24 <162874774+Gooder24@users.noreply.github.com>
 Date: Thu, 26 Nov 2026 08:24:39 +0100
 Subject: [PATCH] igconnector: open an existing thread by its FBID through
@@ -10,17 +10,17 @@ so it could not be written to again from Matrix.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- pkg/igconnector/openthread.go | 135 ++++++++++++++++++++++++++++++++++
+ pkg/igconnector/openthread.go | 139 ++++++++++++++++++++++++++++++++++
  pkg/igconnector/startchat.go  |   3 +
- 2 files changed, 138 insertions(+)
+ 2 files changed, 142 insertions(+)
  create mode 100644 pkg/igconnector/openthread.go
 
 diff --git a/pkg/igconnector/openthread.go b/pkg/igconnector/openthread.go
 new file mode 100644
-index 0000000..73e3122
+index 0000000..014f767
 --- /dev/null
 +++ b/pkg/igconnector/openthread.go
-@@ -0,0 +1,135 @@
+@@ -0,0 +1,139 @@
 +package igconnector
 +
 +import (
@@ -52,14 +52,17 @@ index 0000000..73e3122
 +		return nil, bridgev2.WrapRespErr(fmt.Errorf("invalid thread ID %q", rawID), mautrix.MInvalidParam)
 +	}
 +	// A chat ID the bridge has seen maps to its portal's FBID (a DM's is the other person's); one it has not seen
-+	// can only be a group's, whose FBID it is: a DM then goes through GetThread, which checks the ID.
-+	keys := []networkid.PortalKey{ic.makePortalKey(fbid, true)}
++	// can only be a group's, whose FBID it is: a DM then goes through GetThread, which checks the ID. With split
++	// portals a group's key is the same as a DM's, so an unseen number is always checked there.
++	var keys []networkid.PortalKey
 +	if mapped, err := ic.Main.DB.GetFBIDForIGChat(ctx, rawID, ic.UserLogin.ID); err != nil {
 +		return nil, fmt.Errorf("failed to get chat ID mapping: %w", err)
-+	} else if mapped != 0 && mapped != fbid {
-+		keys = []networkid.PortalKey{ic.makePortalKey(mapped, false)}
 +	} else if mapped == fbid {
-+		keys = append(keys, ic.makePortalKey(fbid, false))
++		keys = []networkid.PortalKey{ic.makePortalKey(mapped, true), ic.makePortalKey(mapped, false)}
++	} else if mapped != 0 {
++		keys = []networkid.PortalKey{ic.makePortalKey(mapped, false)}
++	} else if !ic.Main.Bridge.Config.SplitPortals {
++		keys = []networkid.PortalKey{ic.makePortalKey(fbid, true)}
 +	}
 +	if !createChat {
 +		// A lookup never hands provisioning a portal: its CleanupOrphanedDM could delete the room.
@@ -110,7 +113,8 @@ index 0000000..73e3122
 +	// The room is made here and handed back only once the user is in it: provisioning's CleanupOrphanedDM would
 +	// delete a room the user has not got into yet. The portal's event loop runs one creation at a time, so a
 +	// second open of the same thread gets the same room.
-+	if err = portal.CreateMatrixRoom(ctx, ic.UserLogin, ic.wrapChatInfo(thread)); err != nil {
++	// Without the request's cancellation: an open the app gave up on still finishes its room, members included.
++	if err = portal.CreateMatrixRoom(context.WithoutCancel(ctx), ic.UserLogin, ic.wrapChatInfo(thread)); err != nil {
 +		return nil, fmt.Errorf("failed to create portal room: %w", err)
 +	}
 +	ic.waitUserInRoom(ctx, portal.MXID)
