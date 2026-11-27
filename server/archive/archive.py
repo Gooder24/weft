@@ -1288,7 +1288,7 @@ beeper_lock = threading.Lock()  # one count or import at a time: both read the w
 # Uploads' folders: a piece is written and a folder deleted under it, so a piece arriving while „Zrušiť“ deletes its
 # upload never brings the folder back.
 beeper_files = threading.RLock()
-beeper_busy = set()  # uploads a count or import reads now: never pruned under it
+beeper_busy = collections.Counter()  # uploads a count or import reads now (marked under beeper_files): never pruned
 beeper_planned = {}  # upload folder -> what its count said the new rows take in archive.db
 
 
@@ -1303,8 +1303,14 @@ def beeper_forget(folder):
     with beeper_files: shutil.rmtree(folder, ignore_errors=True)
 
 
+def beeper_size(path):
+    """A file's size, 0 once it is gone (SQLite deletes a -wal when its last connection closes)."""
+    try: return os.path.getsize(path)
+    except OSError: return 0
+
+
 def beeper_bytes(folder):
-    return sum(os.path.getsize(os.path.join(d, f)) for d, _, fs in os.walk(folder) for f in fs)
+    return sum(beeper_size(os.path.join(d, f)) for d, _, fs in os.walk(folder) for f in fs)
 
 
 def beeper_prune(keep=None, everything=False):
@@ -1314,7 +1320,8 @@ def beeper_prune(keep=None, everything=False):
         path = os.path.join(BEEPER_UPLOADS, name)
         try: old = time.time() - os.path.getmtime(path) > 86400
         except FileNotFoundError: continue
-        if name != keep and path not in beeper_busy and (everything or old): beeper_forget(path)
+        with beeper_files:
+            if name != keep and not beeper_busy[path] and (everything or old): beeper_forget(path)
 
 
 def beeper_sweep():
@@ -1541,33 +1548,38 @@ class Api(BaseHTTPRequestHandler):
         if what not in ("plan", "import", "forget"): return self.send(404, {"error": "not found"})
         try: upload = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length") or 0), 4096)) or b"{}").get("upload")
         except (ValueError, AttributeError): return self.send(400, {"error": "upload is needed"})
-        folder = beeper_folder(upload)
+        with beeper_files:  # marked as read before a prune (it looks under the same lock) can take it
+            folder = beeper_folder(upload)
+            if folder and what != "forget": beeper_busy[folder] += 1
         if not folder: return self.send(404, {"error": "no such upload"})
         if what == "forget":
             beeper_forget(folder)
             return self.send(200, {"forgotten": True})
-        if not os.path.exists(os.path.join(folder, "index.db")): return self.send(400, {"error": "index.db is missing"})
-        if not beeper_lock.acquire(blocking=False): return self.send(409, {"error": "another count or import is running"})
-        beeper_busy.add(folder)
         try:
-            # The import backs the archive up (every page, those still in its -wal too), copies the sent files beside
-            # it and adds its rows (as the count said; without one, at most what was sent): room for all, the spare left.
-            if what == "import":
-                backup = sum(os.path.getsize(DB + end) for end in ("", "-wal") if os.path.exists(DB + end))
-                rows = beeper_planned.get(folder)
-                if rows is None: rows = sum(os.path.getsize(os.path.join(folder, n)) for n in BEEPER_FILES if os.path.exists(os.path.join(folder, n)))
-                if shutil.disk_usage(os.path.dirname(os.path.abspath(DB))).free < backup + rows + beeper_bytes(os.path.join(folder, "media")) + BEEPER_SPARE:
-                    return self.send(507, {"error": "the server's disk is nearly full"})
-            report = beeper_run(folder, dry_run=what == "plan")
-            if what == "plan": beeper_planned[folder] = sum(n.get("archive_bytes", 0) for n in report.get("networks", {}).values())
-            if what == "import":
-                beeper_forget(folder)
-                chats_changed()
-        except RuntimeError as e: return self.send(422 if "not Beeper" in str(e) else 500, {"error": str(e)})
-        except subprocess.TimeoutExpired: return self.send(504, {"error": "the import took too long"})
+            if not os.path.exists(os.path.join(folder, "index.db")): return self.send(400, {"error": "index.db is missing"})
+            if not beeper_lock.acquire(blocking=False): return self.send(409, {"error": "another count or import is running"})
+            try:
+                # The import backs the archive up (every page, those still in its -wal too), copies the sent files
+                # beside it and adds its rows (as the count said; without one, at most what was sent), first into the
+                # -wal and then into archive.db: room for all, the spare left.
+                if what == "import":
+                    backup = beeper_size(DB) + beeper_size(DB + "-wal")
+                    rows = beeper_planned.get(folder)
+                    if rows is None: rows = sum(beeper_size(os.path.join(folder, n)) for n in BEEPER_FILES)
+                    if shutil.disk_usage(os.path.dirname(os.path.abspath(DB))).free < backup + 2 * rows + beeper_bytes(os.path.join(folder, "media")) + BEEPER_SPARE:
+                        return self.send(507, {"error": "the server's disk is nearly full"})
+                report = beeper_run(folder, dry_run=what == "plan")
+                if what == "plan": beeper_planned[folder] = sum(n.get("archive_bytes", 0) for n in report.get("networks", {}).values())
+                if what == "import":
+                    beeper_forget(folder)
+                    chats_changed()
+            except RuntimeError as e: return self.send(422 if "not Beeper" in str(e) else 500, {"error": str(e)})
+            except subprocess.TimeoutExpired: return self.send(504, {"error": "the import took too long"})
+            finally: beeper_lock.release()
         finally:
-            beeper_busy.discard(folder)
-            beeper_lock.release()
+            with beeper_files:
+                beeper_busy[folder] -= 1
+                if beeper_busy[folder] <= 0: del beeper_busy[folder]
         return self.send(200, report)
 
     def discord(self, what, args):
