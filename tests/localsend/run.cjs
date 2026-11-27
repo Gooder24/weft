@@ -10,7 +10,7 @@ const https = require('node:https');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const { createPeer, tailnetIp, safeParts } = require('../../desktop/localsend.js');
+const { createPeer, tailnetIp, safeParts, derInt } = require('../../desktop/localsend.js');
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'weft-localsend-'));
 const API = '/api/localsend/v2';
@@ -18,6 +18,8 @@ let failed = 0;
 const results = [];
 // A request a check started but did not wait for yet must not end the run unnamed: it counts as a failure.
 process.on('unhandledRejection', (err) => { failed++; results.push(`FAIL a request nobody waited for: ${err.stack || err}`); });
+/** A request a check waits for only later: its failure then fails that check, not the whole run. */
+const later = (p) => { p.catch(() => {}); return p; };
 async function check(name, fn) {
   try { await fn(); results.push(`PASS ${name}`); } catch (err) { failed++; results.push(`FAIL ${name}: ${err.stack || err}`); }
 }
@@ -43,6 +45,7 @@ const raw = (port, method, p, body, tls = {}) => new Promise((resolve, reject) =
   req.end(data);
 });
 
+const raw2 = (port) => raw(port, 'GET', `${API}/info`);
 /** A peer on 127.0.0.1 whose tailnet is the given ports' peers (its own Tailscale address stands in as 127.0.0.250);
  *  off the local network, so nothing reaches a real one. */
 async function peer(name, { trusted = () => true, peers = [], probePort, port } = {}) {
@@ -80,9 +83,9 @@ const settled = (p, id) => until(() => { const it = item(p, id); return it && ![
   });
 
   await check('its fingerprint is its certificate\'s SHA-256, as LocalSend\'s', async () => {
-    const r = await new Promise((resolve) => https.get({ host: '127.0.0.1', port: a.port, path: `${API}/info`, rejectUnauthorized: false, agent: false }, (res) => {
+    const r = await new Promise((resolve, reject) => https.get({ host: '127.0.0.1', port: a.port, path: `${API}/info`, rejectUnauthorized: false, agent: false }, (res) => {
       resolve({ cert: res.socket.getPeerCertificate().raw, status: res.statusCode }); res.resume();
-    }));
+    }).on('error', reject));
     assert.equal(r.status, 200);
     assert.equal(a.info().fingerprint, crypto.createHash('sha256').update(r.cert).digest('hex').toUpperCase());
     assert.equal(a.info().protocol, 'https');
@@ -368,7 +371,7 @@ const settled = (p, id) => until(() => { const it = item(p, id); return it && ![
 
   await check('a question to Karchi does not hold back his own devices', async () => {
     const h = await peer('h2', { trusted: (ip) => ip === '127.0.0.1' });
-    const stranger = raw(h.port, 'POST', `${API}/prepare-upload`, { info: { alias: 'Cudzí', fingerprint: 'cudzi' }, files: { f: { id: 'f', fileName: 'x.txt', size: 1, fileType: 'text/x' } } }, { localAddress: '127.0.0.2' });
+    const stranger = later(raw(h.port, 'POST', `${API}/prepare-upload`, { info: { alias: 'Cudzí', fingerprint: 'cudzi' }, files: { f: { id: 'f', fileName: 'x.txt', size: 1, fileType: 'text/x' } } }, { localAddress: '127.0.0.2' }));
     const ask = await until(() => h.state().ask);
     assert.equal(ask.device.alias, 'Cudzí');
     b.onMulticast(Buffer.from(JSON.stringify({ ...h.info(), announce: false })), { address: '127.0.0.1' });
@@ -483,7 +486,7 @@ const settled = (p, id) => until(() => { const it = item(p, id); return it && ![
     const text = (t, fp) => ({ info: { alias: fp, fingerprint: fp }, files: { f: { id: 'f', fileName: 't.txt', size: t.length, fileType: 'text/plain', preview: t } } });
     const to = (host, from, p, body, tls = {}) => raw(z.port, 'POST', `${API}/${p}`, body, { host, localAddress: from, ...tls });
     const waits = async (host, from, body, tls) => {
-      const r = to(host, from, 'prepare-upload', body, tls);
+      const r = later(to(host, from, 'prepare-upload', body, tls));
       const ask = await until(() => z.state().ask);
       z.respond(ask.id, false);
       assert.equal((await r).status, 403);
@@ -554,7 +557,7 @@ const settled = (p, id) => until(() => { const it = item(p, id); return it && ![
     await k.start();
     const agent = new https.Agent({ keepAlive: true, maxSockets: 1 });
     const body = { info: { alias: 'Cudzí', fingerprint: 'cudzi-k' }, files: { f: { id: 'f', fileName: 'x.txt', size: 1, fileType: 'text/x' } } };
-    const first = raw(k.port, 'POST', `${API}/prepare-upload`, body, { host: '127.0.0.20', agent });
+    const first = later(raw(k.port, 'POST', `${API}/prepare-upload`, body, { host: '127.0.0.20', agent }));
     const ask = await until(() => k.state().ask);
     self = '127.0.0.21';
     await k.scan(); // its Tailscale address moved: the old listener closes, this connection stays open
@@ -566,9 +569,95 @@ const settled = (p, id) => until(() => { const it = item(p, id); return it && ![
     await k.stop();
   });
 
+  await check('numbers in its certificate are minimal DER, so TLS takes every certificate it makes', async () => {
+    const hex = (b) => derInt(Buffer.from(b)).toString('hex');
+    assert.deepEqual([hex([0x00, 0x71]), hex([0x80]), hex([0, 0, 5]), hex([0]), hex([0, 0x80, 1])], ['020171', '02020080', '020105', '020100', '0203008001']);
+  });
+
+  await check('a certificate TLS refuses, saved by an earlier build, is replaced and the board listens', async () => {
+    const good = createPeer({ dir: path.join(tmp, 'bad', 'in'), statePath: path.join(tmp, 'bad0.json'), alias: 'x', lan: false, log: () => {} });
+    await good.stop();
+    const { tls: t } = JSON.parse(fs.readFileSync(path.join(tmp, 'bad0.json'), 'utf8'));
+    const raw = Buffer.from(t.cert.replace(/-----[^-]+-----|\s/g, ''), 'base64');
+    assert.equal(raw[13], 0x02); // the serial number: INTEGER after the version
+    raw[15] = 0x00; raw[16] = 0x71; // a leading zero before a byte under 0x80, as the earlier build sometimes wrote
+    const bad = { ...t, cert: `-----BEGIN CERTIFICATE-----\n${raw.toString('base64').match(/.{1,64}/g).join('\n')}\n-----END CERTIFICATE-----\n` };
+    assert.throws(() => require('node:tls').createSecureContext({ cert: bad.cert, key: bad.key }));
+    fs.writeFileSync(path.join(tmp, 'bad.json'), JSON.stringify({ tls: bad, fingerprint: 'OLD', items: [], devices: {} }));
+    const b2 = createPeer({ dir: path.join(tmp, 'bad', 'in'), statePath: path.join(tmp, 'bad.json'), alias: 'x', lan: false, hosts: ['127.0.0.1'], port: await freePort(), log: () => {} });
+    await b2.start();
+    assert.notEqual(b2.info().fingerprint, 'OLD');
+    assert.equal(b2.state().me.listening, true);
+    assert.equal((await raw2(b2.port)).status, 200);
+    await b2.stop();
+  });
+
+  await check('a request whose body comes after the board left its address is refused, not asked about', async () => {
+    let self = '127.0.0.30';
+    const k = createPeer({ dir: path.join(tmp, 'k2', 'in'), statePath: path.join(tmp, 'k2.json'), alias: 'Weft k2', lan: false, hosts: ['127.0.0.1'],
+      port: await freePort(), trusted: (ip) => ip === '127.0.0.9', tailnet: async () => ({ self, peers: [] }), log: () => {} });
+    await k.start();
+    const body = Buffer.from(JSON.stringify({ info: { alias: 'Cudzí', fingerprint: 'cudzi-k2' }, files: { f: { id: 'f', fileName: 'x.txt', size: 1, fileType: 'text/x' } } }));
+    let req;
+    const res = later(new Promise((resolve, reject) => {
+      req = https.request({ host: '127.0.0.30', port: k.port, method: 'POST', path: `${API}/prepare-upload`, rejectUnauthorized: false, agent: false,
+        headers: { 'Content-Length': body.length, Expect: '100-continue' } }, (r) => { const c = []; r.on('data', (x) => c.push(x)); r.on('end', () => resolve({ status: r.statusCode, data: JSON.parse(Buffer.concat(c)) })); });
+      req.on('error', reject);
+    }));
+    await new Promise((r) => req.once('continue', r)); // the board took the headers: the request is in its hands
+    self = '127.0.0.31';
+    await k.scan();
+    req.end(body);
+    const r = await res;
+    assert.deepEqual([r.status, r.data?.message, k.state().ask], [403, 'Not listening here', null]);
+    await k.stop();
+  });
+
+  await check('a transfer over an address the board left ends, so his devices can send again', async () => {
+    let self = '127.0.0.40';
+    const k = createPeer({ dir: path.join(tmp, 'k3', 'in'), statePath: path.join(tmp, 'k3.json'), alias: 'Weft k3', lan: false, hosts: ['127.0.0.1'],
+      port: await freePort(), trusted: () => true, tailnet: async () => ({ self, peers: [] }), log: () => {} });
+    await k.start();
+    const two = { info: { alias: 'mobil', fingerprint: 'fp-k3' }, files: { a: { id: 'a', fileName: 'a.txt', size: 1, fileType: 'text/x' }, b: { id: 'b', fileName: 'b.txt', size: 1, fileType: 'text/x' } } };
+    const prep = await raw(k.port, 'POST', `${API}/prepare-upload`, two, { host: '127.0.0.40' });
+    assert.equal(prep.status, 200);
+    assert.equal((await raw(k.port, 'POST', `${API}/upload?sessionId=${prep.data.sessionId}&fileId=a&token=${prep.data.files.a}`, Buffer.from('a'), { host: '127.0.0.40' })).status, 200);
+    self = '127.0.0.41';
+    await k.scan();
+    assert.equal(k.state().items.find((x) => x.files?.[0]?.name === 'a.txt')?.status, 'partial');
+    assert.equal((await raw(k.port, 'POST', `${API}/prepare-upload`, { ...two, info: { alias: 'mobil', fingerprint: 'fp-k3b' } })).status, 200);
+    await k.stop();
+  });
+
+  await check('stop() ends at once, also with a connection still in TLS, and a scan it caught probes nothing', async () => {
+    let hits = 0;
+    const phone = http.createServer((req, res) => { req.resume(); hits++; res.writeHead(200); res.end('{}'); });
+    await new Promise((r) => phone.listen(0, '127.0.0.5', r));
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    let gated = false;
+    const s = createPeer({ dir: path.join(tmp, 's', 'in'), statePath: path.join(tmp, 's.json'), alias: 'Weft s', lan: false, hosts: ['127.0.0.1'], port: await freePort(),
+      probePort: phone.address().port, tailnet: async () => { if (gated) await gate; return { self: '127.0.0.250', peers: [{ ip: '127.0.0.5', online: true }] }; }, log: () => {} });
+    await s.start();
+    hits = 0;
+    const open = require('node:net').connect(s.port, '127.0.0.1');
+    await new Promise((r) => open.once('connect', r));
+    open.on('error', () => {});
+    open.write(Buffer.from([0x16, 0x03, 0x01, 0x02, 0x00, 0x01])); // a ClientHello that never finishes
+    const closed = new Promise((r) => open.once('close', r));
+    gated = true;
+    const scanning = s.scan();
+    await s.stop();
+    await closed; // the board ended it; it did not wait for TLS to time out
+    release();
+    await scanning;
+    assert.equal(hits, 0);
+    phone.close();
+  });
+
   await check('turning the local network off answers a question asked over it at once', async () => {
     const h = await peer('h3', { trusted: (ip) => ip === '127.0.0.1' });
-    const stranger = raw(h.port, 'POST', `${API}/prepare-upload`, { info: { alias: 'Cudzí', fingerprint: 'cudzi3' }, files: { f: { id: 'f', fileName: 'x.txt', size: 1, fileType: 'text/x' } } }, { localAddress: '127.0.0.2' });
+    const stranger = later(raw(h.port, 'POST', `${API}/prepare-upload`, { info: { alias: 'Cudzí', fingerprint: 'cudzi3' }, files: { f: { id: 'f', fileName: 'x.txt', size: 1, fileType: 'text/x' } } }, { localAddress: '127.0.0.2' }));
     await until(() => h.state().ask);
     await h.setLan(false);
     assert.equal(h.state().ask, null);

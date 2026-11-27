@@ -12,6 +12,7 @@
 const http = require('node:http');
 const https = require('node:https');
 const dgram = require('node:dgram');
+const nodeTls = require('node:tls');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
@@ -84,7 +85,14 @@ function readBody(req, limit = 1 << 20) {
 const derLen = (n) => { if (n < 128) return Buffer.from([n]); const b = []; for (; n; n >>= 8) b.unshift(n & 255); return Buffer.from([0x80 | b.length, ...b]); };
 const der = (tag, ...parts) => { const body = Buffer.concat(parts); return Buffer.concat([Buffer.from([tag]), derLen(body.length), body]); };
 const seq = (...p) => der(0x30, ...p);
-const derInt = (b) => der(0x02, b[0] & 0x80 ? Buffer.concat([Buffer.from([0]), b]) : b);
+// An INTEGER as DER wants it, minimal: a leading zero byte only before a byte with its top bit set (OpenSSL refuses
+// any other).
+const derInt = (b) => {
+  let i = 0;
+  while (i < b.length - 1 && b[i] === 0 && !(b[i + 1] & 0x80)) i++;
+  const v = b.subarray(i);
+  return der(0x02, v[0] & 0x80 ? Buffer.concat([Buffer.from([0]), v]) : v);
+};
 const oid = (dotted) => {
   const [a, b, ...rest] = dotted.split('.').map(Number);
   const out = [40 * a + b];
@@ -176,7 +184,10 @@ function createPeer(opts) {
   let st = { fingerprint: newId(), lan: true, lanChosen: false, devices: {}, items: [] };
   try { st = { ...st, ...JSON.parse(fs.readFileSync(statePath, 'utf8')) }; } catch { /* a first start */ }
   if (!st.lanChosen) st.lan = opts.lan ?? true; // an earlier build saved its default (off), not Karchi's choice
-  if (!st.tls?.cert || !st.tls?.key) { st.tls = makeIdentity(); st.fingerprint = st.tls.fingerprint; }
+  // An earlier build made about one certificate in 256 that TLS refuses (its serial number badly encoded): such a board
+  // never listened, so it gets a new one.
+  const usable = (t) => { try { nodeTls.createSecureContext({ cert: t.cert, key: t.key }); return true; } catch { return false; } };
+  if (!st.tls?.cert || !st.tls?.key || !usable(st.tls)) { st.tls = makeIdentity(); st.fingerprint = st.tls.fingerprint; }
   for (const it of st.items) if (['sending', 'receiving'].includes(it.status)) it.status = 'stopped'; // the app quit midway
   // State of an earlier version may hold one certificate under two spellings: one record (the HTTPS one, which pins
   // the certificate, else the newer), a default only if both were.
@@ -221,6 +232,7 @@ function createPeer(opts) {
     return saving;
   };
   const save = () => {
+    if (stopped) return; // stop() wrote the last state
     clearTimeout(saveTimer);
     saveTimer = setTimeout(flush, 300);
   };
@@ -241,6 +253,7 @@ function createPeer(opts) {
    *  are default targets from the start, ones of the local network only once Karchi says so. `proven` is the hash of
    *  the certificate the claim came with (the client certificate of its request, or the server's of our probe). */
   function remember(body, ip, how, proven = null, local = undefined) {
+    if (stopped) return null;
     const fp = fpKey(body?.fingerprint || `${ip}:${body?.port || PORT}`);
     if (fp === st.fingerprint) return null;
     const was = st.devices[fp];
@@ -307,16 +320,17 @@ function createPeer(opts) {
       res.end(body ? JSON.stringify(body) : undefined);
     };
     // Off the local network, what still comes over it (on a connection kept open from before) is refused.
-    if (!st.lan && local !== selfIp && !extraHosts.includes(local)) { res.shouldKeepAlive = false; return reply(403, { message: 'Not listening here' }); }
+    if (!heard(local)) { res.shouldKeepAlive = false; return reply(403, { message: 'Not listening here' }); }
     try {
       const route = `${req.method} ${url.pathname}`;
       if (route === `GET ${API}/info`) return reply(200, info());
       if (route === `POST ${API}/register`) {
         const body = JSON.parse((await readBody(req)).toString() || '{}');
+        if (!heard(local)) { res.shouldKeepAlive = false; return reply(403, { message: 'Not listening here' }); } // switched off meanwhile
         if ((!proven || sameFp(proven, body?.fingerprint)) && remember(body, ip, 'register', proven, local)) emitSoon();
         return reply(200, info());
       }
-      if (route === `POST ${API}/prepare-upload`) return await prepare(req, ip, reply, proven, local);
+      if (route === `POST ${API}/prepare-upload`) return await prepare(req, res, ip, reply, proven, local);
       if (route === `POST ${API}/upload`) return await upload(req, url, ip, reply);
       if (route === `POST ${API}/cancel`) {
         if (session && session.id === url.searchParams.get('sessionId') && session.ip === ip) endSession('cancelled');
@@ -330,9 +344,16 @@ function createPeer(opts) {
   }
 
   const sessionLive = () => session && Date.now() - session.touched < IDLE_MS;
+  /** Whether the board listens where a request came in: off the local network only on its Tailscale address (and hosts). */
+  const heard = (local) => st.lan || (!!selfIp && local === selfIp) || extraHosts.includes(local);
+  /** A transfer over an address the board stopped listening on cannot go on: its next file would be refused. */
+  function dropUnheard() {
+    if (session && !heard(session.local) && !session.streams.size) endSession('stopped');
+  }
 
-  async function prepare(req, ip, reply, proven, local) {
+  async function prepare(req, res, ip, reply, proven, local) {
     const body = JSON.parse((await readBody(req)).toString() || '{}');
+    if (!heard(local)) { res.shouldKeepAlive = false; return reply(403, { message: 'Not listening here' }); } // switched off meanwhile
     const files = Object.values(body?.files && typeof body.files === 'object' ? body.files : {})
       .filter((f) => f && typeof f.id === 'string' && typeof f.fileName === 'string');
     if (!body?.info || !files.length) return reply(400, { message: 'Invalid body' });
@@ -367,7 +388,7 @@ function createPeer(opts) {
     const id = newId();
     const item = addItem({ dir: 'in', device: who(dev), status: 'receiving', got: 0, total: size,
       files: files.map((f) => ({ name: safeParts(f.fileName).join('/'), size: Number(f.size) || 0, type: String(f.fileType || '') })) });
-    session = { id, ip, item, touched: Date.now(), streams: new Set(),
+    session = { id, ip, local, item, touched: Date.now(), streams: new Set(),
       files: new Map(files.map((f, i) => [f.id, { token: newId(), index: i, name: f.fileName, sha256: typeof f.sha256 === 'string' ? f.sha256.toLowerCase() : null, done: false }])) };
     emit('state');
     reply(200, { sessionId: id, files: Object.fromEntries([...session.files].map(([fid, f]) => [fid, f.token])) });
@@ -422,6 +443,7 @@ function createPeer(opts) {
     } else {
       save();
       emitSoon();
+      dropUnheard();
     }
     reply(200);
   }
@@ -540,16 +562,19 @@ function createPeer(opts) {
   async function scan() {
     try {
       const t = await tailnet();
+      if (stopped) return;
       selfIp = t.self || null;
       // Without Tailscale running (no own address) its peers' addresses lead into the local network, if anywhere.
       const peers = selfIp ? (t.peers || []).filter((p) => p.ip && p.ip !== selfIp) : [];
       peerIps = new Set(peers.map((p) => p.ip));
       await listen();
+      syncMulticast();
+      dropUnheard();
       await Promise.all(peers.filter((p) => p.online).map((p) => probe(p.ip)));
     } catch (err) {
       log('board scan', err.message);
     }
-    if (sock) announce();
+    if (sock && !stopped) announce();
     emit('state');
   }
 
@@ -571,6 +596,8 @@ function createPeer(opts) {
         .catch(() => { try { sock?.send(Buffer.from(JSON.stringify({ ...info(), announce: false })), PORT, GROUP); } catch { /* gone */ } });
     }
   }
+  /** Multicast while in the local network and listening (an announcement names a port that answers). */
+  const syncMulticast = () => multicast(st.lan && listeningOn.length > 0);
   function multicast(on) {
     if (!on) { try { sock?.close(); } catch { /* closed */ } sock = null; return; }
     if (sock || stopped) return;
@@ -592,6 +619,7 @@ function createPeer(opts) {
   /** Listens where it should now; calls queue, so a quick on/off of „Aj v miestnej sieti“ ends as the last one says. */
   let listening = Promise.resolve();
   const retired = new Set(); // servers that stopped listening and still hold connections
+  const conns = new Set(); // every open connection, so stop() ends them all at once
   function listen() {
     listening = listening.then(rebind, rebind);
     return listening;
@@ -612,6 +640,7 @@ function createPeer(opts) {
         for (const host of want) {
           // HTTPS like the LocalSend app; a sender that shows a certificate must claim its fingerprint.
           const s = https.createServer({ cert: st.tls.cert, key: st.tls.key, requestCert: true, rejectUnauthorized: false }, (req, res) => { handle(req, res); });
+          s.on('connection', (c) => { conns.add(c); c.once('close', () => conns.delete(c)); }); // also ones still in TLS
           s.requestTimeout = 0; // a big file takes long
           await new Promise((resolve, reject) => { s.once('error', reject); s.listen(candidate, host, () => { s.off('error', reject); resolve(); }); });
           opened.push(s);
@@ -639,7 +668,8 @@ function createPeer(opts) {
       if (asking?.overLan) asking.resolve(false); // asked over the local network, which it no longer hears
     }
     await listen();
-    multicast(st.lan); // on: once listening, so its announcement names the port it got
+    syncMulticast(); // on: once listening, so its announcement names the port it got
+    dropUnheard();
     emit('state');
   }
 
@@ -680,7 +710,6 @@ function createPeer(opts) {
   async function start() {
     await fsp.mkdir(dir, { recursive: true });
     await scan();
-    if (st.lan) multicast(true);
   }
 
   async function stop() {
@@ -693,6 +722,7 @@ function createPeer(opts) {
     await saving; // a write in flight must not land after the last one
     try { fs.writeFileSync(statePath, JSON.stringify(st), { mode: 0o600 }); } catch { /* no disk */ }
     await listening;
+    for (const c of conns) c.destroy();
     await Promise.all([...servers, ...retired].map((s) => new Promise((r) => { s.close(r); s.closeAllConnections?.(); })));
     servers = [];
   }
@@ -700,4 +730,4 @@ function createPeer(opts) {
   return { start, stop, scan, send, retry, setLan, setDefault, forget, remove, respond, fileOf, state: snapshot, info, onMulticast, get port() { return port; } };
 }
 
-module.exports = { createPeer, tailnetIp, safeParts, PORT };
+module.exports = { createPeer, tailnetIp, safeParts, derInt, PORT };

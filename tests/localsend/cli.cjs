@@ -127,7 +127,17 @@ console.log('runtime', process.versions.electron ? `Electron ${process.versions.
   blocker.close();
   cap.close();
 
-  // 5. Stopped while it starts (the app quit at once), it opens no multicast afterwards.
+  // 5. Turned on where every port it tries is taken on the local network, it announces nothing: no port answers.
+  const blockers = await Promise.all([53520, 53521, 53522, 53523].map((port) => new Promise((r) => { const b = require('node:net').createServer().listen(port, '10.77.0.1', () => r(b)); })));
+  const p5 = createPeer({ dir: `${D}/mine5`, statePath: `${D}/board5.json`, alias: 'Weft p5', port: 53520, lan: false, trusted: () => true,
+    tailnet: async () => ({ self: '100.101.0.1', peers: [] }), log: () => {} });
+  await p5.start();
+  await p5.setLan(true);
+  check('turned on where every port is taken, it announces nothing', p5.state().me.listening === false && p5.state().me.multicast === false, JSON.stringify(p5.state().me));
+  await p5.stop();
+  for (const b of blockers) b.close();
+
+  // 6. Stopped while it starts (the app quit at once), it opens no multicast afterwards.
   let release;
   const gate = new Promise((r) => { release = r; });
   const p4 = createPeer({ dir: `${D}/mine4`, statePath: `${D}/board4.json`, alias: 'Weft p4', port: 53510, trusted: () => true,
