@@ -63,6 +63,12 @@ ACCOUNT_FILE = STATE_DIR / "account.json"
 POLL_SECONDS = int(os.environ.get("POLL_SECONDS", "300"))
 # A send whose answer was lost is looked for this long before Karchi is told it did not go.
 UNSURE_MINUTES = 10
+NOT_SENT = "Táto správa neodišla do EduPage. Skús to znova alebo odpovedz na edupage.org."
+
+
+def unsure_txn(event_id: str) -> str:
+    """The one transaction id of the "neodišla" for this send, so a retry is the same notice."""
+    return "unsure-" + hashlib.sha256(event_id.encode()).hexdigest()[:32]
 # Each poll re-reads this many days; the first sync after a login reads the whole school year.
 RECENT_DAYS = 7
 # On the first sync, messages older than this start as read instead of all looking new.
@@ -511,9 +517,12 @@ class Rooms:
 
     def take_back(self, event_id: str, room_id: str, notice: str) -> None:
         """A send with a lost answer that EduPage showed after all: its early "neodišla" goes (tried again after each
-        poll until the homeserver takes the redaction)."""
+        poll until the homeserver takes the redaction). "?" is a notice whose answer was lost: its own transaction
+        sent again names it."""
         if notice not in ("", "-"):
             try:
+                if notice == "?":
+                    notice = self.say(room_id, NOT_SENT, event_id, unsure_txn(event_id))
                 matrix("PUT", f"/rooms/{q(room_id)}/redact/{q(notice)}/{uuid.uuid4().hex}", {"reason": "odišla"})
             except Exception as err:
                 log("early notice not taken back:", repr(err))
@@ -527,10 +536,11 @@ class Rooms:
                 "SELECT event_id, room_id, notice FROM unsure WHERE event_id IN (SELECT event_id FROM items)").fetchall():
             self.take_back(event_id, room_id, notice)
         cut = (datetime.now(LOCAL) - timedelta(minutes=UNSURE_MINUTES)).strftime("%Y-%m-%d %H:%M:%S")
-        for event_id, room_id in self.db.execute("SELECT event_id, room_id FROM unsure WHERE at < ? AND notice = ''"
+        for event_id, room_id in self.db.execute("SELECT event_id, room_id FROM unsure WHERE at < ? AND notice IN ('', '?')"
                                                  " AND event_id NOT IN (SELECT event_id FROM items)", (cut,)).fetchall():
-            notice = self.say(room_id, "Táto správa neodišla do EduPage. Skús to znova alebo odpovedz na edupage.org.", event_id,
-                              "unsure-" + hashlib.sha256(event_id.encode()).hexdigest()[:32])
+            self.db.execute("UPDATE unsure SET notice = '?' WHERE event_id = ?", (event_id,))  # may reach the room unanswered
+            self.db.commit()
+            notice = self.say(room_id, NOT_SENT, event_id, unsure_txn(event_id))
             # The unnamed row stays its day: if EduPage shows it later after all, the poll links it and takes this back.
             self.db.execute("UPDATE unsure SET notice = ? WHERE event_id = ?", (notice or "-", event_id))
             self.db.commit()

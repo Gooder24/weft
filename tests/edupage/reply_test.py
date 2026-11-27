@@ -355,6 +355,32 @@ check("a notice whose answer was lost is sent again as the same transaction", le
       and db.execute("SELECT notice FROM unsure WHERE event_id = '$twice'").fetchone() == ("$said",), txns)
 db.execute("DELETE FROM unsure")
 
+# The "neodišla" reached the room but its answer was lost, and the very next poll finds the reply: the notice is found
+# by its own transaction and taken back.
+acct.edu = Edu()
+Session.lost = 504
+acct.outbox.put(("!room", "$quick", "$own", "Hneď", "", [], ""))
+acct.send_outbox(rooms)
+Session.lost = None
+db.execute("UPDATE unsure SET at = '2020-01-01 00:00:00' WHERE event_id = '$quick'")
+calls = []
+def notice_kept(method, path, body=None, **k):
+    calls.append(path)
+    if len(calls) == 1:
+        raise b.urllib.error.URLError("answer lost")
+    return {"event_id": "$said-quick"}
+b.matrix = notice_kept
+try:
+    Rooms3(db).settle_unsure()
+except b.urllib.error.URLError:
+    pass
+now = b.datetime.now(b.LOCAL).strftime("%Y-%m-%d %H:%M:%S")
+Rooms3(db).sync([{"timelineid": "73", "typ": "sprava", "reakcia_na": "14", "vlastnik": ME, "text": "Hneď", "cas_pridania": now}], "skola", ME)
+check("a notice whose answer was lost is still taken back when the reply shows up next",
+      calls[0].split("/send/")[-1] == next(c for c in calls[1:] if "/m.room.message/" in c).split("/send/")[-1]
+      and any("/redact/%24said-quick/" in c for c in calls) and not db.execute("SELECT 1 FROM unsure WHERE event_id = '$quick'").fetchone(), calls)
+db.execute("DELETE FROM unsure")
+
 old = sqlite3.connect(":memory:")
 old.execute("CREATE TABLE unsure (event_id TEXT PRIMARY KEY, room_id TEXT NOT NULL, at TEXT NOT NULL)")
 old.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, root INTEGER NOT NULL, event_id TEXT NOT NULL)")
