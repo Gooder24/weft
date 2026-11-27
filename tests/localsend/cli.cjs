@@ -25,7 +25,7 @@ console.log('runtime', process.versions.electron ? `Electron ${process.versions.
   rx.stderr.on('data', (c) => { log += c.toString(); });
   for (let i = 0; i < 300 && !/Ready to accept/.test(log); i++) await new Promise((r) => setTimeout(r, 100));
   const events = [];
-  const peer = createPeer({ dir: `${D}/mine`, statePath: `${D}/board.json`, alias: 'Weft test', port: 53318, hosts: ['10.77.0.1'], trusted: () => true,
+  const peer = createPeer({ dir: `${D}/mine`, statePath: `${D}/board.json`, alias: 'Weft test', port: 53318, hosts: ['10.77.0.1'], trusted: () => true, lan: false,
     tailnet: async () => ({ self: null, peers: [{ ip: '10.77.0.1', online: true }] }), probePort: 53317, onEvent: (e) => events.push(e), log: (...a) => console.log('  board:', ...a) });
   await peer.start();
   const dev = peer.state().devices.find((d) => d.alias === 'ls-cli');
@@ -50,12 +50,12 @@ console.log('runtime', process.versions.electron ? `Electron ${process.versions.
   try { rx.kill('SIGKILL'); } catch {}
   console.log('--- CLI receiver log (tail) ---\n' + log.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '').split('\n').filter((l) => l.trim()).slice(-25).join('\n'));
 
-  // 2. The CLI sends to the board on 53317.
+  // 2. The CLI sends to the board on 53317. A first start is in the local network, so the CLI finds it by multicast.
   const p2events = [];
   const p2 = createPeer({ dir: `${D}/mine2`, statePath: `${D}/board2.json`, alias: 'Weft test', port: 53317, hosts: ['10.77.0.1'], trusted: () => true,
     tailnet: async () => ({ self: null, peers: [] }), onEvent: (e) => p2events.push(e), log: (...a) => console.log('  board:', ...a) });
   await p2.start();
-  await p2.setLan(true); // the CLI finds devices by multicast
+  check('a first start listens in the local network', p2.state().me.lan === true && p2.state().me.listening, JSON.stringify(p2.state().me));
   const b2 = crypto.randomBytes(200_000);
   fs.writeFileSync(`${D}/src/z-cli.bin`, b2);
   const run = (args) => new Promise((resolve) => {

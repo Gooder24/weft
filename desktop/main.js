@@ -1165,7 +1165,7 @@ function startBoard(test = {}) {
     tailnet,
     onEvent: (ev) => { if (main && !main.isDestroyed()) main.webContents.send('board', ev); },
     log: (...a) => console.log(...a),
-    ...test, // selftest-board.js: its own tailnet, address and ports
+    ...test, // selftest-board.js: its own tailnet, address and ports, off the local network
   });
   board.start().catch((err) => console.log('board start', err.message));
   boardTimer = setInterval(() => board.scan(), BOARD_SCAN_MS);

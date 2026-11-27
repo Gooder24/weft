@@ -31,11 +31,11 @@ do tej istej nástenky.
 - **Hľadanie:** pri štarte, pri otvorení nástenky, tlačidlom Hľadať a každé 2 minúty sa opýta každého zariadenia
   Tailscale, ktoré je online, či na porte 53317 beží LocalSend (najprv HTTPS ako appka LocalSend, potom HTTP).
   Multicast cez Tailscale nejde, preto takto.
-- **Počúva len na adrese Tailscale** tohto počítača a čo príde odtiaľ, prijme bez pýtania. Prepínač „Aj v miestnej
-  sieti“ pridá všetky rozhrania a multicast ako appka LocalSend (doma, v škole bez Tailscale). Súbory aj text od
-  zariadenia mimo Tailscale potom čakajú v rohovom okne na Prijať (Enter) alebo Odmietnuť (Esc), 60 sekúnd. Enter
+- **Počúva aj v miestnej sieti:** „Aj v miestnej sieti“ je zapnuté, kým ho Karchi nevypne (Karchi, 27. 11.), takže
+  nástenka počúva na všetkých rozhraniach a hľadá multicastom ako appka LocalSend (doma, v škole bez Tailscale). Čo
+  príde zo zariadenia Tailscale, prijme bez pýtania. Súbory aj text od zariadenia mimo Tailscale čakajú v rohovom okne na Prijať (Enter) alebo Odmietnuť (Esc), 60 sekúnd. Enter
   platí až sekundu po tom, čo sa okno ukáže, aby ho neprijal Enter mienený pre inbox. Kým otázka čaká, vlastné
-  zariadenia z Tailscale posielajú ďalej.
+  zariadenia z Tailscale posielajú ďalej. Vypnuté počúva len na adrese Tailscale tohto počítača.
 - **Port:** 53317 je port LocalSendu. Keď ho má appka LocalSend na tom istom počítači, nástenka vezme ďalší voľný
   (do 53320) a povie to; v LocalSende v mobile treba vtedy tento počítač pridať ručne (adresa a port).
 - **Poslať:** text a Enter, súbory potiahnuť na nástenku, Ctrl+V (snímka obrazovky, skopírované súbory) alebo
@@ -85,15 +85,16 @@ na Tailscale. Vtedy pôjde položka cez asus:
 ## Riziká
 
 - „Aj v miestnej sieti“ počúva na všetkých rozhraniach a v cudzej sieti (škola) nástenku vidia všetky zariadenia s
-  LocalSendom. Súbory aj text od nich čakajú na Prijať. Preto je to prepínač a nie predvolené.
+  LocalSendom. Súbory aj text od nich čakajú na Prijať; kto to nechce, prepínač vypne. Vo Weft.exe na Windowse sa pri
+  prvom spustení môže ozvať firewall, ako pri appke LocalSend.
 - Starší LocalSend so šifrovaním vypnutým (HTTP) nástenka nájde a pošle mu, ale tie súbory idú v miestnej sieti
   nešifrovane (cez Tailscale ich šifruje Tailscale).
-- Mobil bez zapnutého Tailscale nástenka cez Tailscale nenájde; vtedy pomôže len „Aj v miestnej sieti“ alebo krok 2.
+- Mobil bez zapnutého Tailscale nástenka cez Tailscale nenájde, len v tej istej miestnej sieti; inde pomôže krok 2.
+  Zariadenie nájdené len v miestnej sieti nie je predvolené (klik ho pridá) a jeho súbory čakajú na Prijať.
 
 ## Rozhodnutia pre Karchiho
 
-1. Má byť „Aj v miestnej sieti“ zapnuté hneď? Odporúčanie: nie, a v mobile mať zapnutý Tailscale.
-2. Ostane na nástenke všetko, kým to nezmažeš, alebo sa majú staré položky mazať samy? Dnes drží posledných 200.
+1. Ostane na nástenke všetko, kým to nezmažeš, alebo sa majú staré položky mazať samy? Dnes drží posledných 200.
 
 ## Zdroje
 

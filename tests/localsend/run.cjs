@@ -41,11 +41,11 @@ const raw = (port, method, p, body, tls = {}) => new Promise((resolve, reject) =
   req.end(data);
 });
 
-/** A peer on 127.0.0.1 whose tailnet is the given ports' peers. */
+/** A peer on 127.0.0.1 whose tailnet is the given ports' peers; off the local network, so nothing reaches a real one. */
 async function peer(name, { trusted = () => true, peers = [], probePort, port } = {}) {
   const events = [];
   const p = createPeer({
-    dir: path.join(tmp, name, 'in'), statePath: path.join(tmp, `${name}.json`), alias: `Weft ${name}`,
+    dir: path.join(tmp, name, 'in'), statePath: path.join(tmp, `${name}.json`), alias: `Weft ${name}`, lan: false,
     tailnet: async () => ({ self: null, peers }), hosts: ['127.0.0.1'], trusted, probePort, port: port || await freePort(),
     onEvent: (ev) => events.push(ev), log: () => {},
   });
@@ -469,6 +469,18 @@ const settled = (p, id) => until(() => { const it = item(p, id); return it && ![
     assert.equal(f.state().me.listening, true);
     await f.stop();
     blocker.close();
+  });
+
+  await check('a first start is in the local network, and turned off it stays off after a restart', async () => {
+    // Never started, so it listens nowhere: only the setting is looked at.
+    const opts = { dir: path.join(tmp, 'n', 'in'), statePath: path.join(tmp, 'n.json'), alias: 'Weft n', log: () => {} };
+    const n = createPeer(opts);
+    assert.equal(n.state().me.lan, true);
+    await n.setLan(false);
+    await n.stop();
+    const n2 = createPeer(opts);
+    assert.equal(n2.state().me.lan, false);
+    await n2.stop();
   });
 
   await check('the board survives a restart; an unfinished send says „stopped“', async () => {

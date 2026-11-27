@@ -57,7 +57,7 @@ module.exports = async function selftestBoard(t) {
   let main = null;
   try {
     const boardPort = await listen(() => {}).then((p) => { servers.pop().close(); return p; }); // a free port for the board
-    t.startBoard({ tailnet: async () => ({ self: null, peers: [{ ip: '127.0.0.1', online: true }] }), hosts: ['127.0.0.1'], port: boardPort, probePort: phonePort, trusted: () => true });
+    t.startBoard({ tailnet: async () => ({ self: null, peers: [{ ip: '127.0.0.1', online: true }] }), hosts: ['127.0.0.1'], port: boardPort, probePort: phonePort, trusted: () => true, lan: false });
     t.openMain();
     main = t.getMain();
     await new Promise((r) => main.webContents.once('did-finish-load', r));
