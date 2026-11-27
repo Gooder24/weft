@@ -424,12 +424,14 @@ function createPeer(opts) {
       await fsp.rm(part, { force: true });
       await fsp.rm(target, { force: true });
       s.item.got -= got;
+      dropUnheard(); // its sender may no longer reach the board to cancel
       return reply(500, { message: 'Upload failed' });
     }
     if (f.sha256 && hash.digest('hex') !== f.sha256) {
       await fsp.rm(part, { force: true });
       await fsp.rm(target, { force: true });
       s.item.got -= got;
+      dropUnheard();
       return reply(422, { message: 'Checksum mismatch' });
     }
     await fsp.rename(part, target);
@@ -550,6 +552,7 @@ function createPeer(opts) {
   /** Asks each online device of the tailnet whether LocalSend runs there (HTTPS first, LocalSend's default). */
   async function probe(ip) {
     for (const protocol of ['https', 'http']) {
+      if (stopped) return null;
       try {
         const r = await call({ ip, port: probePort, protocol }, 'POST', `${API}/register`, { json: info(), timeout: 2500 });
         // Over HTTPS the device is who its certificate says, whatever its answer claims.
@@ -568,6 +571,7 @@ function createPeer(opts) {
       const peers = selfIp ? (t.peers || []).filter((p) => p.ip && p.ip !== selfIp) : [];
       peerIps = new Set(peers.map((p) => p.ip));
       await listen();
+      if (stopped) return;
       syncMulticast();
       dropUnheard();
       await Promise.all(peers.filter((p) => p.online).map((p) => probe(p.ip)));

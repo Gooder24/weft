@@ -629,6 +629,49 @@ const settled = (p, id) => until(() => { const it = item(p, id); return it && ![
     await k.stop();
   });
 
+  await check('a transfer over an address the board left that its sender breaks off ends too', async () => {
+    let self = '127.0.0.44';
+    const k = createPeer({ dir: path.join(tmp, 'k4', 'in'), statePath: path.join(tmp, 'k4.json'), alias: 'Weft k4', lan: false, hosts: ['127.0.0.1'],
+      port: await freePort(), trusted: () => true, tailnet: async () => ({ self, peers: [] }), log: () => {} });
+    await k.start();
+    const two = { info: { alias: 'mobil', fingerprint: 'fp-k4' }, files: { a: { id: 'a', fileName: 'a.txt', size: 2, fileType: 'text/x' }, b: { id: 'b', fileName: 'b.txt', size: 1, fileType: 'text/x' } } };
+    const prep = await raw(k.port, 'POST', `${API}/prepare-upload`, two, { host: '127.0.0.44' });
+    assert.equal(prep.status, 200);
+    const item = () => k.state().items.find((x) => x.files?.[0]?.name === 'a.txt');
+    const up = https.request({ host: '127.0.0.44', port: k.port, method: 'POST', path: `${API}/upload?sessionId=${prep.data.sessionId}&fileId=a&token=${prep.data.files.a}`,
+      rejectUnauthorized: false, agent: false, headers: { 'Content-Length': 2 } });
+    up.on('error', () => {});
+    up.write('a');
+    await until(() => item()?.got === 1);
+    self = '127.0.0.45';
+    await k.scan();
+    assert.equal(item().status, 'receiving'); // its byte came: it may still finish
+    up.destroy(); // the sender gives up, and can no longer reach the board to cancel
+    await until(() => item().status !== 'receiving');
+    assert.equal(item().status, 'stopped');
+    assert.equal((await raw(k.port, 'POST', `${API}/prepare-upload`, { ...two, info: { alias: 'mobil', fingerprint: 'fp-k4b' } })).status, 200);
+    await k.stop();
+  });
+
+  await check('a probe that stop() caught midway asks nothing more', async () => {
+    let held = null, afterStop = 0, done = false;
+    const phone = require('node:net').createServer((c) => { if (done) { afterStop++; c.destroy(); } else held = c; });
+    await new Promise((r) => phone.listen(0, '127.0.0.6', r));
+    let peers = [];
+    const s = createPeer({ dir: path.join(tmp, 's2', 'in'), statePath: path.join(tmp, 's2.json'), alias: 'Weft s2', lan: false, hosts: ['127.0.0.1'], port: await freePort(),
+      probePort: phone.address().port, tailnet: async () => ({ self: '127.0.0.250', peers }), log: () => {} });
+    await s.start();
+    peers = [{ ip: '127.0.0.6', online: true }];
+    const scanning = s.scan();
+    await until(() => held); // its HTTPS ask is open
+    await s.stop();
+    done = true;
+    held.destroy(); // HTTPS fails only now: it must not try HTTP after the board stopped
+    await scanning;
+    assert.equal(afterStop, 0);
+    phone.close();
+  });
+
   await check('stop() ends at once, also with a connection still in TLS, and a scan it caught probes nothing', async () => {
     let hits = 0;
     const phone = http.createServer((req, res) => { req.resume(); hits++; res.writeHead(200); res.end('{}'); });
