@@ -415,7 +415,15 @@ function createPeer(opts) {
     const ok = req.destroyed ? false : await new Promise((resolve) => {
       const out = fs.createWriteStream(part, { flags: 'wx', mode: 0o644 });
       let settled = false;
-      const done = (yes) => { if (settled) return; settled = true; if (!yes) out.destroy(); resolve(yes); };
+      // Either way it waits until its file is closed: a failed one still opening is then there for the cleanup below,
+      // and a whole one is renamed only once closed (Windows refuses to rename an open file).
+      const done = (yes) => {
+        if (settled) return;
+        settled = true;
+        if (out.closed) return resolve(yes);
+        out.once('close', () => resolve(yes));
+        if (!yes) out.destroy();
+      };
       s.streams.add(req);
       req.on('data', (c) => { hash.update(c); got += c.length; s.item.got += c.length; s.touched = Date.now(); emitSoon(); });
       req.on('close', () => { if (!req.readableEnded) done(false); }); // gone before all of it was read
@@ -423,27 +431,23 @@ function createPeer(opts) {
       out.on('finish', () => done(req.complete));
       req.pipe(out);
     });
-    s.streams.delete(req);
-    if (!ok || session !== s) {
+    const failed = async (status, message) => {
+      s.streams.delete(req);
       await fsp.rm(part, { force: true });
       await fsp.rm(target, { force: true });
       s.item.got -= got;
       dropUnheard(); // its sender may no longer reach the board to cancel
-      return reply(500, { message: 'Upload failed' });
-    }
-    if (f.sha256 && hash.digest('hex') !== f.sha256) {
-      await fsp.rm(part, { force: true });
-      await fsp.rm(target, { force: true });
-      s.item.got -= got;
-      dropUnheard();
-      return reply(422, { message: 'Checksum mismatch' });
-    }
-    await fsp.rename(part, target);
+      return reply(status, { message });
+    };
+    if (!ok || session !== s) return failed(500, 'Upload failed');
+    if (f.sha256 && hash.digest('hex') !== f.sha256) return failed(422, 'Checksum mismatch');
+    // Still this session's transfer until the file has its name: nothing may end the session or start another meanwhile.
+    try { await fsp.rename(part, target); } finally { s.streams.delete(req); }
     f.done = true;
     Object.assign(s.item.files[f.index], { path: target, name: path.relative(dir, target), done: true });
     if ([...s.files.values()].every((x) => x.done)) {
       s.item.status = 'done';
-      session = null;
+      if (session === s) session = null;
       save();
       emit('arrived', { item: s.item });
     } else {

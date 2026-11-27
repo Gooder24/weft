@@ -693,6 +693,63 @@ const settled = (p, id) => until(() => { const it = item(p, id); return it && ![
     await k.stop();
   });
 
+  await check('an upload whose sender left while its file was opening leaves nothing behind', async () => {
+    const k = createPeer({ dir: path.join(tmp, 'k6', 'in'), statePath: path.join(tmp, 'k6.json'), alias: 'Weft k6', lan: false, hosts: ['127.0.0.1'],
+      port: await freePort(), trusted: () => true, tailnet: async () => ({ self: '127.0.0.250', peers: [] }), log: () => {} });
+    await k.start();
+    const prep = await raw(k.port, 'POST', `${API}/prepare-upload`, { info: { alias: 'mobil', fingerprint: 'fp-k6' }, files: { a: { id: 'a', fileName: 'a.txt', size: 2, fileType: 'text/x' } } });
+    assert.equal(prep.status, 200);
+    // Hold the board while it opens the file it writes into, the way a slow disk would.
+    const open = fs.open;
+    let opening, release;
+    const inside = new Promise((r) => { opening = r; });
+    const gate = new Promise((r) => { release = r; });
+    fs.open = (file, ...rest) => { if (String(file).endsWith('.part')) { opening(); gate.then(() => open(file, ...rest)); } else open(file, ...rest); };
+    try {
+      const up = https.request({ host: '127.0.0.1', port: k.port, method: 'POST', path: `${API}/upload?sessionId=${prep.data.sessionId}&fileId=a&token=${prep.data.files.a}`,
+        rejectUnauthorized: false, agent: false, headers: { 'Content-Length': 2 } });
+      up.on('error', () => {});
+      up.write('a');
+      await inside;
+      up.destroy();
+      await raw2(k.port); // a whole new TLS connection: the board has seen the first one close
+      release();
+      await until(() => !fs.readdirSync(path.join(tmp, 'k6', 'in')).some((n) => n.includes('a.txt')));
+    } finally { release(); fs.open = open; }
+    await k.stop();
+  });
+
+  await check('while a whole file gets its name its session goes on: none other starts, and it ends no other', async () => {
+    let self = '127.0.0.48';
+    const k = createPeer({ dir: path.join(tmp, 'k7', 'in'), statePath: path.join(tmp, 'k7.json'), alias: 'Weft k7', lan: false, hosts: ['127.0.0.1'],
+      port: await freePort(), trusted: () => true, tailnet: async () => ({ self, peers: [] }), log: () => {} });
+    await k.start();
+    const prep = await raw(k.port, 'POST', `${API}/prepare-upload`, { info: { alias: 'mobil', fingerprint: 'fp-k7' }, files: { a: { id: 'a', fileName: 'a.txt', size: 1, fileType: 'text/x' } } }, { host: '127.0.0.48' });
+    assert.equal(prep.status, 200);
+    const other = { info: { alias: 'mobil', fingerprint: 'fp-k7b' }, files: { c: { id: 'c', fileName: 'c.txt', size: 1, fileType: 'text/x' } } };
+    // Hold the board while it gives a.txt its name, the way a slow disk would.
+    const fsp = require('node:fs/promises');
+    const rename = fsp.rename;
+    let renaming, release;
+    const inside = new Promise((r) => { renaming = r; });
+    const gate = new Promise((r) => { release = r; });
+    fsp.rename = async (from, to) => { if (path.basename(String(to)) === 'a.txt') { renaming(); await gate; } return rename(from, to); };
+    try {
+      const up = later(raw(k.port, 'POST', `${API}/upload?sessionId=${prep.data.sessionId}&fileId=a&token=${prep.data.files.a}`, Buffer.from('a'), { host: '127.0.0.48' }));
+      await inside;
+      self = '127.0.0.49';
+      await k.scan(); // the address it came over is gone
+      assert.equal((await raw(k.port, 'POST', `${API}/prepare-upload`, other)).status, 409);
+      release();
+      assert.equal((await up).status, 200);
+    } finally { release(); fsp.rename = rename; }
+    assert.equal(k.state().items.find((x) => x.files?.[0]?.name === 'a.txt')?.status, 'done');
+    const next = await raw(k.port, 'POST', `${API}/prepare-upload`, other);
+    assert.equal(next.status, 200);
+    assert.equal((await raw(k.port, 'POST', `${API}/upload?sessionId=${next.data.sessionId}&fileId=c&token=${next.data.files.c}`, Buffer.from('c'))).status, 200);
+    await k.stop();
+  });
+
   await check('a probe that stop() caught midway asks nothing more', async () => {
     let held = null, afterStop = 0, done = false;
     const phone = require('node:net').createServer((c) => { if (done) { afterStop++; c.destroy(); } else held = c; });
