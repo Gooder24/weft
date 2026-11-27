@@ -933,6 +933,23 @@ const settled = (p, id) => until(() => { const it = item(p, id); return it && ![
     await k.stop();
   });
 
+  await check('while it stops the board takes nothing new', async () => {
+    const k = await lone('k17');
+    const prep = await raw(k.port, 'POST', `${API}/prepare-upload`, twoFiles('fp-k17'));
+    const h = hold(require('node:fs/promises'), 'rename', (from, to) => path.basename(String(to)) === 'a.txt');
+    let late;
+    try {
+      later(uploadTo(k, prep, 'a', 'a'));
+      await h.inside;
+      const stopping = k.stop(); // waits for a.txt to get its name
+      late = await raw(k.port, 'POST', `${API}/prepare-upload`, twoFiles('fp-k17-late'));
+      h.release();
+      await stopping;
+    } finally { h.restore(); }
+    assert.equal(late.status, 403);
+    assert.equal(k.saved().items.filter((x) => x.dir === 'in').length, 1);
+  });
+
   await check('a probe that stop() caught midway asks nothing more', async () => {
     let held = null, afterStop = 0, done = false;
     const phone = require('node:net').createServer((c) => { if (done) { afterStop++; c.destroy(); } else held = c; });

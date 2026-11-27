@@ -351,8 +351,9 @@ function createPeer(opts) {
   }
 
   const sessionLive = () => session && Date.now() - session.touched < IDLE_MS;
-  /** Whether the board listens where a request came in: off the local network only on its Tailscale address (and hosts). */
-  const heard = (local) => st.lan || (!!selfIp && local === selfIp) || extraHosts.includes(local);
+  /** Whether the board listens where a request came in: off the local network only on its Tailscale address (and hosts);
+   *  once stopping, nowhere (a request let in then would outlive stop()). */
+  const heard = (local) => !stopped && (st.lan || (!!selfIp && local === selfIp) || extraHosts.includes(local));
   /** A transfer over an address the board stopped listening on cannot go on: its next file would be refused. */
   function dropUnheard() {
     if (session && !heard(session.local) && !session.streams.size) endSession('stopped');
