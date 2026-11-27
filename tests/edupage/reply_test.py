@@ -299,8 +299,37 @@ check("…its ✓ comes and the early „neodišla“ is taken back", ("SUCCESS"
       and not db.execute("SELECT 1 FROM unsure WHERE event_id = '$late'").fetchall(), (events, paths))
 Session.lost = None
 
+# The homeserver refuses the redaction once: the notice is taken back after the next poll.
+said.clear()
+acct.edu = Edu()
+Session.lost = 504
+acct.outbox.put(("!room", "$late2", "$own", "Ešte neskôr", "", [], ""))
+acct.send_outbox(rooms2)
+Session.lost = None
+db.execute("UPDATE unsure SET at = '2020-01-01 00:00:00' WHERE event_id = '$late2'")
+rooms2.settle_unsure()
+paths.clear()
+def refusing(method, path, body=None, **k):
+    paths.append(path)
+    if "/redact/" in path:
+        raise b.urllib.error.URLError("homeserver away")
+    return {"event_id": "$x"}
+b.matrix = refusing
+Rooms2(db).sync([{"timelineid": "72", "typ": "sprava", "reakcia_na": "14", "vlastnik": ME, "text": "Ešte neskôr", "cas_pridania": now}], "skola", ME)
+check("a refused redaction is kept to try again", db.execute("SELECT notice FROM unsure WHERE event_id = '$late2'").fetchone() == (f"$notice{len(said)}",), paths)
+paths.clear()
+b.matrix = lambda method, path, body=None, **k: paths.append(path) or {"event_id": "$x"}
+rooms2.settle_unsure()
+check("…and taken back after the next poll, without saying „neodišla“ again", any("/redact/" in p_ for p_ in paths) and len(said) == 1
+      and not db.execute("SELECT 1 FROM unsure WHERE event_id = '$late2'").fetchone(), (paths, said))
+db.execute("INSERT INTO unsure VALUES ('$late', '!room', '2020-01-01 00:00:00', '$n')")  # linked, its redaction still due
+Rooms2(db)
+check("a linked send's pending redaction survives a restart's cleanup", db.execute("SELECT 1 FROM unsure WHERE event_id = '$late'").fetchone())
+db.execute("DELETE FROM unsure")
+
 old = sqlite3.connect(":memory:")
 old.execute("CREATE TABLE unsure (event_id TEXT PRIMARY KEY, room_id TEXT NOT NULL, at TEXT NOT NULL)")
+old.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, root INTEGER NOT NULL, event_id TEXT NOT NULL)")
 Rooms(old)
 check("the first deployed unsure table gets its notice column", "notice" in {r[1] for r in old.execute("PRAGMA table_info(unsure)")})
 

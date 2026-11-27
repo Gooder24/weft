@@ -425,7 +425,7 @@ class Rooms:
                    " notice TEXT NOT NULL DEFAULT '')")
         if "notice" not in {row[1] for row in db.execute("PRAGMA table_info(unsure)")}:
             db.execute("ALTER TABLE unsure ADD COLUMN notice TEXT NOT NULL DEFAULT ''")
-        db.execute("DELETE FROM unsure WHERE event_id NOT IN (SELECT event_id FROM unnamed)")
+        db.execute("DELETE FROM unsure WHERE event_id NOT IN (SELECT event_id FROM unnamed) AND event_id NOT IN (SELECT event_id FROM items)")
         db.commit()
 
     def ghost(self, item: dict) -> str:
@@ -508,10 +508,26 @@ class Rooms:
             content["m.relates_to"] = {"m.in_reply_to": {"event_id": answers}}
         return str((matrix("PUT", f"/rooms/{q(room_id)}/send/m.room.message/{uuid.uuid4().hex}", content) or {}).get("event_id") or "")
 
+    def take_back(self, event_id: str, room_id: str, notice: str) -> None:
+        """A send with a lost answer that EduPage showed after all: its early "neodišla" goes (tried again after each
+        poll until the homeserver takes the redaction)."""
+        if notice not in ("", "-"):
+            try:
+                matrix("PUT", f"/rooms/{q(room_id)}/redact/{q(notice)}/{uuid.uuid4().hex}", {"reason": "odišla"})
+            except Exception as err:
+                log("early notice not taken back:", repr(err))
+                return
+        self.db.execute("DELETE FROM unsure WHERE event_id = ?", (event_id,))
+        self.db.commit()
+
     def settle_unsure(self) -> None:
         """A send whose answer was lost and that no poll found in UNSURE_MINUTES did not go: said so now."""
+        for event_id, room_id, notice in self.db.execute(
+                "SELECT event_id, room_id, notice FROM unsure WHERE event_id IN (SELECT event_id FROM items)").fetchall():
+            self.take_back(event_id, room_id, notice)
         cut = (datetime.now(LOCAL) - timedelta(minutes=UNSURE_MINUTES)).strftime("%Y-%m-%d %H:%M:%S")
-        for event_id, room_id in self.db.execute("SELECT event_id, room_id FROM unsure WHERE at < ? AND notice = ''", (cut,)).fetchall():
+        for event_id, room_id in self.db.execute("SELECT event_id, room_id FROM unsure WHERE at < ? AND notice = ''"
+                                                 " AND event_id NOT IN (SELECT event_id FROM items)", (cut,)).fetchall():
             notice = self.say(room_id, "Táto správa neodišla do EduPage. Skús to znova alebo odpovedz na edupage.org.", event_id)
             # The unnamed row stays its day: if EduPage shows it later after all, the poll links it and takes this back.
             self.db.execute("UPDATE unsure SET notice = ? WHERE event_id = ?", (notice or "-", event_id))
@@ -704,14 +720,8 @@ class Rooms:
                     self.mark_sent(item_id, root, match)
                     unsure = self.db.execute("SELECT notice FROM unsure WHERE event_id = ?", (match,)).fetchone()
                     if unsure:  # its answer was lost: the ✓ comes now, and a "neodišla" said too early goes
-                        self.db.execute("DELETE FROM unsure WHERE event_id = ?", (match,))
-                        self.db.commit()
                         self.sent(room_id, match)
-                        if unsure[0] not in ("", "-"):
-                            try:
-                                matrix("PUT", f"/rooms/{q(room_id)}/redact/{q(unsure[0])}/{uuid.uuid4().hex}", {"reason": "odišla"})
-                            except Exception as err:
-                                log("early notice not taken back:", repr(err))
+                        self.take_back(match, room_id, unsure[0])
                     known.add(item_id)
                     continue
             sender = ADMIN if is_mine(item, user_id) else self.ghost(item)

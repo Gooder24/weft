@@ -4558,6 +4558,10 @@ function addEvent(ev) {
     if (ev.content?.displayname) S.names.set(ev.state_key, ev.content.displayname);
     return;
   }
+  if (ev.type === 'm.room.redaction') { // e.g. the bridge taking back a „neodišla“ once EduPage shows the message after all
+    S.events.delete(ev.redacts || ev.content?.redacts);
+    return;
+  }
   if (ev.type !== 'm.room.message' || !ev.content?.body) return;
   const txn = ev.unsigned?.transaction_id;
   if (txn) S.pending.delete(txn);
