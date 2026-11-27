@@ -988,20 +988,45 @@ const settled = (p, id) => until(() => { const it = item(p, id); return it && ![
     await k.stop();
   });
 
-  await check('a scan that changes nothing tells the page once', async () => {
-    // Without Tailscale, off the local network: nowhere to listen, nothing to probe, the same state on every scan.
-    const events = [];
-    const k = createPeer({ dir: path.join(tmp, 'k19', 'in'), statePath: path.join(tmp, 'k19.json'), alias: 'Weft k19', lan: false, port: await freePort(),
-      trusted: () => true, tailnet: async () => ({ self: null, peers: [] }), onEvent: (ev) => events.push(ev), log: () => {} });
-    await k.start();
-    const from = events.length;
-    await k.scan();
-    await k.scan();
-    const seen = events.slice(from).filter((e) => e.type === 'state').map((e) => JSON.stringify(e.state.me));
+  await check('a scan that changes nothing tells the page nothing', async () => {
+    // Without Tailscale (nowhere to listen), and with Tailscale and an online device without LocalSend (probed in vain).
+    const closed = await freePort();
+    const boards = [
+      { name: 'k19', tailnet: async () => ({ self: null, peers: [] }), want: '"error":"no-tailnet"' },
+      { name: 'k20', hosts: ['127.0.0.1'], tailnet: async () => ({ self: '127.0.0.250', peers: [{ ip: '127.0.0.8', online: true }] }), want: '"listening":true' },
+    ];
+    for (const b of boards) {
+      const events = [];
+      const k = createPeer({ dir: path.join(tmp, b.name, 'in'), statePath: path.join(tmp, `${b.name}.json`), alias: `Weft ${b.name}`, lan: false, hosts: b.hosts, port: await freePort(),
+        probePort: closed, trusted: () => true, tailnet: b.tailnet, onEvent: (ev) => events.push(ev), log: () => {} });
+      await k.start();
+      const from = events.length;
+      await k.scan();
+      await k.scan();
+      const seen = events.slice(from).filter((e) => e.type === 'state').map((e) => JSON.stringify(e.state.me));
+      const me = JSON.stringify(k.state().me);
+      await k.stop();
+      assert.ok(from > 0, `${b.name}: start told nothing`);
+      assert.deepEqual(seen, [], b.name);
+      assert.ok(me.includes(b.want), me);
+    }
+  });
+
+  await check('a scan that took longer than a newer one does not undo where the newer one listens', async () => {
+    let call = 0;
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const k = createPeer({ dir: path.join(tmp, 'k21', 'in'), statePath: path.join(tmp, 'k21.json'), alias: 'Weft k21', lan: false, port: await freePort(), trusted: () => true,
+      tailnet: async () => { const n = ++call; if (n === 2) { await gate; return { self: '127.0.0.70', peers: [] }; } return { self: n === 1 ? '127.0.0.70' : '127.0.0.71', peers: [] }; }, log: () => {} });
+    await k.start(); // Tailscale at .70
+    const slow = k.scan(); // asked before the address moved, answers after
+    await k.scan(); // Tailscale now at .71
+    release();
+    await slow;
+    const knock = (host) => new Promise((r) => { const c = require('node:net').connect(k.port, host); c.once('connect', () => { c.destroy(); r(true); }); c.once('error', () => r(false)); });
+    const at = { new: await knock('127.0.0.71'), old: await knock('127.0.0.70') };
     await k.stop();
-    assert.equal(seen.length, 2, seen.join('\n'));
-    assert.equal(seen[0], seen[1]);
-    assert.ok(seen[0].includes('"error":"no-tailnet"'), seen[0]);
+    assert.deepEqual(at, { new: true, old: false });
   });
 
   await check('a probe that stop() caught midway asks nothing more', async () => {

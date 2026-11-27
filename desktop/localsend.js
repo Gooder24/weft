@@ -216,6 +216,10 @@ function createPeer(opts) {
   let port = wantPort;
   let listenError = '';
   let sock = null; // multicast, only with st.lan
+  let sockReady = false; // its bind is done: it hears and announces
+  let joined = new Set(); // the local addresses whose interfaces hear the group
+  let scans = 0; // scans started
+  let applied = 0; // the newest scan whose Tailscale answer is in use
   let session = null; // the one transfer being received
   const jobs = new Map(); // files being received (and their requests), which stop() cuts off and waits for
   let asking = null; // { id, resolve, ... } files from outside the tailnet waiting for Prijať
@@ -248,12 +252,21 @@ function createPeer(opts) {
   const call = (dev, method, pathq, o = {}) => request(dev, method, pathq, { ...o, tls: st.tls, expect: CERT_FP.test(dev.fingerprint || '') ? dev.fingerprint : null });
   const snapshot = () => ({
     // Listening only where the setting wants it: while it moves (Tailscale only ↔ every interface), not yet.
-    me: { alias, port, lan: st.lan, multicast: !!sock, tailnet: !!selfIp, listening: listeningOn.length > 0 && listeningOn.join() === wanted().join(), error: listenError, dir },
+    me: { alias, port, lan: st.lan, multicast: !!sock && sockReady, tailnet: !!selfIp, listening: listeningOn.length > 0 && listeningOn.join() === wanted().join(), error: listenError, dir },
     devices: Object.values(st.devices).map((d) => ({ ...d, online: Date.now() - d.seen < ONLINE_MS })).sort((a, b) => b.seen - a.seen),
     items: st.items,
     ask: asking && { id: asking.id, device: asking.device, count: asking.count, size: asking.size, names: asking.names, text: asking.text },
   });
-  const emit = (type, extra = {}) => { if (!stopped) onEvent({ type, state: snapshot(), ...extra }); };
+  // The page hears each state once: a state event that would repeat the last one it heard is not sent.
+  let told = '';
+  const emit = (type, extra = {}) => {
+    if (stopped) return;
+    const state = snapshot();
+    const now = JSON.stringify(state);
+    if (type === 'state' && now === told) return;
+    told = now;
+    onEvent({ type, state, ...extra });
+  };
   // Progress comes in many small pieces: the window hears of it at most four times a second.
   const emitSoon = () => { if (!stateTimer) stateTimer = setTimeout(() => { stateTimer = null; emit('state'); }, 250); };
 
@@ -596,9 +609,12 @@ function createPeer(opts) {
   }
 
   async function scan() {
+    const n = ++scans;
     try {
       const t = await tailnet();
       if (stopped) return;
+      if (n < applied) return; // a newer scan already said where Tailscale is: this older answer is stale
+      applied = n;
       selfIp = t.self || null;
       // Without Tailscale running (no own address) its peers' addresses lead into the local network, if anywhere.
       const peers = selfIp ? (t.peers || []).filter((p) => p.ip && p.ip !== selfIp) : [];
@@ -638,19 +654,40 @@ function createPeer(opts) {
   /** Multicast while in the local network and listening (an announcement names a port that answers). */
   const syncMulticast = () => multicast(st.lan && listeningOn.includes('0.0.0.0'));
   function multicast(on) {
-    if (!on) { try { sock?.close(); } catch { /* closed */ } sock = null; return; }
-    if (sock || stopped) return;
+    if (!on) { try { sock?.close(); } catch { /* closed */ } sock = null; sockReady = false; joined = new Set(); return; }
+    if (sock) { join(); return; } // already on: interfaces and the Tailscale address may have changed since
+    if (stopped) return;
     const s = dgram.createSocket({ type: 'udp4', reuseAddr: true });
     sock = s;
     s.on('message', onMulticast);
-    s.on('error', (err) => { log('board multicast', err.message); if (sock === s) sock = null; try { s.close(); } catch { /* closed */ } });
-    s.bind(PORT, () => {
-      for (const list of Object.values(os.networkInterfaces())) {
-        // A local network may hand out addresses of Tailscale's range too: only Tailscale's own is left out.
-        for (const a of list || []) if (a.family === 'IPv4' && !a.internal && a.address !== selfIp) { try { s.addMembership(GROUP, a.address); } catch { /* not this one */ } }
-      }
-      announce();
+    s.on('error', (err) => {
+      log('board multicast', err.message);
+      try { s.close(); } catch { /* closed */ }
+      if (sock !== s) return;
+      sock = null; sockReady = false; joined = new Set();
+      emit('state'); // not multicasting (the next scan tries again)
     });
+    s.bind(PORT, () => {
+      if (sock !== s) return; // turned off meanwhile
+      sockReady = true;
+      join();
+      announce();
+      emit('state');
+    });
+  }
+  /** Joins the group on every local network's address and leaves the ones gone. A local network may hand out
+   *  addresses of Tailscale's range too: only Tailscale's own address is left out. */
+  function join() {
+    if (!sock || !sockReady) return;
+    const now = new Set();
+    for (const list of Object.values(os.networkInterfaces())) for (const a of list || []) if (a.family === 'IPv4' && !a.internal && a.address !== selfIp) now.add(a.address);
+    for (const a of joined) if (!now.has(a)) { try { sock.dropMembership(GROUP, a); } catch { /* its interface is gone */ } }
+    const kept = new Set();
+    for (const a of now) {
+      if (joined.has(a)) { kept.add(a); continue; }
+      try { sock.addMembership(GROUP, a); kept.add(a); } catch { /* not this one, tried again at the next scan */ }
+    }
+    joined = kept;
   }
 
   // ---------------------------------------------------------------- listening

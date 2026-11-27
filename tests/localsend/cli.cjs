@@ -129,6 +129,7 @@ console.log('runtime', process.versions.electron ? `Electron ${process.versions.
   const seen = p2events.slice(from);
   const bound = seen.findIndex((e) => e.type === 'bound-everywhere');
   const early = seen.slice(0, bound < 0 ? seen.length : bound).filter((e) => e.state?.me.lan && (e.state.me.multicast || e.state.me.listening)).map((e) => e.state.me);
+  await until(() => p2.state().me.multicast, 5000); // its UDP bind ends a moment later
   const end = p2.state().me;
   check('off and at once on again: nothing says local network or multicasts before every interface listens, then both', entered && bound >= 0 && !early.length && end.lan && end.listening && end.multicast && await knock('127.0.0.1'),
     JSON.stringify({ entered, bound, early, end: { lan: end.lan, listening: end.listening, multicast: end.multicast } }));
@@ -167,7 +168,7 @@ console.log('runtime', process.versions.electron ? `Electron ${process.versions.
   await p5.scan();
   await p5.scan();
   const p5said = p5events.slice(p5from).map((e) => e.state.me.error);
-  check('while every port stays taken, a scan never says it is starting', p5said.length > 0 && p5said.every((x) => x === 'port'), JSON.stringify(p5said));
+  check('while every port stays taken, a scan never says it is starting', p5said.every((x) => x === 'port') && p5.state().me.error === 'port', JSON.stringify(p5said));
   await p5.stop();
   for (const b of blockers) b.close();
 
@@ -181,6 +182,42 @@ console.log('runtime', process.versions.electron ? `Electron ${process.versions.
   release();
   await starting;
   check('stopped while it starts, it opens no multicast afterwards', p4.state().me.multicast === false && p4.state().me.lan === true, JSON.stringify(p4.state().me));
+
+  // 7. In the local network each scan follows the interfaces: a new local network joins the group, and when Tailscale
+  //    moves to another address, that one leaves and the one it left joins.
+  let ts6 = '100.101.0.1';
+  const p6 = createPeer({ dir: `${D}/mine6`, statePath: `${D}/board6.json`, alias: 'Weft p6', port: 53540, trusted: () => true,
+    tailnet: async () => ({ self: ts6, peers: [] }), log: () => {} });
+  await p6.start();
+  await until(() => p6.state().me.multicast, 5000);
+  const g6before = joined();
+  execFileSync('sh', ['-c', 'ip link add d3 type dummy && ip addr add 10.78.0.1/24 dev d3 && ip link set d3 multicast on && ip link set d3 up']);
+  ts6 = '100.110.0.1';
+  await p6.scan();
+  const g6 = joined();
+  const has = (g, d) => !!g[d]?.includes('A70000E0');
+  check('a scan follows the interfaces: a new local network joins, the new Tailscale address leaves, the old one joins',
+    has(g6before, 'd1') && !has(g6before, 'd2') && has(g6, 'd3') && !has(g6, 'd1') && has(g6, 'd2') && has(g6, 'd0'), JSON.stringify({ g6before, g6 }));
+  await p6.stop();
+  execFileSync('sh', ['-c', 'ip link del d3']);
+
+  // 8. Where another program holds UDP 53317 alone, it never says it multicasts; once the port is free, a scan does.
+  const udpBlock = dgram.createSocket({ type: 'udp4' });
+  await new Promise((r) => udpBlock.bind(53317, '0.0.0.0', r));
+  const p7events = [];
+  const p7log = [];
+  const p7 = createPeer({ dir: `${D}/mine7`, statePath: `${D}/board7.json`, alias: 'Weft p7', port: 53550, trusted: () => true,
+    tailnet: async () => ({ self: '100.101.0.1', peers: [] }), onEvent: (e) => p7events.push(e), log: (...a) => p7log.push(a.join(' ')) });
+  await p7.start();
+  const refused = await until(() => p7log.some((l) => l.startsWith('board multicast')), 5000);
+  const claimed = p7events.some((e) => e.state.me.multicast);
+  const blocked = p7.state().me;
+  udpBlock.close();
+  await p7.scan();
+  const freed = await until(() => p7.state().me.multicast, 5000);
+  check('where UDP 53317 is taken it never says it multicasts, and once it is free a scan does',
+    refused && !claimed && blocked.listening && !blocked.multicast && freed, JSON.stringify({ refused, claimed, blocked: { listening: blocked.listening, multicast: blocked.multicast }, freed, log: p7log }));
+  await p7.stop();
   console.log(failed ? `${failed} failed` : 'all passed');
   process.exit(failed ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(2); });
