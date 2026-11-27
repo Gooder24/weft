@@ -15200,8 +15200,10 @@ function beeperTable(report) {
 function beeperSettings() {
   if (!S.archiveAt && bp.phase === 'idle') return null; // no archive here, or it belongs to another account of the server
   const desktop = !!window.desktop?.beeperFind;
-  const pick = h('label', { class: 'ghost bppick' }, icon('file'), T('Vybrať index.db'),
-    h('input', { type: 'file', multiple: true, hidden: true, onchange: (e) => { const files = e.target.files; beeperPick(files); e.target.value = ''; } }));
+  // A button opens the hidden picker beside it (a label around it is never reached by Tab).
+  const opens = (e) => e.currentTarget.nextElementSibling.click();
+  const pick = [h('button', { class: 'ghost bppick', type: 'button', onclick: opens }, icon('file'), T('Vybrať index.db')),
+    h('input', { type: 'file', multiple: true, hidden: true, onchange: (e) => { const files = e.target.files; beeperPick(files); e.target.value = ''; } })];
   const where = h('p', { class: 'hint' }, T('Beeper Desktop ho má v priečinku BeeperTexts: na Linuxe ~/.config/BeeperTexts, na Windowse BeeperTexts v %APPDATA%, na Macu ~/Library/Application Support/BeeperTexts. Najprv Beeper zavri. Ak je vedľa neho index.db-wal, vyber oba.'));
   const cancel = h('button', { class: 'ghost', type: 'button', onclick: beeperCancel }, T('Zrušiť'));
   const body = {
@@ -15225,8 +15227,8 @@ function beeperSettings() {
             ? T`Beeper má uložené ${bpCount(m.files.length)} z ${bpCount(m.wanted)}; pri ostatných bude vo Wefte napísané, čo tam bolo.`
             : T('Beeper ich má uložené všetky.'))))
         : desktop ? h('p', { class: 'hint' }, T('Fotky a súbory týchto správ Beeper uložené nemá; vo Wefte bude pri správe napísané, čo tam bolo.'))
-          : [h('label', { class: 'ghost bppick' }, icon('images'), T('Pridať fotky a súbory'),
-            h('input', { type: 'file', webkitdirectory: true, hidden: true, onchange: (e) => { const files = e.target.files; beeperPickMedia(files); e.target.value = ''; } })),
+          : [h('button', { class: 'ghost bppick', type: 'button', onclick: opens }, icon('images'), T('Pridať fotky a súbory')),
+            h('input', { type: 'file', webkitdirectory: true, hidden: true, onchange: (e) => { const files = e.target.files; beeperPickMedia(files); e.target.value = ''; } }),
           h('p', { class: 'hint' }, m ? T`V tomto priečinku nie je ani jeden z ${bpCount(wanted.length)} súborov. Vyber priečinok media v BeeperTexts.`
             : T`Správy ukazujú ${bpCount(wanted.length)} fotiek a súborov. Ak ich chceš preniesť, vyber priečinok media v priečinku BeeperTexts; pošlú sa len tieto.`)];
       return [beeperTable(bp.report), media,

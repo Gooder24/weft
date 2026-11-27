@@ -100,6 +100,17 @@ const tree = (d) => fs.readdirSync(d, { recursive: true }).filter((n) => !['Sing
     check('a listed file swapped for a link is not read', swapped);
     fs.unlinkSync(path.join(cache, 'u_photo1')); fs.renameSync(path.join(dir, 'u_photo1.moved'), path.join(cache, 'u_photo1'));
   }
+  // A listed file replaced by another plain file, and the whole cache folder replaced: neither is the file listed.
+  const photo = path.join(cache, 'u_photo1');
+  fs.renameSync(photo, path.join(dir, 'u_photo1.moved')); fs.writeFileSync(photo, 'other-bytes-0123456789');
+  let replaced = false; try { await handlers['beeper-piece'](ev, 'media/u_photo1', 0, 10); } catch { replaced = true; }
+  check('a listed file replaced by another is not read', replaced);
+  fs.unlinkSync(photo); fs.renameSync(path.join(dir, 'u_photo1.moved'), photo);
+  fs.renameSync(cache, `${cache}.old`); fs.mkdirSync(cache); fs.writeFileSync(photo, 'other-bytes-0123456789');
+  let folder = false; try { await handlers['beeper-piece'](ev, 'media/u_photo1', 0, 10); } catch { folder = true; }
+  check('a file in a cache folder put in its place is not read', folder);
+  fs.rmSync(cache, { recursive: true }); fs.renameSync(`${cache}.old`, cache);
+  check('the listed file itself is still read', Buffer.from(await handlers['beeper-piece'](ev, 'media/u_photo1', 0, 5)).toString() === 'photo');
   check('the copy is deleted', !fs.readdirSync(tmp).some((n) => n.startsWith('weft-beeper-')));
   check('Beeper\'s folder is as it was', tree(dir) === before, `${tree(dir)} vs ${before}`);
   await handlers['beeper-find'](ev);
