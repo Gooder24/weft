@@ -897,8 +897,10 @@ def fetch_more(c, network, room, owner, has_older):
             moved = oldest is not None or (page or {}).get("cursor", "") not in ("", st["cursor"])
             st["empty"] = 0 if rows else st["empty"] + 1
             st |= {"cursor": (page or {}).get("cursor", "") or st["cursor"], "failed_at": None,
-                   # a page without more is the chat's start, also when it is empty (a chat shorter than what the room has)
-                   "done": 2 if page is None else 1 if not page.get("has_more") else 2 if not moved or st["empty"] >= MAX_EMPTY else 0}
+                   # Teams' bridge says has_more false only at the chat's start, also on an empty page (a chat no longer
+                   # than what its room has), and its empty pages (system notes) move on; Meta's say it also when they cannot page
+                   "done": 2 if page is None else (1 if not page.get("has_more") else 0 if moved else 2) if network in HISTORY_AHEAD
+                           else 2 if not moved or st["empty"] >= MAX_EMPTY else 0 if page.get("has_more") else 1}
             if st["done"] == 2: st["failed_at"] = time.time()
             if oldest: st |= {"before_id": oldest["id"], "before_ts": oldest["ts"]}
             c.execute("""INSERT INTO fetched VALUES (:room, :cursor, :before_id, :before_ts, :done, 0, :failed_at, :empty) ON CONFLICT (room)
@@ -921,6 +923,9 @@ def history_ahead(network, log=print):
     count = lambda room: c.execute("SELECT count(*) FROM messages WHERE chat = ?", (f"bridge:{room}",)).fetchone()[0]
     for n, room in enumerate(rooms, 1):
         downs = 0
+        # asked now: a room held after a failed or empty page (a day, six hours) is tried again
+        c.execute("""UPDATE fetched SET done = CASE done WHEN 2 THEN 0 ELSE done END, empty = CASE done WHEN 2 THEN 0 ELSE empty END,
+                     fails = 0, failed_at = NULL WHERE room = ? AND done != 1""", (room,)); c.commit()
         while (st := bridge_state(c, room)) and not st[1]:
             try: fetch_more(c, network, room, owner, lambda: False)
             except StillEmpty: continue

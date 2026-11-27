@@ -84,6 +84,8 @@ TRANSIENT_LIMIT = 3
 # chat gets its room too (kv adopted:<account>), and the archive pages back each chat's history (GET /history).
 FIRST_DAYS = int(os.environ.get("FIRST_DAYS", "14"))
 FIRST_MESSAGES = 20
+ADOPT_RETRY = int(os.environ.get("ADOPT_RETRY_SECONDS", "3600"))
+ADOPT_PAGES = 200  # pages of /me/chats (50 each) one adoption reads at most
 # Outlook.com takes 20 MB of attachments, Exchange more; the smaller limit holds for both. Weft holds the same.
 MAIL_FILES_MAX = 20 * 1024 * 1024
 SMALL_ATTACH = 3 * 1024 * 1024  # Graph takes files under this inline; this size and bigger go up in an upload session
@@ -1835,10 +1837,14 @@ class Teams:
         started = now_ms()
         # Once per account every chat Teams has, however old, gets its room (its newest page, already read); the
         # archive pages back the rest of its history (GET /history). Later polls read only the first page.
-        adopt = self.kv(f"adopted:{account}") is None
+        # A failed adoption is tried again at most every ADOPT_RETRY, not on every poll.
+        adopt = self.kv(f"adopted:{account}") is None and now_ms() - int(self.kv(f"adopt_try:{account}") or 0) >= ADOPT_RETRY * 1000
+        if adopt:
+            self.kv(f"adopt_try:{account}", str(now_ms()))
         url = "/me/chats?$expand=lastMessagePreview&$orderby=" + q("lastMessagePreview/createdDateTime desc") + "&$top=50"
-        chats = []
-        while url:
+        chats, pages = [], set()
+        while url and url not in pages and len(pages) < ADOPT_PAGES:  # a repeated or endless nextLink ends here
+            pages.add(url)
             page = self.graph(account, "GET", url)
             chats += [c for c in page.get("value") or [] if isinstance(c, dict)]
             url = page.get("@odata.nextLink") if adopt else None
