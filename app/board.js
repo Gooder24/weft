@@ -120,7 +120,7 @@ export function createBoard({ h, render, isOpen, open }) {
     if (!me.listening && me.error === 'no-tailnet') return T('Tailscale na tomto počítači nebeží, takže nič neprijme. Zapni ho alebo „Aj v miestnej sieti“.');
     if (!me.listening) return me.error === 'port' ? T('Porty 53317 až 53320 sú obsadené, takže nič neprijme.') : T`Neprijíma: ${me.error}`;
     return [
-      me.lan ? T('Prijíma cez Tailscale aj v miestnej sieti') : T('Prijíma cez Tailscale'),
+      !me.lan ? T('Prijíma cez Tailscale') : me.tailnet ? T('Prijíma cez Tailscale aj v miestnej sieti') : T('Prijíma len v miestnej sieti (Tailscale na tomto počítači nebeží)'),
       me.port !== 53317 ? T`na porte ${me.port} (53317 má iná appka: v LocalSende pridaj tento počítač ručne)` : null,
       T`súbory ukladá do ${me.dir}`,
     ].filter(Boolean).join(' · ');

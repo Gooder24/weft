@@ -1544,6 +1544,7 @@ export default {
   "Prijať súbory": "Accept files",
   "Prijíma cez Tailscale": "Receiving through Tailscale",
   "Prijíma cez Tailscale aj v miestnej sieti": "Receiving through Tailscale and on the local network",
+  "Prijíma len v miestnej sieti (Tailscale na tomto počítači nebeží)": "Receiving on the local network only (Tailscale is not running on this computer)",
   "prijíma sa {} %": "receiving {} %",
   "Prijmi ich vo Wefte.": "Accept them in Weft.",
   "prišla len časť": "only part arrived",
