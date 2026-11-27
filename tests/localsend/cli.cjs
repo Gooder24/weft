@@ -208,6 +208,22 @@ console.log('runtime', process.versions.electron ? `Electron ${process.versions.
   await p6.scan();
   const g6moved = joined();
   check('an address given back on the same interface, then Tailscale\'s, leaves the group there', !has(g6moved, 'd3') && has(g6moved, 'd1') && has(g6moved, 'd0'), JSON.stringify(g6moved));
+  // An interface given a new address that is Tailscale's leaves the group, at once or after a while without one.
+  ts6 = '100.110.0.1';
+  await p6.scan(); // d3 joins again
+  execFileSync('sh', ['-c', 'ip addr del 10.78.0.1/24 dev d3 && ip addr add 10.78.0.2/24 dev d3']);
+  ts6 = '10.78.0.2';
+  await p6.scan();
+  const g6renum = joined();
+  ts6 = '100.110.0.1';
+  await p6.scan(); // d3 joins again by 10.78.0.2
+  execFileSync('sh', ['-c', 'ip addr del 10.78.0.2/24 dev d3']);
+  await p6.scan(); // no address: it waits
+  execFileSync('sh', ['-c', 'ip addr add 10.78.0.3/24 dev d3']);
+  ts6 = '10.78.0.3';
+  await p6.scan();
+  const g6later = joined();
+  check('an interface renumbered to Tailscale\'s address leaves the group, also after a while without one', !has(g6renum, 'd3') && !has(g6later, 'd3') && has(g6later, 'd1'), JSON.stringify({ g6renum, g6later }));
   await p6.stop();
   execFileSync('sh', ['-c', 'ip link del d3']);
 

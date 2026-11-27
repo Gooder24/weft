@@ -1074,6 +1074,32 @@ const settled = (p, id) => until(() => { const it = item(p, id); return it && ![
     assert.deepEqual({ asked, devices, error: me.error }, { asked: 0, devices: [], error: 'no-tailnet' });
   });
 
+  await check('a newer scan that fails lets an older one, whose bind waited, tell the page where it listens', async () => {
+    let call = 0;
+    const events = [];
+    const k = createPeer({ dir: path.join(tmp, 'k24', 'in'), statePath: path.join(tmp, 'k24.json'), alias: 'Weft k24', lan: false, port: await freePort(), trusted: () => true,
+      tailnet: async () => { const n = ++call; if (n === 3) throw new Error('tailscale status failed'); return { self: n === 1 ? '127.0.0.76' : '127.0.0.77', peers: [] }; },
+      onEvent: (ev) => events.push(ev), log: () => {} });
+    await k.start(); // Tailscale at .76
+    const netm = require('node:net');
+    const listenOrig = netm.Server.prototype.listen;
+    let entered = false;
+    let open;
+    const held = new Promise((r) => { open = r; });
+    netm.Server.prototype.listen = function (...a) { if (a[1] === '127.0.0.77') { entered = true; held.then(() => listenOrig.apply(this, a)); return this; } return listenOrig.apply(this, a); };
+    try {
+      const older = k.scan(); // Tailscale moved to .77; its bind waits
+      await until(() => entered);
+      await k.scan(); // fails
+      open();
+      await older;
+    } finally { netm.Server.prototype.listen = listenOrig; }
+    const told = events.filter((e) => e.type === 'state').at(-1)?.state.me;
+    const me = k.state().me;
+    await k.stop();
+    assert.deepEqual({ listening: me.listening, told: told?.listening }, { listening: true, told: true });
+  });
+
   await check('a probe that stop() caught midway asks nothing more', async () => {
     let held = null, afterStop = 0, done = false;
     const phone = require('node:net').createServer((c) => { if (done) { afterStop++; c.destroy(); } else held = c; });

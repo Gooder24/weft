@@ -221,7 +221,8 @@ function createPeer(opts) {
   let away = new Map(); // joined interfaces whose address went away: the kernel keeps them in the group
   let outbox = []; // announcements waiting: each goes out on every joined interface before the next
   let scans = 0; // scans started
-  let applied = 0; // the newest scan that answered (or failed): an older answer is stale
+  let latest = 0; // the newest scan that answered or failed: an older answer is stale
+  let applied = 0; // the scan whose answer is in use: it finishes what that answer needs (listen, multicast, probes)
   let session = null; // the one transfer being received
   const jobs = new Map(); // files being received (and their requests), which stop() cuts off and waits for
   let asking = null; // { id, resolve, ... } files from outside the tailnet waiting for Prijať
@@ -615,16 +616,16 @@ function createPeer(opts) {
     const n = ++scans;
     try {
       // The newest question decides: an older answer that comes after it (or after its failure) is dropped.
-      const t = await tailnet().catch((err) => { applied = Math.max(applied, n); throw err; });
+      const t = await tailnet().catch((err) => { latest = Math.max(latest, n); throw err; });
       if (stopped) return;
-      if (n < applied) return;
-      applied = n;
+      if (n < latest) return;
+      latest = applied = n;
       selfIp = t.self || null;
       // Without Tailscale running (no own address) its peers' addresses lead into the local network, if anywhere.
       const peers = selfIp ? (t.peers || []).filter((p) => p.ip && p.ip !== selfIp) : [];
       peerIps = new Set(peers.map((p) => p.ip));
       await listen();
-      if (stopped || n !== applied) return; // a newer scan has its own say, and its own probes
+      if (stopped || n !== applied) return; // a newer answer has its own listen, multicast and probes
       syncMulticast();
       dropUnheard();
       const asked = peers.filter((p) => p.online);
@@ -694,22 +695,25 @@ function createPeer(opts) {
   }
   /** Joins the group on every local network's interface (by its first IPv4 address) and leaves the ones gone. A local
    *  network may hand out addresses of Tailscale's range too: only the interface with Tailscale's own address is left
-   *  out. Joining again where the kernel already has the interface (EADDRINUSE) counts as joined. Leaving needs the
-   *  address still on its interface (Linux takes a leave by an absent address and keeps the interface in the group for
-   *  good), so an interface whose address went away waits in `away` until it is back. */
+   *  out. Joining again where the kernel already has the interface (EADDRINUSE) counts as joined. Linux leaves by any
+   *  address the interface has now; a leave by an address it no longer has is taken but keeps the interface in the
+   *  group for good, so an interface without an address waits in `away` until it has one. */
   function join() {
     if (!sock || !sockReady) return;
     const now = new Map();
-    const present = new Set();
+    const addrs = new Map(); // interface → its IPv4 addresses now
     for (const [name, list] of Object.entries(os.networkInterfaces())) {
-      const v4 = (list || []).filter((a) => a.family === 'IPv4' && !a.internal);
-      for (const a of v4) present.add(a.address);
-      if (v4.length && !v4.some((a) => a.address === selfIp)) now.set(name, v4[0].address);
+      const v4 = (list || []).filter((a) => a.family === 'IPv4' && !a.internal).map((a) => a.address);
+      if (!v4.length) continue;
+      addrs.set(name, v4);
+      if (!v4.includes(selfIp)) now.set(name, v4[0]);
     }
     const left = new Map();
     for (const [name, a] of [...away, ...joined]) {
       if (now.has(name)) continue; // joined again below
-      if (present.has(a)) { try { sock.dropMembership(GROUP, a); } catch { /* moved to another interface */ } } else left.set(name, a);
+      const have = addrs.get(name);
+      if (!have) { left.set(name, a); continue; }
+      for (const x of have) { try { sock.dropMembership(GROUP, x); break; } catch { /* not by this one */ } }
     }
     const kept = new Map();
     for (const [name, a] of now) {
