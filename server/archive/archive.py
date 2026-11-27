@@ -834,6 +834,7 @@ class StillEmpty(Exception):
 # fetched.done: 0 still paging, 1 reached the chat's start, 2 the bridge cannot page this room (retried after a day)
 GAVE_UP_RETRY = 86400
 MAX_EMPTY = 20  # pages in a row with nothing to show (undecryptable stretch, only calls): the bridge gives up there
+MAX_EMPTY_AHEAD = 500  # Teams: a meeting chat can hold long runs of system notes; also ends cursors that go in a circle
 room_locks = collections.defaultdict(threading.Lock)
 
 
@@ -900,7 +901,7 @@ def fetch_more(c, network, room, owner, has_older):
             st |= {"cursor": (page or {}).get("cursor", "") or st["cursor"], "failed_at": None,
                    # Teams' bridge says has_more false only at the chat's start, also on an empty page (a chat no longer
                    # than what its room has), and its empty pages (system notes) go on while the cursor does; Meta's say it also when they cannot page
-                   "done": 2 if page is None else (1 if not page.get("has_more") else 0 if advanced else 2) if network in HISTORY_AHEAD
+                   "done": 2 if page is None else (1 if not page.get("has_more") else 0 if advanced and st["empty"] < MAX_EMPTY_AHEAD else 2) if network in HISTORY_AHEAD
                            else 2 if not moved or st["empty"] >= MAX_EMPTY else 0 if page.get("has_more") else 1}
             if st["done"] == 2: st["failed_at"] = time.time()
             if oldest: st |= {"before_id": oldest["id"], "before_ts": oldest["ts"]}
