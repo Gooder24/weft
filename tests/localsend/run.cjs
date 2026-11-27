@@ -472,7 +472,7 @@ const settled = (p, id) => until(() => { const it = item(p, id); return it && ![
   });
 
   await check('a first start is in the local network, also after an earlier build saved it off; turned off it stays off', async () => {
-    // Never started, so it listens nowhere: only the setting is looked at.
+    // Never started and never switched on, so it listens nowhere: only the setting is looked at.
     const opts = { dir: path.join(tmp, 'n', 'in'), statePath: path.join(tmp, 'n.json'), alias: 'Weft n', log: () => {} };
     const n = createPeer(opts);
     assert.equal(n.state().me.lan, true);
@@ -485,8 +485,10 @@ const settled = (p, id) => until(() => { const it = item(p, id); return it && ![
     await old.stop();
     const n2 = createPeer(opts);
     assert.equal(n2.state().me.lan, false);
-    await n2.setLan(true);
     await n2.stop();
+    const off = JSON.parse(fs.readFileSync(opts.statePath, 'utf8'));
+    assert.equal(off.lanChosen, true);
+    fs.writeFileSync(opts.statePath, JSON.stringify({ ...off, lan: true })); // he switched it on (setLan(true) would listen)
     const n3 = createPeer({ ...opts, lan: false });
     assert.equal(n3.state().me.lan, true, 'his choice beats a caller\'s default');
     await n3.stop();
