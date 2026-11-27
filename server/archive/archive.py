@@ -11,6 +11,7 @@ asks for it when Karchi scrolls past a chat's first message on Matrix.
                                       (install.sh runs it with ARCHIVE_OWNER_FILE: only the HTTP, for
                                       „Prejsť z Beeperu“ and old chats, owned by the server's first account)
     archive.py mirror                 that copy once
+    archive.py history teams          every Teams chat paged back to its start now (the bridge's GET /history)
     archive.py instagram ZIP...       import Instagram's "Download your information" exports (JSON)
     import_messenger.py ZIP --dry-run validate/count Messenger's encrypted-chat export, without writing
     import_messenger.py ZIP           import it with a SQLite backup, raw message data and local attachments
@@ -49,7 +50,9 @@ PORT = int(os.environ.get("ARCHIVE_PORT", "29324"))
 # owns it, kept in this file. Without it (asus) the owner is the account of ./token.
 OWNER_FILE = os.environ.get("ARCHIVE_OWNER_FILE")
 # Bridges patched with messenger-archivefetch.patch (Instagram: instagram-archivefetch.patch), and the token they expect (./bridge-token, 0600).
-BRIDGES = {"messenger": "http://127.0.0.1:29325", "instagram": "http://127.0.0.1:29326"}
+BRIDGES = {"messenger": "http://127.0.0.1:29325", "instagram": "http://127.0.0.1:29326", "teams": "http://127.0.0.1:29330"}
+# Networks `history` may page back whole ahead of time (Karchi's yes, 2026-11-27); Meta's only as Weft scrolls.
+HISTORY_AHEAD = {"teams"}
 BRIDGE_TOKEN_FILE = os.path.join(HERE, "bridge-token")
 PROTOCOLS = {"whatsapp": "whatsapp", "facebookgo": "messenger", "facebook": "messenger", "instagramgo": "instagram",
              "instagram": "instagram", "discordgo": "discord", "discord": "discord", "teams": "teams"}
@@ -894,7 +897,8 @@ def fetch_more(c, network, room, owner, has_older):
             moved = oldest is not None or (page or {}).get("cursor", "") not in ("", st["cursor"])
             st["empty"] = 0 if rows else st["empty"] + 1
             st |= {"cursor": (page or {}).get("cursor", "") or st["cursor"], "failed_at": None,
-                   "done": 2 if page is None or not moved or st["empty"] >= MAX_EMPTY else 0 if page.get("has_more") else 1}
+                   # a page without more is the chat's start, also when it is empty (a chat shorter than what the room has)
+                   "done": 2 if page is None else 1 if not page.get("has_more") else 2 if not moved or st["empty"] >= MAX_EMPTY else 0}
             if st["done"] == 2: st["failed_at"] = time.time()
             if oldest: st |= {"before_id": oldest["id"], "before_ts": oldest["ts"]}
             c.execute("""INSERT INTO fetched VALUES (:room, :cursor, :before_id, :before_ts, :done, 0, :failed_at, :empty) ON CONFLICT (room)
@@ -904,6 +908,28 @@ def fetch_more(c, network, room, owner, has_older):
             if rows: return True
             if st["done"]: return False
         raise StillEmpty()
+
+
+def history_ahead(network, log=print):
+    """Every room of the network paged back to its chat's start now, so Ctrl+K finds all of it (archive.py history)."""
+    if network not in HISTORY_AHEAD: sys.exit(f"history: only {', '.join(sorted(HISTORY_AHEAD))}")
+    token = login()
+    mirror(token, log)  # rooms the bridge made since the last hourly copy
+    owner = call("GET", "/_matrix/client/v3/account/whoami", token=token)["user_id"]
+    c = db()
+    rooms = [r for (r,) in c.execute("SELECT id FROM chats WHERE source = 'matrix' AND network = ? ORDER BY id", (network,))]
+    count = lambda room: c.execute("SELECT count(*) FROM messages WHERE chat = ?", (f"bridge:{room}",)).fetchone()[0]
+    for n, room in enumerate(rooms, 1):
+        downs = 0
+        while (st := bridge_state(c, room)) and not st[1]:
+            try: fetch_more(c, network, room, owner, lambda: False)
+            except StillEmpty: continue
+            except BridgeDown as e:
+                downs += 1
+                log(f"history: {room}: {e}")
+                if downs >= 3: break
+                time.sleep(60)
+        log(f"history: {n}/{len(rooms)} {room}: {count(room)} older messages")
 
 
 def bridge_state(c, room):
@@ -1765,6 +1791,7 @@ if __name__ == "__main__":
     elif cmd == "mirror": mirror(login())
     elif cmd == "instagram": import_instagram(args)
     elif cmd == "instagram-media": import_instagram_media(args)
+    elif cmd == "history" and args: history_ahead(args[0])
     elif cmd == "thumbs": warm_thumbs()
     elif cmd == "sizes": fix_sizes()
     elif cmd == "export": export(args[0])

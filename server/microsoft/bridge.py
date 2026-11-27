@@ -20,6 +20,7 @@ marks chats read in Teams.
 Provisioning speaks the subset of the mautrix bridgev2 API that Weft's Accounts page uses, once per product:
 
   GET  /<outlook|teams>/_matrix/provision/v3/whoami
+  GET  /history?room=&cursor=&before_ts=   older pages of a Teams chat for the archive (its bridge token only)
   POST /<outlook|teams>/_matrix/provision/v3/login/start/microsoft
   POST /<outlook|teams>/_matrix/provision/v3/login/step/<process>/<step>/user_input
   POST /<outlook|teams>/_matrix/provision/v3/login/cancel/<process>
@@ -64,6 +65,12 @@ STATE_DIR = Path(os.environ.get("STATE_DIR", Path(__file__).resolve().parent / "
 ACCOUNTS_FILE = STATE_DIR / "accounts.json"
 CLIENT_FILE = STATE_DIR / "microsoft-client.json"
 ARCHIVE_DB = Path(os.environ.get("ARCHIVE_DB", Path.home() / "matrix-spike/archive/archive.db"))
+# The archive asks GET /history with this token (the one the Meta bridges' archive fetch takes); photos of those pages
+# go into its media folder under teams/, never to Matrix.
+ARCHIVE_TOKEN_FILE = Path(os.environ.get("ARCHIVE_FETCH_TOKEN_FILE", Path.home() / "matrix-spike/archive/bridge-token"))
+ARCHIVE_MEDIA = Path(os.environ.get("ARCHIVE_MEDIA_DIR", Path.home() / "matrix-spike/archive/media"))
+ARCHIVE_MEDIA_MAX = 50_000_000
+HISTORY_GAP = float(os.environ.get("HISTORY_GAP_SECONDS", "1"))  # between two history pages asked of Graph
 GRAPH = os.environ.get("GRAPH_URL", "https://graph.microsoft.com/v1.0").rstrip("/")
 LOGIN = os.environ.get("MS_LOGIN_URL", "https://login.microsoftonline.com").rstrip("/")
 # Entra lets a desktop client use http://localhost with any port; this exact one is registered.
@@ -73,7 +80,8 @@ MAIL_SECONDS = int(os.environ.get("MAIL_SECONDS", "300"))
 CHECK_SECONDS = int(os.environ.get("CHECK_SECONDS", 30 * 60))
 RETRY_SECONDS = int(os.environ.get("RETRY_SECONDS", 2 * 60))
 TRANSIENT_LIMIT = 3
-# A new Teams login brings its chats of these last days (one page each, already read); older ones come when they move.
+# A new Teams login brings its chats of these last days (one page each, already read). Once per account every older
+# chat gets its room too (kv adopted:<account>), and the archive pages back each chat's history (GET /history).
 FIRST_DAYS = int(os.environ.get("FIRST_DAYS", "14"))
 FIRST_MESSAGES = 20
 # Outlook.com takes 20 MB of attachments, Exchange more; the smaller limit holds for both. Weft holds the same.
@@ -1232,6 +1240,18 @@ def chat_db() -> sqlite3.Connection:
     return db
 
 
+
+def call_ended(msg: dict) -> tuple[dict, str] | None:
+    """(who started it, „Call (3:12)“) when a Teams system note says a call or meeting ended, else None."""
+    detail = msg.get("eventDetail") if isinstance(msg.get("eventDetail"), dict) else {}
+    if not str(detail.get("@odata.type") or "").endswith("callEndedEventMessageDetail") or detail.get("callEventType") not in ("call", "meeting"):
+        return None
+    took = re.fullmatch(r"P(?:(\d+)D)?T?(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)(?:\.\d+)?S)?", str(detail.get("callDuration") or ""))
+    days, hours, minutes, seconds = (int(x or 0) for x in took.groups()) if took else (0, 0, 0, 0)
+    hours += days * 24
+    length = f" ({hours}:{minutes:02}:{seconds:02})" if hours else f" ({minutes}:{seconds:02})" if minutes or seconds else ""
+    return ((detail.get("initiator") or {}).get("user")) or {"displayName": "Teams"}, "Call" + length
+
 class Teams:
     """Teams chats as Matrix rooms, for every connected Teams login."""
 
@@ -1250,6 +1270,8 @@ class Teams:
         self.read_at: dict[str, float] = {}  # room -> not before this (monotonic): READ_GAP, or Microsoft's Retry-After
         self.read_cv = threading.Condition()
         self.read_next = 0.0  # no chat's check starts before this (monotonic)
+        self.history_lock = threading.Lock()  # the archive's history pages go to Graph one at a time, HISTORY_GAP apart
+        self.history_at = 0.0
 
     # -------------------------------------------------- small helpers
 
@@ -1725,20 +1747,16 @@ class Teams:
         „Call (3:12)“ marked com.beeper.action_message, from whoever started it. Graph tells who started it and how
         long it took, not whether it had video or whether anybody answered; a call without a length is just „Call“.
         Teams' other system notes (somebody added, a call started, a recording) stay out of the room."""
-        detail = msg.get("eventDetail") if isinstance(msg.get("eventDetail"), dict) else {}
-        if not str(detail.get("@odata.type") or "").endswith("callEndedEventMessageDetail") or detail.get("callEventType") not in ("call", "meeting"):
+        ended = call_ended(msg)
+        if not ended:
             return None
         ident = str(msg["id"])
         if self.msg_known(room, ident):
             return None
-        sender = self.ghost(account, ((detail.get("initiator") or {}).get("user")) or {"displayName": "Teams"})
+        sender = self.ghost(account, ended[0])
         self.join(room, sender)
         ts = iso_ms(msg.get("createdDateTime")) or now_ms()
-        took = re.fullmatch(r"P(?:(\d+)D)?T?(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)(?:\.\d+)?S)?", str(detail.get("callDuration") or ""))
-        days, hours, minutes, seconds = (int(x or 0) for x in took.groups()) if took else (0, 0, 0, 0)
-        hours += days * 24
-        length = f" ({hours}:{minutes:02}:{seconds:02})" if hours else f" ({minutes}:{seconds:02})" if minutes or seconds else ""
-        content = {"msgtype": "m.text", "body": "Call" + length, "com.beeper.action_message": {"type": "call", "call_type": ""}, MARK: ident}
+        content = {"msgtype": "m.text", "body": ended[1], "com.beeper.action_message": {"type": "call", "call_type": ""}, MARK: ident}
         event = matrix("PUT", f"/rooms/{q(room)}/send/m.room.message/teams-{short(room + ident, 24)}-0", content, user=sender, query={"ts": ts})["event_id"]
         with self.lock:
             self.db.execute("INSERT OR REPLACE INTO messages VALUES (?, ?, ?, '', 0)", (room, ident, event))
@@ -1815,7 +1833,15 @@ class Teams:
         # On the first sync everything is history Karchi saw in Teams; later only what came after the last poll is new.
         settle_before = now_ms() if first else polled
         started = now_ms()
-        chats = self.graph(account, "GET", "/me/chats?$expand=lastMessagePreview&$orderby=" + q("lastMessagePreview/createdDateTime desc") + "&$top=50").get("value") or []
+        # Once per account every chat Teams has, however old, gets its room (its newest page, already read); the
+        # archive pages back the rest of its history (GET /history). Later polls read only the first page.
+        adopt = self.kv(f"adopted:{account}") is None
+        url = "/me/chats?$expand=lastMessagePreview&$orderby=" + q("lastMessagePreview/createdDateTime desc") + "&$top=50"
+        chats = []
+        while url:
+            page = self.graph(account, "GET", url)
+            chats += [c for c in page.get("value") or [] if isinstance(c, dict)]
+            url = page.get("@odata.nextLink") if adopt else None
         moved = []
         for info in chats:
             if not isinstance(info, dict) or not info.get("id"):
@@ -1823,7 +1849,7 @@ class Teams:
             at = iso_ms(((info.get("lastMessagePreview") or {}).get("createdDateTime")))
             with self.lock:
                 row = self.db.execute("SELECT preview FROM chats WHERE account = ? AND chat = ?", (account, str(info["id"]))).fetchone()
-            if row is None and at >= since or row is not None and at > row[0]:
+            if row is None and (at >= since or adopt and at > 0) or row is not None and at > row[0]:
                 moved.append(info)
         # Edits, reactions and deletions do not move a chat: each poll looks again at two recently active chats and
         # at one more of all of them in turn, so an old chat catches up within (number of chats) polls.
@@ -1840,16 +1866,121 @@ class Teams:
         self.turn[account], self.sweep[account] = turn + 2, sweep + 1
         for chat in dict.fromkeys(c for c in picked if c not in ids):
             moved.append(next((i for i in chats if str(i.get("id")) == chat), {"id": chat}))
+        failed = False
         for info in moved:
             try:
                 self.sync_chat(account, info, settle_before)
             except Throttled:
                 raise
             except Exception as err:  # one chat must not hold up the others
+                failed = True
                 log("teams: chat sync", type(err).__name__, getattr(err, "status", ""), getattr(err, "code", "") or getattr(err, "errcode", ""))
         if first:
             self.kv(f"since:{account}", str(since))
+        if adopt and not failed:  # else the next poll adopts again what is still missing
+            self.kv(f"adopted:{account}", str(started))
         self.kv(f"polled:{account}", str(started))
+
+    # -------------------------------------------------- older history → Weft's archive
+
+    def history(self, args: dict) -> dict:
+        """One page of a Teams chat older than before_ts (at first: than the room's oldest bridged message), for the
+        archive's fetch_more (server/archive/archive.py): messages oldest first, cursor Graph's next page."""
+        room = str(args.get("room") or "")
+        with self.lock:
+            row = self.db.execute("SELECT account, chat FROM chats WHERE room = ?", (room,)).fetchone()
+        if not row:
+            raise ApiError(404, "M_NOT_FOUND", "not a Teams room")
+        account, chat = row
+        if not ACCOUNTS.get("teams", account):
+            raise ApiError(503, "SK.KARCHI.SIGNED_OUT", "Teams is signed out")
+        cursor = str(args.get("cursor") or "")
+        if cursor:
+            link = urllib.parse.urlsplit(cursor)
+            if not cursor.startswith(GRAPH + "/") or urllib.parse.unquote(link.path) != urllib.parse.urlsplit(GRAPH).path + f"/chats/{chat}/messages":
+                raise ApiError(400, "M_INVALID_PARAM", "cursor is not this chat's page")
+            url = cursor
+        else:
+            try:
+                before = int(args["before_ts"]) if args.get("before_ts") else None
+            except ValueError:
+                raise ApiError(400, "M_INVALID_PARAM", "before_ts is a number") from None
+            if before is None:
+                before = self.oldest(account, room, chat)
+            url = (f"/chats/{q(chat)}/messages?$top=50&$orderby=" + q("createdDateTime desc")
+                   + "&$filter=" + q(f"createdDateTime lt {iso(before or now_ms() + 1000)}"))
+        with self.history_lock:
+            wait = HISTORY_GAP - (time.monotonic() - self.history_at)
+            if wait > 0:
+                time.sleep(wait)
+            try:
+                page = self.graph(account, "GET", url)
+            finally:
+                self.history_at = time.monotonic()
+        out = []
+        for msg in page.get("value") or []:
+            if not isinstance(msg, dict) or not msg.get("id") or msg.get("deletedDateTime"):
+                continue
+            ts = iso_ms(msg.get("createdDateTime"))
+            if msg.get("messageType") == "systemEventMessage" and (ended := call_ended(msg)):
+                user, parts = ended[0], [{"kind": "m.text", "body": ended[1]}]
+            elif msg.get("messageType") == "message":
+                user, parts = (msg.get("from") or {}).get("user") or {"displayName": "Teams"}, self.history_parts(account, msg)
+            else:
+                continue
+            if ts and parts:
+                out.append({"id": str(msg["id"]), "ts": ts, "sender": str(user.get("displayName") or "Teams"),
+                            "me": str(user.get("id") or "").lower() == self.me(account), "parts": parts})
+        nxt = str(page.get("@odata.nextLink") or "")
+        return {"messages": sorted(out, key=lambda m: (m["ts"], m["id"])), "cursor": nxt, "has_more": bool(nxt)}
+
+    def oldest(self, account: str, room: str, chat: str) -> int | None:
+        """When the room's oldest bridged message was written (Teams ids grow with time), None for an empty room."""
+        with self.lock:
+            ids = [r[0] for r in self.db.execute("SELECT msg FROM messages WHERE room = ?", (room,)) if str(r[0]).isdigit()]
+        if not ids:
+            return None
+        first = min(ids, key=int)
+        try:
+            return iso_ms(self.graph(account, "GET", f"/chats/{q(chat)}/messages/{q(first)}").get("createdDateTime")) or None
+        except GraphError as err:
+            if err.status != 404:
+                raise
+            return int(first) if int(first) < now_ms() else None  # gone from Teams: its id is its time in ms
+
+    def history_parts(self, account: str, msg: dict) -> list[dict]:
+        """An old message as the archive keeps it: its text (files named, with their Teams link), then its photos
+        saved into the archive's media folder."""
+        text, _ = self.text_of(account, msg)
+        text += self.cards_of(msg)
+        if msg.get("subject"):
+            text = f"{msg['subject']}\n{text}".strip()
+        for att in msg.get("attachments") or []:
+            if isinstance(att, dict) and att.get("contentType") == "reference" and att.get("contentUrl"):
+                text = f"{text}\n[Súbor: {att.get('name') or 'subor'}] {att['contentUrl']}".strip()
+        parts = [{"kind": "m.text", "body": text}] if text else []
+        for n, src in enumerate(HOSTED.findall(str((msg.get("body") or {}).get("content") or ""))):
+            src = html.unescape(src)
+            if not src.startswith(GRAPH + "/"):
+                continue  # only Graph gets Karchi's token
+            try:
+                data, kind = self.graph(account, "GET", src, raw=True, timeout=120)
+            except (GraphError, Throttled):
+                parts.append({"kind": "m.text", "body": "[Fotka – otvor ju v Teams]"})
+                continue
+            kind = kind.split(";")[0] or "image/png"
+            if len(data) > ARCHIVE_MEDIA_MAX:
+                parts.append({"kind": "m.text", "body": "[Fotka – otvor ju v Teams]"})
+                continue
+            name = f"teams/{hashlib.sha256(data).hexdigest()}{mimetypes.guess_extension(kind) or '.png'}"
+            path = ARCHIVE_MEDIA / name
+            if not path.exists():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+                tmp.write_bytes(data)
+                tmp.replace(path)
+            parts.append({"kind": "m.image", "body": f"obrazok-{n + 1}", "file": name, "mime": kind})
+        return parts
 
     # -------------------------------------------------- Matrix → Teams
 
@@ -2203,10 +2334,34 @@ class Handler(BaseHTTPRequestHandler):
                     TEAMS.receipt(edu)
         self.reply(200, {})
 
+    def history(self, url: urllib.parse.SplitResult) -> None:
+        """GET /history?room=&cursor=&before_id=&before_ts= for the archive only (its bridge token)."""
+        try:
+            token = ARCHIVE_TOKEN_FILE.read_text().strip()
+        except OSError:
+            token = ""
+        given = self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+        if not token or not secrets.compare_digest(given.encode(), token.encode()):
+            return self.reply(401, {"errcode": "M_FORBIDDEN", "error": ""})
+        try:
+            self.reply(200, TEAMS.history({k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}))
+        except ApiError as err:
+            self.reply(err.status, {"errcode": err.errcode, "error": err.message})
+        except GraphError as err:
+            log("teams: history", err.status, err.code)
+            self.reply(502, {"errcode": "SK.KARCHI.REFUSED", "error": f"Microsoft refused ({err.status} {err.code})"})
+        except Throttled:
+            self.reply(429, {"errcode": "M_LIMIT_EXCEEDED", "error": "Microsoft is throttling"})
+        except MatrixError as err:
+            log("teams: history matrix", err)
+            self.reply(502, {"errcode": "SK.KARCHI.UNREACHABLE", "error": ""})
+
     def api(self, method: str) -> None:
         url = urllib.parse.urlsplit(self.path)
         if url.path.startswith("/_matrix/app/"):
             return self.appservice(url.path)
+        if url.path == "/history" and method == "GET":
+            return self.history(url)
         match = PREFIX.match(url.path)
         if not match:
             return self.reply(404, {"errcode": "M_NOT_FOUND", "error": ""})

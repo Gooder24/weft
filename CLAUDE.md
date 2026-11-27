@@ -115,7 +115,7 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   archive (`archive:outlook:…`, „Odpovedať mailom“), Nový mail and `weft mail` send through Graph (20 MB of files).
   Teams one-to-one, group and meeting chats are real rooms through the appservice `appservices/teams.yaml`
   (ghosts `@teams_<Entra id>`, polled every 20 s): text, mentions, photos, files, replies, edits, deletions and
-  reactions both ways, and Karchi's reading as Teams „videné“ (whole chat, only once he reached its newest message); an ended call or meeting comes as a call row („Call (3:12)“ marked `com.beeper.action_message`, `call_log`); Ctrl+N finds people of the school or work directory. No team channels. Checks:
+  reactions both ways, and Karchi's reading as Teams „videné“ (whole chat, only once he reached its newest message); an ended call or meeting comes as a call row („Call (3:12)“ marked `com.beeper.action_message`, `call_log`); Ctrl+N finds people of the school or work directory. Every chat Teams has gets a room once (its newest 20 messages, already read); older history is in the archive like Messenger's: the bridge's `GET /history` (the archive's bridge token) pages it as Weft scrolls, `archive.py history teams` reads all of it ahead, photos into `archive/media/teams/`, files as their Teams link. No team channels. Checks:
   `overenie/microsoft/` (`check.py` bridge against a fake Microsoft, `races.py`, `run.sh` UI, `cli_mail.sh`).
 - Matrix as a network (beta) is the bridge github.com/Gooder24/matrix-matrix (Go, mautrix-go bridgev2, encryption
   by goolm without libolm) since 2026-11-27: asus binary `~/matrix-spike/bin/matrix-matrix` (built from that repo),
