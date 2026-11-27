@@ -747,7 +747,9 @@ class Rooms:
             if is_mine(item, user_id):
                 day = (datetime.now(LOCAL) - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
                 match = next((ev for ev, r, text, since in self.db.execute(
-                                  "SELECT event_id, root, text, since FROM unnamed WHERE since >= ?", (day,))
+                                  # newest first: a text sent again after its „neodišla“ is the one EduPage now shows
+                                  "SELECT event_id, root, text, since FROM unnamed WHERE since >= ? ORDER BY since DESC, rowid DESC",
+                                  (day,))
                               if r == (root if parent else None) and same_text(text, item.get("text"))
                               and str(item.get("cas_pridania") or "") >= since), None)
                 if match:  # written in Weft, already in the room: only its id was missing
@@ -808,7 +810,8 @@ def post_send(edu: Edupage, url: str, body: dict) -> requests.Response:
                                 headers={"Content-Type": "application/x-www-form-urlencoded"}, timeout=60)
     except requests.ConnectTimeout:
         raise  # never reached EduPage
-    except (requests.ConnectionError, requests.Timeout, requests.exceptions.ChunkedEncodingError) as err:
+    except (requests.ConnectionError, requests.Timeout, requests.exceptions.ChunkedEncodingError,
+            requests.exceptions.ContentDecodingError) as err:
         raise Unsure(type(err).__name__) from None
     if getattr(resp, "status_code", 200) >= 500:  # a gateway's error says nothing about whether EduPage took it
         raise Unsure(f"HTTP {resp.status_code}")

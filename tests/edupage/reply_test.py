@@ -469,6 +469,31 @@ acct.send_outbox(TxnRooms(db))
 b.upload_attachment, b.matrix_file = real_upload, real_file
 check("…a refused file too", len(said) == 1 and said[0][1] == b.unsure_txn("$badfile") and "x.png" in said[0][0], said)
 
+# A broken gzip body after EduPage took it is unsure too, not a failure.
+said.clear()
+acct.edu = Edu()
+Session.lost = b.requests.exceptions.ContentDecodingError("invalid gzip")
+acct.outbox.put(("!room", "$gzip", "$own", "Pokazený gzip", "", [], ""))
+acct.send_outbox(TxnRooms(db))
+Session.lost = None
+check("a broken compressed answer: nothing said, pending", not said and db.execute("SELECT 1 FROM unsure WHERE event_id = '$gzip'").fetchone(), said)
+
+# The same text sent again after its „neodišla“: what EduPage shows now is the new send.
+said.clear()
+events.clear()
+db.execute("INSERT OR REPLACE INTO unnamed VALUES ('$first', 14, 'Znova', '2026-11-27 08:00:00')")
+db.execute("INSERT OR REPLACE INTO unsure VALUES ('$first', '!room', '2026-11-27 08:00:00', '$n1')")
+db.execute("INSERT OR REPLACE INTO unnamed VALUES ('$again', 14, 'Znova', ?)", (b.datetime.now(b.LOCAL).strftime("%Y-%m-%d %H:%M:%S"),))
+db.execute("INSERT OR REPLACE INTO unsure VALUES ('$again', '!room', ?, '')", (b.datetime.now(b.LOCAL).strftime("%Y-%m-%d %H:%M:%S"),))
+db.commit()
+now = (b.datetime.now(b.LOCAL) + b.timedelta(seconds=5)).strftime("%Y-%m-%d %H:%M:%S")
+rooms4.sync([{"timelineid": "78", "typ": "sprava", "reakcia_na": "14", "vlastnik": ME, "text": "Znova", "cas_pridania": now}], "skola", ME)
+check("a resend after „neodišla“ is the one linked", db.execute("SELECT event_id FROM items WHERE id = 78").fetchone() == ("$again",)
+      and ("SUCCESS", "$again") in events and db.execute("SELECT 1 FROM unsure WHERE event_id = '$first'").fetchone(), events)
+db.execute("DELETE FROM unsure")
+db.execute("DELETE FROM unnamed")
+db.commit()
+
 # The database refuses even the pending rows (locked): nothing goes out and Karchi is told.
 class LockedDB:
     def __init__(self, real): self.real = real
