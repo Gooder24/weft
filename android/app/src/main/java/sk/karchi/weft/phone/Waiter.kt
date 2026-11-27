@@ -21,12 +21,10 @@ class Waiter : Service() {
     override fun onBind(intent: Intent?) = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // In the foreground first, always: a service started so that stops before it crashes the app on Android 8–11.
+        val shown = runCatching { foreground() }.isSuccess // refused from the background: the sync still sends
         val store = Store.get(this)
-        if (store.token == null || !store.write) {
-            stopSelf()
-            return START_NOT_STICKY
-        }
-        if (runCatching { foreground() }.isFailure) { // Android refused it from the background: the sync still sends
+        if (!shown || store.token == null || !store.write) {
             stopSelf()
             return START_NOT_STICKY
         }
@@ -48,8 +46,11 @@ class Waiter : Service() {
             val store = Store.get(this)
             if (store.token == null || !store.write) break
             try {
+                val began = System.currentTimeMillis()
                 Outbox.run(this, 50)
                 pause = 5_000L
+                // Weft answers at once only with something to send; never a tight loop if it keeps doing so.
+                if (System.currentTimeMillis() - began < 2_000) Thread.sleep(2_000)
             } catch (e: Net.HttpError) {
                 if (e.code == 401) {
                     Sync.unpaired(this)

@@ -2535,16 +2535,13 @@ const readable = (r, ev) => Object.keys(ev?.content || {}).length > 0 && !ev.uns
 const discordTargetSeen = (r, id) => readable(r, r.events.get(id) || r.pending.get(id));
 /** The reply part of a message to `r` going out now: null without one, false when it may not go (see above). */
 function replyRel(r) {
-  if (r?.app === 'phone' && S.replyTo?.room !== r.id) {
-    const ev = phoneTarget(r);
-    return ev ? { 'm.in_reply_to': { event_id: ev.event_id } } : false;
-  }
+  if (r?.app === 'phone' && S.replyTo?.room !== r.id) return false; // typing picks the answer's person (phoneNote)
   if (S.replyTo?.room !== r.id) return null;
   if (inDiscordThread(r, S.replyTo.event) || (r.app === 'discord' && !discordTargetSeen(r, S.replyTo.event))) return false;
   return { 'm.in_reply_to': { event_id: S.replyTo.event } };
 }
 /** Why the reply being written in `r` may not go (replyRel gave false). */
-const replyNote = (r) => (r?.app === 'phone' && S.replyTo?.room !== r.id ? T('V tomto chate ešte nie je správa, na ktorú by sa dalo odpovedať.')
+const replyNote = (r) => (r?.app === 'phone' && S.replyTo?.room !== r.id ? T('Vyber správu, na ktorú odpovedáš (Odpovedať pri nej).')
   : inDiscordThread(r, S.replyTo?.event) ? threadNote() : unreadNote());
 /** A reply to `id` in room `room` (model `r`) that goes out later: '' when it may go, else why not. The target is
  *  read from the homeserver when this window does not have it; a network error is thrown (try again later). */
@@ -9189,6 +9186,7 @@ function phoneNote(r, m) {
   const to = picked ? m.byId.get(S.replyTo.event) : phoneTarget(r);
   return h('div', { class: 'cnote', 'data-key': 'phonenote' }, !to ? T('Odpovedať sa dá len na správu, ktorá prišla z telefónu.')
     : picked ? T('Odpoveď odíde cez notifikáciu v telefóne (beta), kým tam ešte je.')
+    : (S.drafts.get(r.id) || '').trim() ? T('Vyber správu, na ktorú odpovedáš (Odpovedať pri nej).')
     : T`Odpovieš: ${memberName(r, to.sender)}, cez notifikáciu v telefóne (beta). Inému cez Odpovedať pri jeho správe.`);
 }
 
@@ -9649,6 +9647,12 @@ function chatCompose(r, m, t = null) {
     oninput: (e) => {
       const was = slashWord(S.drafts.get(r.id) || '');
       setDraft(r.id, e.target.value);
+      // An app's chat from the phone: the first letter fixes whom the answer goes to, the person the note named, shown
+      // as a reply from then on; a message that comes meanwhile changes nothing.
+      if (r.app === 'phone' && S.replyTo?.room !== r.id && e.target.value.trim()) {
+        const to = phoneTarget(r);
+        if (to) S.replyTo = { room: r.id, event: to.event_id };
+      }
       typingNote(r, e.target.value);
       renderSoon();
       if (!e.target.value.trim() && !(S.attach.get(r.id) || []).length) { boxFrom.delete(r.id); doneBoxStash(r.id); }

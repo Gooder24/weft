@@ -97,7 +97,7 @@ afterEach(() => {
 /** A homeserver that answers what the host asks and remembers every call; `seen` null: Karchi has no „seen up to“ yet. */
 function fakeHomeserver(seen: Record<string, unknown> | null = { keep: 5 }) {
   const calls: Call[] = [];
-  const fail = { receipts: 0, status: 500 }; // the next this many read receipts fail with this status
+  const fail = { receipts: 0, status: 500, sends: 0 }; // the next this many read receipts (sends) fail with this status
   let n = 0;
   const server = Bun.serve({
     port: 0,
@@ -107,6 +107,7 @@ function fakeHomeserver(seen: Record<string, unknown> | null = { keep: 5 }) {
       const body: Record<string, unknown> = req.method === 'GET' ? {} : await req.json().catch(() => ({}));
       calls.push({ method: req.method, path, user: url.searchParams.get('user_id'), body });
       if (path.includes('/receipt/') && fail.receipts > 0 && fail.receipts--) return Response.json({ errcode: 'M_UNKNOWN' }, { status: fail.status });
+      if (path.includes('/send/') && fail.sends > 0 && fail.sends--) return Response.json({ errcode: 'M_UNKNOWN' }, { status: fail.status });
       if (path === '/createRoom') return Response.json({ room_id: `!r${++n}:test` });
       if (path.includes('/send/')) return Response.json({ event_id: `$e${++n}` });
       if (req.method === 'GET' && path.includes('/account_data/')) return seen ? Response.json(seen) : Response.json({ errcode: 'M_NOT_FOUND' }, { status: 404 });
@@ -351,71 +352,115 @@ describe('outbox', () => {
   async function chats() {
     const s = setup();
     const phones = new Phones(s.host.db, () => NOW);
-    phones.claim(phones.code().code, 'Test');
-    await s.host.phone('p1', [sms('1', '0900123456', 'Ahoj', NOW - 60_000, 'Mama'),
+    const dev = phones.claim(phones.code().code, 'Test')!.id;
+    await s.host.phone(dev, [sms('1', '0900123456', 'Ahoj', NOW - 60_000, 'Mama'),
       { id: 'n:com.app:1:a', kind: 'notification', ts: NOW - 60_000, app: 'com.app', appName: 'App', title: 'Jano', text: 'Kedy?' }]);
     const room = (connector: string) => s.host.db.query<{ room: string }, [string]>('SELECT room FROM rooms WHERE connector = ?').get(connector)!.room;
     const event = s.host.db.query<{ event: string }, []>("SELECT event FROM posted WHERE key LIKE 'phone:n:%'").get()!.event;
     const say = (roomId: string, id: string, content: Record<string, unknown>, sender = '@karchi:test') =>
       s.host.outbox.take([{ type: 'm.room.message', event_id: id, room_id: roomId, sender, content }]);
-    return { ...s, smsRoom: room('sms'), appRoom: room('phone'), event, say };
+    return { ...s, dev, smsRoom: room('sms'), appRoom: room('phone'), event, say };
   }
   // The reasons of the bridge-style notices Weft turns into „Neodoslané: …“.
   const notices = (calls: Call[]) => sends(calls).filter((c) => (c.body as { msgtype?: string }).msgtype === 'm.notice')
     .map((c) => (c.body as { body: string }).body.replace(/^\u26a0\ufe0f Your message (was not|may not have been) bridged: /, (_, how: string) => (how === 'was not' ? '' : '? ')));
 
   test('Karchi\'s SMS goes to the paired phone once, and its echo from the phone posts nothing', async () => {
-    const { hs, host, smsRoom, say } = await chats();
+    const { hs, host, dev, smsRoom, say } = await chats();
     await say(smsRoom, '$k1', { msgtype: 'm.text', body: 'Prídem o 5' });
     await say(smsRoom, '$k1', { msgtype: 'm.text', body: 'Prídem o 5' }); // the transaction again
-    expect(await host.outbox.next('p1', [])).toEqual([{ id: '$k1', kind: 'sms', to: '+421900123456', text: 'Prídem o 5' }]);
+    expect(await host.outbox.next(dev, [])).toEqual([{ id: '$k1', kind: 'sms', to: '+421900123456', text: 'Prídem o 5' }]);
     expect(await host.outbox.next('p2', [])).toEqual([]); // taken by p1
-    expect(await host.outbox.next('p1', [{ id: '$k1', ok: true }])).toEqual([]);
+    expect(await host.outbox.next(dev, [{ id: '$k1', ok: true }])).toEqual([]);
     expect(hs.calls.some((c) => c.path.includes('/send/com.beeper.message_send_status/') && (c.body as { status?: string; 'm.relates_to'?: { event_id?: string } }).status === 'SUCCESS'
       && (c.body as { 'm.relates_to': { event_id: string } })['m.relates_to'].event_id === '$k1')).toBe(true); // Weft's ✓
     const before = sends(hs.calls).length;
-    await host.phone('p1', [{ ...sms('9', '+421 900 123 456', 'Prídem o 5', NOW + 1000), out: true }]);
+    await host.phone(dev, [{ ...sms('9', '+421 900 123 456', 'Prídem o 5', NOW + 1000), out: true }]);
     expect(sends(hs.calls)).toHaveLength(before);
   });
 
   test('a message to an app\'s chat goes only as an answer to one of its messages', async () => {
-    const { hs, host, appRoom, event, say } = await chats();
+    const { hs, host, dev, appRoom, event, say } = await chats();
     await say(appRoom, '$k1', { msgtype: 'm.text', body: 'Zajtra' });
     expect(notices(hs.calls)).toEqual(['Odpovedz na konkrétnu správu (Odpovedať), aby odišla správnemu človeku.']);
     await say(appRoom, '$k2', { msgtype: 'm.text', body: '> <@cx:test> Kedy?\n\nZajtra', 'm.relates_to': { 'm.in_reply_to': { event_id: event } } });
-    expect(await host.outbox.next('p1', [])).toEqual([{ id: '$k2', kind: 'reply', to: 'n:com.app:1:a', text: 'Zajtra' }]);
+    expect(await host.outbox.next(dev, [])).toEqual([{ id: '$k2', kind: 'reply', to: 'n:com.app:1:a', text: 'Zajtra' }]);
   });
 
   test('what the phone could not send is said under the message; files, edits and others\' messages never go', async () => {
-    const { hs, host, smsRoom, say } = await chats();
+    const { hs, host, dev, smsRoom, say } = await chats();
     await say(smsRoom, '$k1', { msgtype: 'm.text', body: 'Ahoj' });
-    await host.outbox.next('p1', []);
-    await host.outbox.next('p1', [{ id: '$k1', ok: false, error: 'Bez signálu' }]);
+    await host.outbox.next(dev, []);
+    await host.outbox.next(dev, [{ id: '$k1', ok: false, error: 'Bez signálu' }]);
     await say(smsRoom, '$k2', { msgtype: 'm.image', body: 'a.png' });
     await say(smsRoom, '$k3', { msgtype: 'm.text', body: '* Ahoj', 'm.relates_to': { rel_type: 'm.replace', event_id: '$k1' } });
     await say(smsRoom, '$k4', { msgtype: 'm.text', body: 'cudzí' }, '@someone:test');
     await say(smsRoom, '$k5', { msgtype: 'm.text', body: 'z telefónu', 'sk.karchi.connect': { connector: 'sms' } });
     expect(notices(hs.calls)).toEqual(['Bez signálu', 'Cez telefón ide zatiaľ len text.', 'Úpravu do telefónu poslať nejde, platí pôvodná správa.']);
-    expect(await host.outbox.next('p1', [])).toEqual([]);
+    expect(await host.outbox.next(dev, [])).toEqual([]);
   });
 
   test('a phone gets again what it took and did not report; nothing older than an hour goes', async () => {
     let now = NOW;
     const s = await chats();
+    const dev = s.dev;
     const host = new Host({ ...s.host.opts, now: () => now });
     await s.say(s.smsRoom, '$k1', { msgtype: 'm.text', body: 'Ahoj' });
-    expect(await host.outbox.next('p1', [])).toHaveLength(1);
-    expect(await host.outbox.next('p1', [])).toHaveLength(1);
+    expect(await host.outbox.next(dev, [])).toHaveLength(1);
+    expect(await host.outbox.next(dev, [])).toHaveLength(1);
     await host.outbox.take([{ type: 'm.room.message', event_id: '$k2', room_id: s.smsRoom, sender: '@karchi:test', content: { msgtype: 'm.text', body: 'Neskoro' } }]);
     now += 2 * 3_600_000;
     await host.outbox.expire();
-    expect(await host.outbox.next('p1', [])).toEqual([]);
-    expect(notices(s.hs.calls)).toEqual(['Telefón sa hodinu neozval, správu som už neposlal.', '? Telefón nepovedal, či správa odišla. Pozri sa do neho.']);
+    expect(await host.outbox.next(dev, [])).toEqual([]);
+    expect(notices(s.hs.calls).toSorted()).toEqual(['? Telefón nepovedal, či správa odišla. Pozri sa do neho.', 'Telefón sa hodinu neozval, správu som už neposlal.']);
+  });
+
+  test('a long poll never hands out at once what this phone took already (no busy loop)', async () => {
+    const { host, dev, smsRoom, say } = await chats();
+    await say(smsRoom, '$k1', { msgtype: 'm.text', body: 'Ahoj' });
+    expect(await host.outbox.next(dev, [], 0.05)).toHaveLength(1);
+    expect(await host.outbox.next(dev, [], 0.05)).toEqual([]);
+    expect(await host.outbox.next(dev, [])).toHaveLength(1); // a plain request: it may report it
+  });
+
+  test('an answer goes only from the phone its notification came from, and only within its own chat', async () => {
+    const s = await chats();
+    const phones = new Phones(s.host.db, () => NOW);
+    const other = phones.claim(phones.code().code, 'Druhý')!.id;
+    await s.say(s.appRoom, '$k1', { msgtype: 'm.text', body: 'Áno', 'm.relates_to': { 'm.in_reply_to': { event_id: s.event } } });
+    expect(await s.host.outbox.next(other, [])).toEqual([]);
+    expect(await s.host.outbox.next(s.dev, [])).toHaveLength(1);
+    await s.say(s.smsRoom, '$k2', { msgtype: 'm.text', body: 'Nie', 'm.relates_to': { 'm.in_reply_to': { event_id: s.event } } }); // an SMS chat: no answer needed
+    expect((await s.host.outbox.next(s.dev, [])).map((x) => x.id)).toContain('$k2');
+    const sms = s.host.db.query<{ event: string }, []>("SELECT event FROM posted WHERE key LIKE 'phone:sms:%'").get()!.event;
+    await s.say(s.appRoom, '$k3', { msgtype: 'm.text', body: 'Hej', 'm.relates_to': { 'm.in_reply_to': { event_id: sms } } });
+    expect(notices(s.hs.calls)).toEqual(['Odpovedz na konkrétnu správu (Odpovedať), aby odišla správnemu človeku.']);
+  });
+
+  test('a message delivered over an hour late never goes; his own „> “ lines stay', async () => {
+    const { hs, host, dev, smsRoom } = await chats();
+    await host.outbox.take([{ type: 'm.room.message', event_id: '$k1', room_id: smsRoom, sender: '@karchi:test', origin_server_ts: NOW - 2 * 3_600_000, content: { msgtype: 'm.text', body: 'Staré' } }]);
+    await host.outbox.take([{ type: 'm.room.message', event_id: '$k2', room_id: smsRoom, sender: '@karchi:test', content: { msgtype: 'm.text', body: '> citát\nmoja veta' } }]);
+    expect(await host.outbox.next(dev, [])).toEqual([{ id: '$k2', kind: 'sms', to: '+421900123456', text: '> citát\nmoja veta' }]);
+    expect(notices(hs.calls)).toEqual(['Správa prišla k telefónu až po hodine, tak som ju už neposlal.']);
+  });
+
+  test('what Weft did not hear (the homeserver failed) is said again', async () => {
+    const { hs, host, dev, smsRoom, say } = await chats();
+    await say(smsRoom, '$k1', { msgtype: 'm.text', body: 'Ahoj' });
+    await host.outbox.next(dev, []);
+    hs.fail.sends = 1;
+    await host.outbox.next(dev, [{ id: '$k1', ok: false, error: 'Bez signálu' }]);
+    expect(notices(hs.calls)).toEqual(['Bez signálu']); // the call is recorded, but it failed
+    await host.outbox.expire();
+    expect(notices(hs.calls)).toEqual(['Bez signálu', 'Bez signálu']);
+    await host.outbox.expire();
+    expect(notices(hs.calls)).toHaveLength(2);
   });
 
   test('a waiting phone hears a new message at once', async () => {
-    const { host, smsRoom, say } = await chats();
-    const waiting = host.outbox.next('p1', [], 30);
+    const { host, dev, smsRoom, say } = await chats();
+    const waiting = host.outbox.next(dev, [], 30);
     await say(smsRoom, '$k1', { msgtype: 'm.text', body: 'Hneď' });
     expect(await waiting).toHaveLength(1);
   });

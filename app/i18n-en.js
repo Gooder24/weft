@@ -1410,7 +1410,7 @@ export default {
   "Vypnuté: nové maily nečíta, chaty ostávajú.": "Off: new mail is not read, the chats stay.",
   "SMS z telefónu, chat ku každému číslu.": "SMS from your phone, one chat per number.",
   "Notifikácie appiek, ktoré si v telefóne vybral, chat ku každej appke.": "Notifications of the apps you picked on your phone, one chat per app.",
-  "V tomto chate ešte nie je správa, na ktorú by sa dalo odpovedať.": "This chat has no message yet that could be answered.",
+  "Vyber správu, na ktorú odpovedáš (Odpovedať pri nej).": "Pick the message you answer (Reply on it).",
   "Odíde ako SMS z tvojho telefónu (beta). Ak neodíde, pri správe uvidíš prečo.": "Goes as an SMS from your phone (beta). If it does not go, the message says why.",
   "Odpovedať sa dá len na správu, ktorá prišla z telefónu.": "You can only answer a message that came from the phone.",
   "Odpoveď odíde cez notifikáciu v telefóne (beta), kým tam ešte je.": "The answer goes through the notification on the phone (beta), while it is still there.",

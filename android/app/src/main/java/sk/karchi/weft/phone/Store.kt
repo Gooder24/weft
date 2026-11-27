@@ -93,12 +93,22 @@ class Store private constructor(context: Context) {
         return db.insertWithOnConflict("handled", null, row, SQLiteDatabase.CONFLICT_IGNORE) != -1L
     }
 
-    /** How it went: a failure wins over a success not yet reported (another part of a long SMS failed). */
+    /** How it went: a failure wins over a success not yet reported. */
     @Synchronized
     fun result(id: String, ok: Boolean, error: String?) {
         val row = ContentValues().apply { put("ok", if (ok) 1 else 0); put("error", error) }
         if (ok) db.update("handled", row, "id = ? AND ok IS NULL", arrayOf(id))
         else db.update("handled", row, "id = ? AND reported = 0", arrayOf(id))
+    }
+
+    /** An SMS in `n` parts: it went once the radio took every one (in any order). */
+    @Synchronized
+    fun parts(id: String, n: Int) = db.update("handled", ContentValues().apply { put("parts", n) }, "id = ?", arrayOf(id))
+
+    @Synchronized
+    fun partSent(id: String) {
+        db.execSQL("UPDATE handled SET okparts = okparts + 1 WHERE id = ?", arrayOf(id))
+        db.execSQL("UPDATE handled SET ok = 1 WHERE id = ? AND ok IS NULL AND okparts >= parts", arrayOf(id))
     }
 
     /** What Weft has not heard yet: {id, ok, error}. */
@@ -126,13 +136,17 @@ class Store private constructor(context: Context) {
     }
 }
 
-private class Queue(context: Context) : SQLiteOpenHelper(context, "queue.db", null, 2) {
+private class Queue(context: Context) : SQLiteOpenHelper(context, "queue.db", null, 3) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE queue (id TEXT PRIMARY KEY, json TEXT NOT NULL, ts INTEGER NOT NULL)")
-        onUpgrade(db, 1, 2)
+        onUpgrade(db, 1, 3)
     }
     override fun onUpgrade(db: SQLiteDatabase, old: Int, new: Int) {
         // What came from Weft to send: kept a month, so the same message never goes twice.
         if (old < 2) db.execSQL("CREATE TABLE handled (id TEXT PRIMARY KEY, at INTEGER NOT NULL, ok INTEGER, error TEXT, reported INTEGER NOT NULL DEFAULT 0)")
+        if (old < 3) {
+            db.execSQL("ALTER TABLE handled ADD COLUMN parts INTEGER NOT NULL DEFAULT 1")
+            db.execSQL("ALTER TABLE handled ADD COLUMN okparts INTEGER NOT NULL DEFAULT 0")
+        }
     }
 }

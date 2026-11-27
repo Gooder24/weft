@@ -32,6 +32,8 @@ export class Host {
       CREATE TABLE IF NOT EXISTS members (room TEXT NOT NULL, mxid TEXT NOT NULL, PRIMARY KEY (room, mxid));
       CREATE TABLE IF NOT EXISTS posted (key TEXT PRIMARY KEY, connector TEXT NOT NULL, room TEXT NOT NULL, event TEXT NOT NULL, ts INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS unseen (room TEXT PRIMARY KEY, ts INTEGER NOT NULL);`);
+    // The phone an item came from: an answer to it goes back through the same phone (outbox.ts).
+    if (!this.db.query<{ name: string }, []>('PRAGMA table_info(posted)').all().some((c) => c.name === 'device')) this.db.exec('ALTER TABLE posted ADD COLUMN device TEXT');
     this.archive = new Database(opts.archive, { readonly: true, strict: true });
     this.outbox = new Outbox(this.db, opts.matrix, () => this.now());
   }
@@ -86,7 +88,7 @@ export class Host {
         const echo = made && !this.db.query('SELECT 1 FROM posted WHERE key = ?').get(key) ? this.outbox.echo(p) : null;
         if (made && echo) {
           // Karchi wrote it in Weft and the phone sent it: his message is already in the chat.
-          this.db.query('INSERT INTO posted VALUES (?, ?, ?, ?, ?)').run(key, made[0].id, echo.room, echo.event, p.ts);
+          this.db.query('INSERT INTO posted (key, connector, room, event, ts, device) VALUES (?, ?, ?, ?, ?, ?)').run(key, made[0].id, echo.room, echo.event, p.ts, device);
         } else if (made && this.isOn(made[0].id) && this.now() - p.ts < BACK) {
           await this.post(made[0], key, p.ts, made[1], { phone: device }, () => {
             posted++;
@@ -192,7 +194,7 @@ export class Host {
         console.log(`receipt in ${room} refused: ${err.message}`);
       });
     }
-    this.db.query('INSERT INTO posted VALUES (?, ?, ?, ?, ?)').run(key, c.id, room, event, ts);
+    this.db.query('INSERT INTO posted (key, connector, room, event, ts, device) VALUES (?, ?, ?, ?, ?, ?)').run(key, c.id, room, event, ts, origin.phone ?? null);
     stored();
     return true;
   }

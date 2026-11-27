@@ -39,6 +39,10 @@ object Outbox {
         val id = item.getString("id")
         if (!store.took(id)) return
         val kind = item.optString("kind")
+        if (!store.write) { // switched off while Weft was answering
+            store.result(id, false, "Posielanie z Weftu je v telefóne vypnuté.")
+            return
+        }
         val error = when (kind) {
             "sms" -> sms(context, id, item.getString("to"), item.getString("text"))
             "reply" -> Listener.reply(item.getString("to"), item.getString("text"))
@@ -55,9 +59,9 @@ object Outbox {
             else @Suppress("DEPRECATION") SmsManager.getDefault()
         return runCatching {
             val parts = manager.divideMessage(text)
+            Store.get(context).parts(id, parts.size)
             val sent = ArrayList(parts.indices.map { i ->
-                val intent = Intent(context, SentReceiver::class.java).setData(Uri.parse("weft-sent:${Uri.encode(id)}/$i"))
-                    .putExtra("id", id).putExtra("last", i == parts.size - 1)
+                val intent = Intent(context, SentReceiver::class.java).setData(Uri.parse("weft-sent:${Uri.encode(id)}/$i")).putExtra("id", id)
                 PendingIntent.getBroadcast(context, 0, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_ONE_SHOT)
             })
             // The system keeps the sent SMS in the phone's store; Weft knows it as this message when it comes back.
@@ -67,13 +71,13 @@ object Outbox {
     }
 }
 
-/** The radio's answer for each part of an SMS from Weft. */
+/** The radio's answer for each part of an SMS from Weft: sent once every part went, failed when one did not. */
 class SentReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val id = intent.getStringExtra("id") ?: return
         val store = Store.get(context)
         when (resultCode) {
-            Activity.RESULT_OK -> if (intent.getBooleanExtra("last", false)) store.result(id, true, null)
+            Activity.RESULT_OK -> store.partSent(id)
             SmsManager.RESULT_ERROR_RADIO_OFF -> store.result(id, false, "Telefón je v režime lietadlo.")
             SmsManager.RESULT_ERROR_NO_SERVICE -> store.result(id, false, "Telefón je bez signálu.")
             else -> store.result(id, false, "Sieť SMS neprijala (chyba $resultCode).")
