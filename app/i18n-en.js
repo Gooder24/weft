@@ -166,6 +166,7 @@ export default {
   "Odpoveď uvidí len {}.": "Only {} will see the reply.",
   "Weft ju nevedel načítať, otvorí sa na EduPage.": "Weft could not load it; it opens on EduPage.",
   "Otvorí sa v prehliadači.": "Opens in the browser.",
+  "Príloha je väčšia ako 25 MB, otvor ju na EduPage.": "The attachment is over 25 MB; open it on EduPage.",
   "Prílohu sa nepodarilo načítať. Otvor ju na EduPage.": "The attachment could not be loaded. Open it on EduPage.",
   "Odpoveď sa neodoslala: {}": "The reply was not sent: {}",
   "Odoslať": "Send",

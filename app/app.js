@@ -5765,12 +5765,14 @@ const EDU_SITE = /^https:\/\/[a-z0-9-]+\.edupage\.org\//; // only these the brid
 const EDU_PICTURE = /\.(jpe?g|png|gif|webp)$/i;
 const eduAtt = new Map(); // edupage.org address -> its Matrix copy { name, url, mimetype, size, w, h } | 'loading' | 'failed'
 const eduAttWait = new Map(); // edupage.org address -> the bridge's answer on its way
+const eduAttTooBig = new Map(); // edupage.org address -> the bridge refused it as over 25 MB
+const eduAttWhy = (src) => (eduAttTooBig.get(src) ? T('Príloha je väčšia ako 25 MB, otvor ju na EduPage.') : T('Prílohu sa nepodarilo načítať. Otvor ju na EduPage.'));
 function eduAttFetch(src) {
   if (!eduAttWait.has(src)) {
     eduAtt.set(src, 'loading');
     eduAttWait.set(src, bridge('POST', '/attachment', { url: src }).then(
       (f) => { eduAtt.set(src, f); renderSoon(); return f; },
-      () => { eduAtt.set(src, 'failed'); eduAttWait.delete(src); renderSoon(); return null; }));
+      (err) => { eduAtt.set(src, 'failed'); eduAttTooBig.set(src, err?.status === 413); eduAttWait.delete(src); renderSoon(); return null; }));
   }
   return eduAttWait.get(src);
 }
@@ -5809,7 +5811,7 @@ function eduFiles(ev) {
       }
       return h('button', {
         class: 'mfile', disabled: f.state === 'loading',
-        onclick: () => eduAttFetch(f.src).then((got) => (got ? download(got.url, got.name) : alert(T('Prílohu sa nepodarilo načítať. Otvor ju na EduPage.')))),
+        onclick: () => eduAttFetch(f.src).then((got) => (got ? download(got.url, got.name) : alert(eduAttWhy(f.src)))),
       }, icon('file'), f.name);
     }
     if (typeof f?.url !== 'string') return f?.name ? h('span', { class: 'mfile' }, icon('file'), f.name) : null; // still uploading
