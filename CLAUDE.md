@@ -132,6 +132,8 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   a restore sign out and in again. The Python bridge before it (`server/matrix/bridge.py` on libolm, check
   `tests/matrix/run.py`) and its state are in asus `~/matrix-spike/backups/matrix-python-20261127/` for a way back;
   its device on matrix.org was ended, so going back means signing in again there too.
+  Its two old DMs were taken over as portal rows; `matrix-spike-matrix-resend.timer` (`matrix-go/resend-after-login.sh`)
+  restarts the bridge once after the first sign-in so they get the new `m.bridge` and room features, then turns itself off.
 - `server/gmail/cleanup.py` and `matrix-spike-gmail-cleanup.timer` move explicitly enabled accounts'
   Gmail Promotions and Social categories to Trash every five minutes on asus, including old mail.
   Policy: `gmail/state/cleanup-policy.json`; private audit/status alongside it. Never empty Trash or
