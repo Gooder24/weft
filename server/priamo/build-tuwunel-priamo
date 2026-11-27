@@ -8,10 +8,11 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$HOME/src/tuwunel-target}
 if [ ! -d "$SRC" ]; then git clone -q https://github.com/matrix-construct/tuwunel "$SRC"; fi
 cd "$SRC"
-# SRC is this script's own checkout and gets reset. Anything in it besides an earlier build of this patch stays.
+# SRC is this script's own checkout and gets reset: it refuses to run over anything besides this patch, staged or
+# not. tuwunel-example.toml is left out because cargo writes it again on every build.
 if [ -n "$(git ls-files --others --exclude-standard)" ] || {
   [ -n "$(git status --porcelain -- . ':!tuwunel-example.toml')" ] &&
-    ! git diff -- . ':!tuwunel-example.toml' | cmp -s - "$HERE/tuwunel-priamo.patch"
+    ! git diff HEAD -- . ':!tuwunel-example.toml' | cmp -s - "$HERE/tuwunel-priamo.patch"
 }; then
   echo "build-tuwunel-priamo: $SRC has changes that are not tuwunel-priamo.patch; keep them elsewhere or set SRC" >&2
   exit 1
@@ -20,7 +21,7 @@ git fetch -q --tags
 git checkout -q --detach v1.9.4
 git reset -q --hard && git clean -qfd
 git apply "$HERE/tuwunel-priamo.patch"
-# Marks the patch's new files, so `git diff` shows them: that is how the patch is made again after a change here.
+# Marks the patch's new files, so `git diff HEAD` shows them: that is how the patch is made again after a change here.
 git add -N $(git ls-files --others --exclude-standard)
 # RocksDB's io_uring wants liburing's headers; without sudo they come unpacked from the Debian package.
 if ! pkg-config --exists liburing; then

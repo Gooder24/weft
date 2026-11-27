@@ -341,7 +341,8 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   every other address is verified, and federation then never goes through a proxy; `startup_hello`: an empty transaction to every peer after start, so it delivers what it held), built by
   `build-tuwunel-priamo` into asus `~/build/tuwunel-priamo`; `bun priamo.ts render priamo.json <dir>` makes the
   firewall (`priamo.nft`: on the Yggdrasil interface only contacts reach the port, 200::/7 never leaves through
-  another interface) and Tuwunel's allowlist from one contact list. Nothing of it runs on asus yet. Checks:
+  another interface) and Tuwunel's allowlist from one contact list (a contact's server name is its address as
+  Yggdrasil prints it; another spelling is refused). Nothing of it runs on asus yet. Checks:
   `bun run check` there, the local lab `overenie/prenos-lab/run.sh priamo`.
 - Rozoslať (beta, Settings → Správy, account data `sk.karchi.broadcast` `beta`; off shows it nowhere): one message
   to many people in four steps (Komu, Správa, Náhľad, Rozoslané; Ctrl+J or chat menu), each in their own chat with

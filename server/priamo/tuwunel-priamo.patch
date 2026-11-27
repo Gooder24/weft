@@ -58,7 +58,7 @@ index 4ce0b6e36..2e9243d1b 100644
  rustyline-async.optional = true
  serde_html_form.workspace = true
 diff --git a/src/service/client/mod.rs b/src/service/client/mod.rs
-index 48e075b74..e35d7ecbd 100644
+index 48e075b74..a9d778e6d 100644
 --- a/src/service/client/mod.rs
 +++ b/src/service/client/mod.rs
 @@ -16,6 +16,7 @@
@@ -79,7 +79,7 @@ index 48e075b74..e35d7ecbd 100644
  	let direct = builder()?.dns_resolver(Arc::clone(&services.resolver.resolver));
  	let srv = builder()?.dns_resolver(Arc::clone(&services.resolver.resolver.hooked));
  
-@@ -247,6 +249,19 @@ fn make_federation(
+@@ -247,6 +249,24 @@ fn make_federation(
  	})
  }
  
@@ -87,13 +87,18 @@ index 48e075b74..e35d7ecbd 100644
 +/// certificate rule and connect directly: through a proxy the route to an
 +/// address in 200::/7 would no longer be the overlay that vouches for it.
 +fn overlay(config: &Config, builder: ClientBuilder) -> Result<ClientBuilder> {
-+	if !config.yggdrasil_trust_overlay || config.allow_invalid_tls_certificates {
++	if !config.yggdrasil_trust_overlay {
 +		return Ok(builder);
 +	}
 +
-+	Ok(builder
-+		.tls_backend_preconfigured(overlay_tls::config()?)
-+		.no_proxy())
++	// allow_invalid_tls_certificates already accepts every certificate.
++	let builder = if config.allow_invalid_tls_certificates {
++		builder
++	} else {
++		builder.tls_backend_preconfigured(overlay_tls::config()?)
++	};
++
++	Ok(builder.no_proxy())
 +}
 +
  /// Construction for the URL preview client: bound to the configured
