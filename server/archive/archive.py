@@ -911,7 +911,7 @@ def fetch_more(c, network, room, owner, has_older):
                          DO UPDATE SET cursor=excluded.cursor, before_id=excluded.before_id, before_ts=excluded.before_ts,
                          done=excluded.done, fails=0, failed_at=excluded.failed_at, empty=excluded.empty""", st | {"room": room})
             c.commit()
-            if rows: return True
+            if added if network in HISTORY_AHEAD else rows: return True  # Teams: only something new ends the call
             if st["done"]: return False
         raise StillEmpty()
 
