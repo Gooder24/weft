@@ -420,7 +420,12 @@ class Rooms:
         day = (datetime.now(LOCAL) - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
         db.execute("DELETE FROM unnamed WHERE since < ?", (day,))
         # Sends whose answer was lost: linked with a ✓ when a poll finds them, else said not to have gone (settle_unsure).
-        db.execute("CREATE TABLE IF NOT EXISTS unsure (event_id TEXT PRIMARY KEY, room_id TEXT NOT NULL, at TEXT NOT NULL)")
+        # `notice` is the "neodišla" said for it, taken back if EduPage shows it later after all.
+        db.execute("CREATE TABLE IF NOT EXISTS unsure (event_id TEXT PRIMARY KEY, room_id TEXT NOT NULL, at TEXT NOT NULL,"
+                   " notice TEXT NOT NULL DEFAULT '')")
+        if "notice" not in {row[1] for row in db.execute("PRAGMA table_info(unsure)")}:
+            db.execute("ALTER TABLE unsure ADD COLUMN notice TEXT NOT NULL DEFAULT ''")
+        db.execute("DELETE FROM unsure WHERE event_id NOT IN (SELECT event_id FROM unnamed)")
         db.commit()
 
     def ghost(self, item: dict) -> str:
@@ -496,20 +501,20 @@ class Rooms:
         self.db.execute("INSERT OR IGNORE INTO items VALUES (?, ?, ?)", (item_id, root, event_id))
         self.db.commit()
 
-    def say(self, room_id: str, text: str, answers: str = "") -> None:
-        """A bot notice, as a reply to the admin's message it is about when there is one."""
+    def say(self, room_id: str, text: str, answers: str = "") -> str:
+        """A bot notice, as a reply to the admin's message it is about when there is one; returns its event id."""
         content = {"msgtype": "m.notice", "body": text, MARK: 0}
         if answers:
             content["m.relates_to"] = {"m.in_reply_to": {"event_id": answers}}
-        matrix("PUT", f"/rooms/{q(room_id)}/send/m.room.message/{uuid.uuid4().hex}", content)
+        return str((matrix("PUT", f"/rooms/{q(room_id)}/send/m.room.message/{uuid.uuid4().hex}", content) or {}).get("event_id") or "")
 
     def settle_unsure(self) -> None:
         """A send whose answer was lost and that no poll found in UNSURE_MINUTES did not go: said so now."""
         cut = (datetime.now(LOCAL) - timedelta(minutes=UNSURE_MINUTES)).strftime("%Y-%m-%d %H:%M:%S")
-        for event_id, room_id in self.db.execute("SELECT event_id, room_id FROM unsure WHERE at < ?", (cut,)).fetchall():
-            self.say(room_id, "Táto správa neodišla do EduPage. Skús to znova alebo odpovedz na edupage.org.", event_id)
-            self.db.execute("DELETE FROM unsure WHERE event_id = ?", (event_id,))
-            self.db.execute("DELETE FROM unnamed WHERE event_id = ?", (event_id,))
+        for event_id, room_id in self.db.execute("SELECT event_id, room_id FROM unsure WHERE at < ? AND notice = ''", (cut,)).fetchall():
+            notice = self.say(room_id, "Táto správa neodišla do EduPage. Skús to znova alebo odpovedz na edupage.org.", event_id)
+            # The unnamed row stays its day: if EduPage shows it later after all, the poll links it and takes this back.
+            self.db.execute("UPDATE unsure SET notice = ? WHERE event_id = ?", (notice or "-", event_id))
             self.db.commit()
 
     def sent(self, room_id: str, event_id: str) -> None:
@@ -697,9 +702,16 @@ class Rooms:
                 if match:  # written in Weft, already in the room: only its id was missing
                     self.db.execute("DELETE FROM unnamed WHERE event_id = ?", (match,))
                     self.mark_sent(item_id, root, match)
-                    if self.db.execute("DELETE FROM unsure WHERE event_id = ?", (match,)).rowcount:
+                    unsure = self.db.execute("SELECT notice FROM unsure WHERE event_id = ?", (match,)).fetchone()
+                    if unsure:  # its answer was lost: the ✓ comes now, and a "neodišla" said too early goes
+                        self.db.execute("DELETE FROM unsure WHERE event_id = ?", (match,))
                         self.db.commit()
-                        self.sent(room_id, match)  # its answer was lost: the ✓ comes now
+                        self.sent(room_id, match)
+                        if unsure[0] not in ("", "-"):
+                            try:
+                                matrix("PUT", f"/rooms/{q(room_id)}/redact/{q(unsure[0])}/{uuid.uuid4().hex}", {"reason": "odišla"})
+                            except Exception as err:
+                                log("early notice not taken back:", repr(err))
                     known.add(item_id)
                     continue
             sender = ADMIN if is_mine(item, user_id) else self.ghost(item)
@@ -747,12 +759,15 @@ class Unsure(Exception):
 def post_send(edu: Edupage, url: str, body: dict) -> requests.Response:
     """createItem/createReply. A connection that broke after the request may have been taken is Unsure, not a failure."""
     try:
-        return edu.session.post(url, data=RequestData.encode_request_body(body),
+        resp = edu.session.post(url, data=RequestData.encode_request_body(body),
                                 headers={"Content-Type": "application/x-www-form-urlencoded"}, timeout=60)
     except requests.ConnectTimeout:
         raise  # never reached EduPage
     except (requests.ConnectionError, requests.Timeout, requests.exceptions.ChunkedEncodingError) as err:
         raise Unsure(type(err).__name__) from None
+    if getattr(resp, "status_code", 200) >= 500:  # a gateway's error says nothing about whether EduPage took it
+        raise Unsure(f"HTTP {resp.status_code}")
+    return resp
 
 
 class SessionExpired(Exception):
@@ -1990,6 +2005,10 @@ class Account:
                 return
             if room_id != rooms.school_room()[0]:
                 continue
+            if rooms.db.execute("SELECT 1 FROM items WHERE event_id = ? UNION ALL SELECT 1 FROM unnamed WHERE event_id = ?"
+                                " UNION ALL SELECT 1 FROM unsure WHERE event_id = ?", (event_id,) * 3).fetchone():
+                log("already sent or on its way:", event_id)  # a transaction the homeserver delivered again
+                continue
             root = rooms.root_of(answers) if answers else None
             flags = None
             many = isinstance(recipient, dict)  # Weft's "Komu" list: checked once connected, against that login's school
@@ -2076,7 +2095,7 @@ class Account:
                 log("send answer lost:", err)
                 at = datetime.now(LOCAL).strftime("%Y-%m-%d %H:%M:%S")
                 rooms.db.execute("INSERT OR REPLACE INTO unnamed VALUES (?, ?, ?, ?)", (event_id, root, text, since))
-                rooms.db.execute("INSERT OR REPLACE INTO unsure VALUES (?, ?, ?)", (event_id, room_id, at))
+                rooms.db.execute("INSERT OR REPLACE INTO unsure (event_id, room_id, at) VALUES (?, ?, ?)", (event_id, room_id, at))
                 rooms.db.commit()
             except AttachmentRefused as err:
                 rooms.say(room_id, f"Táto správa neodišla do EduPage: {err}. Skús iný súbor alebo ju pošli bez neho.", event_id)

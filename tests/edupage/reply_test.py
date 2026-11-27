@@ -70,7 +70,8 @@ check("an own reply added before the send is not it",
 
 
 class Resp:
-    def __init__(self, body): self.text = json.dumps(body)
+    status_code = 200
+    def __init__(self, body, status=200): self.text, self.status_code = json.dumps(body), status
     def raise_for_status(self): pass
     def json(self): return json.loads(self.text)
 
@@ -85,6 +86,8 @@ class Session:
     def post(self, url, params=None, data=None, headers=None, files=None, timeout=None):
         self.posts.append((url, data))
         if ("createReply" in url or "createItem" in url) and Session.lost:
+            if isinstance(Session.lost, int):
+                return Resp({}, Session.lost)
             raise Session.lost
         if "createReply" in url or "createItem" in url:
             return Resp(Session.answer)
@@ -242,7 +245,7 @@ now = b.datetime.now(b.LOCAL).strftime("%Y-%m-%d %H:%M:%S")
 check("the poll that finds it links it and gives the ✓",
       Rooms(db).sync([{"timelineid": "70", "typ": "sprava", "reakcia_na": "14", "vlastnik": ME, "text": "Stratená odpoveď", "cas_pridania": now}], "skola", ME) == 0
       and db.execute("SELECT event_id FROM items WHERE id = 70").fetchone() == ("$lost",) and ("SUCCESS", "$lost") in events
-      and not db.execute("SELECT 1 FROM unsure").fetchall(), events)
+      and not db.execute("SELECT 1 FROM unsure WHERE event_id = '$lost'").fetchall(), events)
 acct.edu = Edu()
 Session.lost = b.requests.ReadTimeout("read timed out")
 acct.outbox.put(("!room", "$gone", "$own", "Neprišla", "", [], ""))
@@ -251,8 +254,9 @@ rooms.settle_unsure()
 check("not found yet: still nothing said", not said, said)
 db.execute("UPDATE unsure SET at = '2020-01-01 00:00:00' WHERE event_id = '$gone'")
 rooms.settle_unsure()
-check("not found in time: said not to have gone, once", len(said) == 1 and "neodišla" in said[0]
-      and not db.execute("SELECT 1 FROM unsure UNION ALL SELECT 1 FROM unnamed WHERE event_id = '$gone'").fetchall(), said)
+check("not found in time: said not to have gone, once; kept a day to be linked if it shows up", len(said) == 1 and "neodišla" in said[0]
+      and db.execute("SELECT notice FROM unsure WHERE event_id = '$gone'").fetchone() == ("-",)
+      and db.execute("SELECT 1 FROM unnamed WHERE event_id = '$gone'").fetchone(), said)
 rooms.settle_unsure()
 check("…and not again", len(said) == 1, said)
 acct.edu = Edu()
@@ -260,8 +264,45 @@ Session.lost = b.requests.ConnectTimeout("no route")
 acct.outbox.put(("!room", "$never", "$own", "Nikam", "", [], ""))
 acct.send_outbox(rooms)
 check("a connection that never reached EduPage: said at once", len(said) == 2 and "neodišla" in said[1]
-      and not db.execute("SELECT 1 FROM unsure").fetchall(), said)
+      and not db.execute("SELECT 1 FROM unsure WHERE event_id = '$never'").fetchall(), said)
+
+# A gateway's 504 after EduPage took it is not a failure either; the same Matrix event delivered again is not sent again;
+# one that shows up only after its "neodišla" is linked, gets its ✓, and that notice is taken back.
+class Rooms2(Rooms):
+    def say(self, room, text, answers=""):
+        said.append(text)
+        return f"$notice{len(said)}"
+
+
+rooms2 = Rooms2(db)
+said.clear()
+events.clear()
+acct.edu = Edu()
+Session.lost = 504
+acct.outbox.put(("!room", "$late", "$own", "Neskoro", "", [], ""))
+acct.send_outbox(rooms2)
+check("a 504 after the send: nothing said, unsure", not said and db.execute("SELECT 1 FROM unsure WHERE event_id = '$late'").fetchone(), said)
 Session.lost = None
+acct.outbox.put(("!room", "$late", "$own", "Neskoro", "", [], ""))
+acct.send_outbox(rooms2)
+check("the same event delivered again is not sent again", len(acct.edu.session.posts) == 1, acct.edu.session.posts)
+db.execute("UPDATE unsure SET at = '2020-01-01 00:00:00' WHERE event_id = '$late'")
+rooms2.settle_unsure()
+check("not seen in time: said", said == ["Táto správa neodišla do EduPage. Skús to znova alebo odpovedz na edupage.org."], said)
+paths = []
+b.matrix = lambda method, path, body=None, **k: paths.append(path) or events.append(((body or {}).get("status"), (body or {}).get("m.relates_to", {}).get("event_id"))) or {"event_id": "$x"}
+now = b.datetime.now(b.LOCAL).strftime("%Y-%m-%d %H:%M:%S")
+check("seen later after all: linked, not posted again",
+      Rooms2(db).sync([{"timelineid": "71", "typ": "sprava", "reakcia_na": "14", "vlastnik": ME, "text": "Neskoro", "cas_pridania": now}], "skola", ME) == 0
+      and db.execute("SELECT event_id FROM items WHERE id = 71").fetchone() == ("$late",), paths)
+check("…its ✓ comes and the early „neodišla“ is taken back", ("SUCCESS", "$late") in events and any("/redact/%24notice1/" in p_ or "/redact/$notice1/" in p_ for p_ in paths)
+      and not db.execute("SELECT 1 FROM unsure WHERE event_id = '$late'").fetchall(), (events, paths))
+Session.lost = None
+
+old = sqlite3.connect(":memory:")
+old.execute("CREATE TABLE unsure (event_id TEXT PRIMARY KEY, room_id TEXT NOT NULL, at TEXT NOT NULL)")
+Rooms(old)
+check("the first deployed unsure table gets its notice column", "notice" in {r[1] for r in old.execute("PRAGMA table_info(unsure)")})
 
 print("FAILS:", fails)
 sys.exit(1 if fails else 0)
