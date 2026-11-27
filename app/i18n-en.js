@@ -1601,4 +1601,11 @@ export default {
   "Žiak": "Pupil",
   "Žiak · {}": "Pupil · {}",
   "{} žiakov": "{} pupils",
+  "Server": "Server",
+  "matrix.org alebo adresa tvojho servera; prázdne vezme server z mena": "matrix.org or your server's address; empty takes the server from the name",
+  "Používateľ": "Username",
+  "@ty:matrix.org alebo len meno": "@you:matrix.org or the name alone",
+  "Prístupový token": "Access token",
+  "Token relácie, ktorú si necháš; odhlásenie vo Wefte ju neukončí.": "The token of a session you keep; signing out in Weft does not end it.",
+  "Prihlás sa do svojho Matrix účtu. Weft si pridá vlastné zariadenie s vlastnými kľúčmi.": "Sign in to your Matrix account. Weft adds its own device with its own keys.",
 };

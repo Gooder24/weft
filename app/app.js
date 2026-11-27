@@ -69,7 +69,7 @@ const BATCHES = 'sk.karchi.batches';
 // every feed answer.
 const WINDOW = 'sk.karchi.window';
 /** m.bridge protocol id -> app. */
-const NETWORKS = { facebookgo: 'messenger', facebook: 'messenger', instagramgo: 'instagram', instagram: 'instagram', discordgo: 'discord', discord: 'discord', whatsapp: 'whatsapp', teams: 'teams', matrix: 'matrix', vinted: 'vinted', packeta: 'packeta', sms: 'sms', phone: 'phone' };
+const NETWORKS = { facebookgo: 'messenger', facebook: 'messenger', instagramgo: 'instagram', instagram: 'instagram', discordgo: 'discord', discord: 'discord', whatsapp: 'whatsapp', teams: 'teams', matrix: 'matrix', 'github.com/Gooder24/matrix-matrix': 'matrix', vinted: 'vinted', packeta: 'packeta', sms: 'sms', phone: 'phone' };
 /** Matrix localpart of an agent bot -> app; its plain (unbridged) chat with Karchi shows in the inbox. */
 const AGENTS = { '@hermes': 'hermes' };
 const isBot = (id) => /^@(messenger|instagram|discord|edupage|whatsapp|teams|matrix)bot:/.test(id);
@@ -14276,6 +14276,16 @@ const LINKS = [
     id: 'matrix', name: 'Matrix', icon: '/matrix.svg', base: '/_bridges/matrix/_matrix/provision/v3', flow: 'password',
     beta: true, anywhere: true, noContactList: true, noSearch: true,
     otherFlow: { password: ['token', T('Pripojiť prístupovým tokenom')], token: ['password', T('Pripojiť heslom')] },
+    // The bridge (github.com/Gooder24/matrix-matrix) names its fields in English: Weft shows them in its own language,
+    // and a token sign-in starts at Beeper's server.
+    fields: {
+      homeserver: { name: T('Server'), description: T('matrix.org alebo adresa tvojho servera; prázdne vezme server z mena') },
+      username: { name: T('Používateľ'), description: T('@ty:matrix.org alebo len meno') },
+      password: { name: T('Heslo') },
+      token: { name: T('Prístupový token'), description: T('Token relácie, ktorú si necháš; odhlásenie vo Wefte ju neukončí.') },
+    },
+    defaults: { token: { homeserver: 'https://matrix.beeper.com' } },
+    instructions: T('Prihlás sa do svojho Matrix účtu. Weft si pridá vlastné zariadenie s vlastnými kľúčmi.'),
   },
   {
     id: 'discord', name: 'Discord', icon: '/discord.png', legacy: '/_bridges/discord/_matrix/provision/v1',
@@ -14514,7 +14524,8 @@ function linkView() {
   const fields = step.type === 'cookies'
     ? (step.cookies?.fields || []).map((f) => ({ id: f.id, name: f.id, type: 'text', optional: !f.required, description: T`Cookie ${f.id} z ${step.cookies?.url || T('prehliadača')}` }))
     : (step.user_input?.fields || []).map((f) => (f.type === 'phone_number'
-      ? { ...f, name: T('Telefónne číslo'), description: T('V medzinárodnom tvare, napríklad +421 905 123 456.') } : f));
+      ? { ...f, name: T('Telefónne číslo'), description: T('V medzinárodnom tvare, napríklad +421 905 123 456.') }
+      : { ...f, ...l.app.fields?.[f.id], default_value: f.default_value || l.app.defaults?.[l.flow]?.[f.id] }));
   const inputs = fields.map((f) => [f, f.type === 'select'
     ? h('select', { name: f.id }, (f.options || []).map((o) => h('option', { value: o }, o)))
     : h('input', {
@@ -14534,7 +14545,7 @@ function linkView() {
     onsubmit: (e) => { e.preventDefault(); submitLink(Object.fromEntries(inputs.map(([f, el]) => [f.id, el.value]))); },
   },
   head,
-  step.instructions ? h('p', {}, step.instructions) : null,
+  (l.app.instructions || step.instructions) ? h('p', {}, l.app.instructions || step.instructions) : null,
   // A sign-in page to open in Karchi's browser (Gmail through Google, Outlook and Teams through Microsoft); the desktop
   // shell hands it to the default browser.
   step['sk.karchi.open_url'] ? h('div', { class: 'row' },
