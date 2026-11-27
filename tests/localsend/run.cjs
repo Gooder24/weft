@@ -937,16 +937,26 @@ const settled = (p, id) => until(() => { const it = item(p, id); return it && ![
     const k = await lone('k17');
     const prep = await raw(k.port, 'POST', `${API}/prepare-upload`, twoFiles('fp-k17'));
     const h = hold(require('node:fs/promises'), 'rename', (from, to) => path.basename(String(to)) === 'a.txt');
-    let late;
+    let late, bad;
     try {
       later(uploadTo(k, prep, 'a', 'a'));
       await h.inside;
+      // A register already in the board's hands, whose body (not even JSON) comes only once it stops.
+      let req;
+      const reg = later(new Promise((resolve, reject) => {
+        req = https.request({ host: '127.0.0.1', port: k.port, method: 'POST', path: `${API}/register`, rejectUnauthorized: false, agent: false,
+          headers: { 'Content-Length': 4, Expect: '100-continue' } }, (r) => { r.resume(); resolve(r.statusCode); });
+        req.on('error', reject);
+      }));
+      await new Promise((r) => req.once('continue', r));
       const stopping = k.stop(); // waits for a.txt to get its name
+      req.end('{bad');
       late = await raw(k.port, 'POST', `${API}/prepare-upload`, twoFiles('fp-k17-late'));
+      bad = await reg;
       h.release();
       await stopping;
     } finally { h.restore(); }
-    assert.equal(late.status, 403);
+    assert.deepEqual([late.status, bad], [403, 403]);
     assert.equal(k.saved().items.filter((x) => x.dir === 'in').length, 1);
   });
 

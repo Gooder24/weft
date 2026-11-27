@@ -332,8 +332,9 @@ function createPeer(opts) {
       const route = `${req.method} ${url.pathname}`;
       if (route === `GET ${API}/info`) return reply(200, info());
       if (route === `POST ${API}/register`) {
-        const body = JSON.parse((await readBody(req)).toString() || '{}');
+        const data = await readBody(req);
         if (!heard(local)) { res.shouldKeepAlive = false; return reply(403, { message: 'Not listening here' }); } // switched off meanwhile
+        const body = JSON.parse(data.toString() || '{}');
         if ((!proven || sameFp(proven, body?.fingerprint)) && remember(body, ip, 'register', proven, local)) emitSoon();
         return reply(200, info());
       }
@@ -360,8 +361,9 @@ function createPeer(opts) {
   }
 
   async function prepare(req, res, ip, reply, proven, local) {
-    const body = JSON.parse((await readBody(req)).toString() || '{}');
+    const data = await readBody(req);
     if (!heard(local)) { res.shouldKeepAlive = false; return reply(403, { message: 'Not listening here' }); } // switched off meanwhile
+    const body = JSON.parse(data.toString() || '{}');
     const files = Object.values(body?.files && typeof body.files === 'object' ? body.files : {})
       .filter((f) => f && typeof f.id === 'string' && typeof f.fileName === 'string');
     if (!body?.info || !files.length) return reply(400, { message: 'Invalid body' });
