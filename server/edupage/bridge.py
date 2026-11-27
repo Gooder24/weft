@@ -520,10 +520,15 @@ class Rooms:
         self.db.commit()
 
     def forget_pending(self, event_id: str) -> None:
-        """A send that surely did not go: no poll may link it, no later notice may speak of it."""
-        self.db.execute("DELETE FROM unnamed WHERE event_id = ?", (event_id,))
-        self.db.execute("DELETE FROM unsure WHERE event_id = ?", (event_id,))
-        self.db.commit()
+        """A send that surely did not go: no poll may link it, no later notice may speak of it. A database that
+        refuses this (locked) must not keep Karchi from hearing that it did not go."""
+        try:
+            self.db.execute("DELETE FROM unnamed WHERE event_id = ?", (event_id,))
+            self.db.execute("DELETE FROM unsure WHERE event_id = ?", (event_id,))
+            self.db.commit()
+        except sqlite3.Error as err:
+            self.db.rollback()
+            log("pending send not forgotten:", repr(err))
 
     def say(self, room_id: str, text: str, answers: str = "", txn: str = "") -> str:
         """A bot notice, as a reply to the admin's message it is about when there is one; returns its event id. The same
@@ -1206,8 +1211,8 @@ def sent_id(edu: Edupage, data, user_id: str, text: str, root: int | None, known
             refused: str) -> int | None:
     """The id of what createItem/createReply just made. EduPage names it in "changes" only sometimes (also
     edupage-api issue 62); a reply often comes back as the thread's replies ("reakcie") instead, and otherwise the
-    message tab is read again. Raises `refused` when EduPage said no or said nothing and nothing new is found;
-    None when it said ok but hid the id."""
+    message tab is read again. Raises `refused` when EduPage said no, Unsure when it said nothing and nothing new
+    is found yet; None when it said ok but hid the id."""
     if not isinstance(data, dict):
         raise RuntimeError(refused)
     status = str(data.get("status") or "").lower()
@@ -1226,20 +1231,17 @@ def sent_id(edu: Edupage, data, user_id: str, text: str, root: int | None, known
     replies = [*(data.get("reakcie") or []), *(inner.get("reakcie") or [])]
     found = own_item([{"reakcia_na": root, **r} for r in replies if isinstance(r, dict)], user_id, text, root, known,
                      since) if root is not None else None
-    unread = False
     if found is None and user_id:
         try:
             found = own_item(fetch_tab(edu, date.today() - timedelta(days=1), "messages"), user_id, text, root, known, since)
         except Exception as err:  # it may still have gone; the status below decides what Karchi hears
             log("sent item lookup failed:", type(err).__name__)
-            unread = True
     if found is not None:
         return found
     if status == "ok":
         return None
-    if unread:  # EduPage said neither yes nor no and the tab could not be read: the poll decides
-        raise Unsure("no status and the message tab not read")
-    raise RuntimeError(refused)
+    # EduPage said neither yes nor no, and the tab may show a new item only later: the next polls decide.
+    raise Unsure("no status and no new item yet")
 
 
 def points_mark(percent: float, scale: dict) -> str:

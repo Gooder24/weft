@@ -437,8 +437,31 @@ Session.answer, Session.tab = {"changes": []}, []
 acct.edu = Edu()
 acct.outbox.put(("!room", "$nothing", "$own", "Nič", "", [], ""))
 acct.send_outbox(rooms4)
-check("no status and the tab read without it: said at once, nothing pending", len(said) == 1 and "neodišla" in said[0]
-      and not db.execute("SELECT 1 FROM unnamed WHERE event_id = '$nothing' UNION ALL SELECT 1 FROM unsure WHERE event_id = '$nothing'").fetchall(), said)
+check("no status and not in the tab yet: nothing said, pending (EduPage may show it later)", not said
+      and db.execute("SELECT 1 FROM unnamed WHERE event_id = '$nothing'").fetchone()
+      and db.execute("SELECT 1 FROM unsure WHERE event_id = '$nothing'").fetchone(), said)
+now = b.datetime.now(b.LOCAL).strftime("%Y-%m-%d %H:%M:%S")
+check("…shown by the next poll: linked with a ✓, not posted again",
+      rooms4.sync([{"timelineid": "77", "typ": "sprava", "reakcia_na": "14", "vlastnik": ME, "text": "Nič", "cas_pridania": now}], "skola", ME) == 0
+      and db.execute("SELECT event_id FROM items WHERE id = 77").fetchone() == ("$nothing",) and ("SUCCESS", "$nothing") in events and not said, (events, said))
+
+# The database refuses even the pending rows (locked): nothing goes out and Karchi is told.
+class LockedDB:
+    def __init__(self, real): self.real = real
+    def execute(self, *a): return self.real.execute(*a)
+    def commit(self): raise sqlite3.OperationalError("database is locked")
+    def rollback(self): self.real.rollback()
+
+
+said.clear()
+locked_rooms = Rooms2(db)
+locked_rooms.db = LockedDB(db)
+acct.edu = Edu()
+acct.outbox.put(("!room", "$nodb", "$own", "Bez databázy", "", [], ""))
+acct.send_outbox(locked_rooms)
+check("pending rows refused: nothing sent, „neodišla“ said, nothing left", not acct.edu.session.posts and len(said) == 1 and "neodišla" in said[0]
+      and not db.execute("SELECT 1 FROM unnamed WHERE event_id = '$nodb' UNION ALL SELECT 1 FROM unsure WHERE event_id = '$nodb'").fetchall(),
+      (acct.edu.session.posts, said))
 
 # EduPage named it but writing that down failed (a locked database): nothing false is said and the poll links it.
 class Locked(Rooms2):
