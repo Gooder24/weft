@@ -264,7 +264,8 @@ Session.lost = b.requests.ConnectTimeout("no route")
 acct.outbox.put(("!room", "$never", "$own", "Nikam", "", [], ""))
 acct.send_outbox(rooms)
 check("a connection that never reached EduPage: said at once", len(said) == 2 and "neodišla" in said[1]
-      and not db.execute("SELECT 1 FROM unsure WHERE event_id = '$never'").fetchall(), said)
+      and not db.execute("SELECT 1 FROM unsure WHERE event_id = '$never'").fetchall()
+      and not db.execute("SELECT 1 FROM unnamed WHERE event_id = '$never'").fetchall(), said)
 
 # A gateway's 504 after EduPage took it is not a failure either; the same Matrix event delivered again is not sent again;
 # one that shows up only after its "neodišla" is linked, gets its ✓, and that notice is taken back.
@@ -380,6 +381,43 @@ check("a notice whose answer was lost is still taken back when the reply shows u
       calls[0].split("/send/")[-1] == next(c for c in calls[1:] if "/m.room.message/" in c).split("/send/")[-1]
       and any("/redact/%24said-quick/" in c for c in calls) and not db.execute("SELECT 1 FROM unsure WHERE event_id = '$quick'").fetchone(), calls)
 db.execute("DELETE FROM unsure")
+
+# The bridge stops while EduPage is answering: after the restart the same event is not sent again, and the poll that
+# finds the reply links it with its ✓ and says nothing.
+class Crash(BaseException): pass
+
+
+said.clear()
+events.clear()
+b.matrix = lambda method, path, body=None, **k: events.append(((body or {}).get("status"), (body or {}).get("m.relates_to", {}).get("event_id"))) or {"event_id": "$x"}
+acct.edu = Edu()
+Session.lost = Crash()
+acct.outbox.put(("!room", "$crash", "$own", "Pri páde", "", [], ""))
+try:
+    acct.send_outbox(rooms2)
+    check("a crash during the send stops the bridge", False, "no crash")
+except Crash:
+    pass
+Session.lost = None
+rooms4 = Rooms2(db)  # the restart
+check("a crash during the send leaves it pending through the restart",
+      db.execute("SELECT 1 FROM unnamed WHERE event_id = '$crash'").fetchone() and db.execute("SELECT 1 FROM unsure WHERE event_id = '$crash'").fetchone())
+acct.edu = Edu()
+acct.outbox.put(("!room", "$crash", "$own", "Pri páde", "", [], ""))
+acct.send_outbox(rooms4)
+check("…the event delivered again is not sent again", not acct.edu.session.posts, acct.edu.session.posts)
+now = b.datetime.now(b.LOCAL).strftime("%Y-%m-%d %H:%M:%S")
+check("…and the poll links it with a ✓, saying nothing",
+      rooms4.sync([{"timelineid": "74", "typ": "sprava", "reakcia_na": "14", "vlastnik": ME, "text": "Pri páde", "cas_pridania": now}], "skola", ME) == 0
+      and db.execute("SELECT event_id FROM items WHERE id = 74").fetchone() == ("$crash",) and ("SUCCESS", "$crash") in events and not said
+      and not db.execute("SELECT 1 FROM unsure WHERE event_id = '$crash'").fetchall(), (events, said))
+acct.edu = Edu()
+Session.answer = {"changes": [{"timelineid": "75"}]}
+acct.outbox.put(("!room", "$fine", "$own", "Normálne", "", [], ""))
+acct.send_outbox(rooms4)
+check("a send EduPage names leaves nothing pending",
+      db.execute("SELECT event_id FROM items WHERE id = 75").fetchone() == ("$fine",)
+      and not db.execute("SELECT 1 FROM unnamed WHERE event_id = '$fine' UNION ALL SELECT 1 FROM unsure WHERE event_id = '$fine'").fetchall())
 
 old = sqlite3.connect(":memory:")
 old.execute("CREATE TABLE unsure (event_id TEXT PRIMARY KEY, room_id TEXT NOT NULL, at TEXT NOT NULL)")

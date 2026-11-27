@@ -519,6 +519,12 @@ class Rooms:
         self.db.execute("INSERT OR IGNORE INTO items VALUES (?, ?, ?)", (item_id, root, event_id))
         self.db.commit()
 
+    def forget_pending(self, event_id: str) -> None:
+        """A send that surely did not go: no poll may link it, no later notice may speak of it."""
+        self.db.execute("DELETE FROM unnamed WHERE event_id = ?", (event_id,))
+        self.db.execute("DELETE FROM unsure WHERE event_id = ?", (event_id,))
+        self.db.commit()
+
     def say(self, room_id: str, text: str, answers: str = "", txn: str = "") -> str:
         """A bot notice, as a reply to the admin's message it is about when there is one; returns its event id. The same
         `txn` sent again is the same notice (the homeserver keeps transaction ids), so a retry never says it twice."""
@@ -2104,18 +2110,25 @@ class Account:
                     if root is not None:
                         return send_reply(e, root, text, attachments, to_whom, user_id, known, since)
                     return send_message(e, to, text, attachments, user_id, known, since, flags)
+                # Written before the POST: a bridge that stops while EduPage answers finds it pending, links it with
+                # a ✓ when EduPage has it, or says after UNSURE_MINUTES that it did not go, and never sends it twice.
+                at = datetime.now(LOCAL).strftime("%Y-%m-%d %H:%M:%S")
+                rooms.db.execute("INSERT OR REPLACE INTO unnamed VALUES (?, ?, ?, ?)", (event_id, root, text, since))
+                rooms.db.execute("INSERT OR REPLACE INTO unsure (event_id, room_id, at) VALUES (?, ?, ?)", (event_id, room_id, at))
+                rooms.db.commit()
                 try:
                     item_id = send(edu)
                 except SessionExpired:
                     still_signed_in()  # never sign in again for an account that is gone or was replaced
                     edu = self.connect({**creds, "session": ""})
                     item_id = send(edu)
+                rooms.db.execute("DELETE FROM unsure WHERE event_id = ?", (event_id,))
                 if item_id is None:
                     log("sent, but EduPage did not say under which id; the next poll links it")
-                    rooms.db.execute("INSERT OR REPLACE INTO unnamed VALUES (?, ?, ?, ?)", (event_id, root, text, since))
-                    rooms.db.commit()
+                    rooms.db.commit()  # the unnamed row stays for the poll
                 else:
-                    rooms.mark_sent(item_id, root if root is not None else item_id, event_id)
+                    rooms.db.execute("DELETE FROM unnamed WHERE event_id = ?", (event_id,))
+                    rooms.mark_sent(item_id, root if root is not None else item_id, event_id)  # commits all three
                 rooms.sent(room_id, event_id)
                 try:  # the message is out: a failed session save must not tell Karchi it did not go
                     with self.lock:
@@ -2123,18 +2136,17 @@ class Account:
                             self.keep_session(edu)
                 except Exception as err:
                     log("session not kept after a send:", repr(err))
-            except Unsure as err:  # the poll links it with a ✓ if EduPage has it; else settle_unsure says it did not go
+            except Unsure as err:  # the pending rows stay: the poll links it with a ✓, else settle_unsure says it did not go
                 log("send answer lost:", err)
-                at = datetime.now(LOCAL).strftime("%Y-%m-%d %H:%M:%S")
-                rooms.db.execute("INSERT OR REPLACE INTO unnamed VALUES (?, ?, ?, ?)", (event_id, root, text, since))
-                rooms.db.execute("INSERT OR REPLACE INTO unsure (event_id, room_id, at) VALUES (?, ?, ?)", (event_id, room_id, at))
-                rooms.db.commit()
             except AttachmentRefused as err:
+                rooms.forget_pending(event_id)
                 rooms.say(room_id, f"Táto správa neodišla do EduPage: {err}. Skús iný súbor alebo ju pošli bez neho.", event_id)
             except RecipientsRefused as err:
+                rooms.forget_pending(event_id)
                 rooms.say(room_id, f"Neodoslané: {err}.", event_id)
             except Exception as err:
                 log("reply failed:", repr(err))
+                rooms.forget_pending(event_id)
                 rooms.say(room_id, "Táto správa neodišla do EduPage. Skús to znova alebo odpovedz na edupage.org.", event_id)
 
     def run(self) -> None:
