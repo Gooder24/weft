@@ -342,12 +342,24 @@ def signin_text(info: dict) -> str:
 def item_text(item: dict, school: str) -> str:
     """The message with links to its attachments (they open on edupage.org, logged in)."""
     text = item_message(item)
-    attachments = item_data(item).get("attachements")
-    if isinstance(attachments, dict) and attachments:
+    attachments = item_files(item)
+    if attachments:
         base = f"https://{school}.edupage.org"
         lines = [f"- {name}: {urllib.parse.urljoin(base, path)}" for path, name in attachments.items()]
         text = f"{text}\n\nPrílohy:\n" + "\n".join(lines)
     return text.strip() or "(prázdna správa)"
+
+
+def item_files(item: dict) -> dict[str, str]:
+    """A message's files, path -> name: a first message keeps them as {path: name} in "attachements", a reply as
+    [{src, name}] in "attachments"."""
+    data = item_data(item)
+    files = {str(path): str(name) for path, name in (data.get("attachements") or {}).items()} \
+        if isinstance(data.get("attachements"), dict) else {}
+    for f in data.get("attachments") or [] if isinstance(data.get("attachments"), list) else []:
+        if isinstance(f, dict) and f.get("src"):
+            files[str(f["src"])] = str(f.get("name") or "subor")
+    return files
 
 
 def is_mine(item: dict, user_id: str) -> bool:
@@ -963,11 +975,9 @@ def message_attachment(db: sqlite3.Connection, url: str) -> dict:
         return json.loads(row[0])
     name = None
     for (item,) in db.execute("SELECT item FROM raw WHERE typ = 'sprava'"):
-        attachments = item_data(json.loads(item)).get("attachements")
-        if isinstance(attachments, dict):
-            name = next((str(n) for path, n in attachments.items() if urllib.parse.urljoin(base, path) == url), None)
-            if name:
-                break
+        name = next((n for path, n in item_files(json.loads(item)).items() if urllib.parse.urljoin(base, path) == url), None)
+        if name:
+            break
     if not name:
         raise ApiError(404, "M_NOT_FOUND", "Takú prílohu žiadna správa nemá.")
     if urllib.parse.urlsplit(url).netloc != urllib.parse.urlsplit(base).netloc:

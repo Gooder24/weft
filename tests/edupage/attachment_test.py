@@ -236,5 +236,18 @@ check("a redirect's body is not read", r.status_code == 301 and r.raw.tell() < (
 r.close()
 srv.shutdown()
 
+# A reply keeps its files as a list [{src, name}] in "attachments": its text lists them and the bridge copies them too.
+b.ACCOUNT.edu = Edu()
+b.ACCOUNT.connect = lambda creds: Edu()
+reply = {"timelineid": 9, "typ": "sprava", "reakcia_na": 1, "vlastnik": "Ucitel7", "text": "Posielam opravené.",
+         "data": json.dumps({"textReply": "1", "attachments": [{"src": "/elearning/abcimg?z%3Aoprava", "name": "oprava.jpg"},
+                                                                {"src": "/elearning/abc?z%3Azoznam", "name": "Zoznam.pdf"}]})}
+db.execute("INSERT INTO raw VALUES (9, 'sprava', 0, ?)", (json.dumps(reply),))
+text = b.item_text(reply, "skola")
+check("a reply's files are listed under its text", text.endswith("Prílohy:\n- oprava.jpg: https://skola.edupage.org/elearning/abcimg?z%3Aoprava\n"
+      "- Zoznam.pdf: https://skola.edupage.org/elearning/abc?z%3Azoznam"), text)
+got = b.message_attachment(db, BASE + "/elearning/abcimg?z%3Aoprava")
+check("a reply's file is copied like a first message's", got["name"] == "oprava.jpg" and got["mimetype"] == "image/jpeg", got)
+
 print("FAILS:", fails)
 sys.exit(1 if fails else 0)
