@@ -670,6 +670,7 @@ function createPeer(opts) {
     servers = [];
     listeningOn = [];
     listenError = want.length ? '' : 'no-tailnet';
+    emit('state'); // not listening until the new bind is done
     // 53317 is LocalSend's; when the LocalSend app has it, the next free one (the board says which).
     for (const candidate of [wantPort, wantPort + 1, wantPort + 2, wantPort + 3]) {
       const opened = [];

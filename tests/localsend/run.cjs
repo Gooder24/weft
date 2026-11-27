@@ -977,6 +977,17 @@ const settled = (p, id) => until(() => { const it = item(p, id); return it && ![
     assert.ok(told, 'the page heard nothing while the probe hung');
   });
 
+  await check('while it moves to another address the page hears it is not listening, then where it is', async () => {
+    const at = { ip: '127.0.0.60' };
+    const k = await lone('k18', at);
+    const from = k.events.length;
+    at.ip = '127.0.0.61';
+    await k.scan();
+    const seen = k.events.slice(from).map((e) => e.state.me.listening);
+    assert.deepEqual([seen[0], seen.at(-1)], [false, true], JSON.stringify(seen));
+    await k.stop();
+  });
+
   await check('a probe that stop() caught midway asks nothing more', async () => {
     let held = null, afterStop = 0, done = false;
     const phone = require('node:net').createServer((c) => { if (done) { afterStop++; c.destroy(); } else held = c; });
