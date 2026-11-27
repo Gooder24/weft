@@ -22,11 +22,12 @@ object Outbox {
         val store = Store.get(context)
         val server = store.server ?: return
         val token = store.token ?: return
-        if (!store.write) return
+        // Switched off, it still tells Weft what it refused, so Weft says why instead of waiting an hour.
+        if (!store.write && store.results().isEmpty()) return
         while (true) {
             val done = store.results()
             val res = Net.post(server, store.ca, "/_connect/phone/outbox",
-                JSONObject().put("done", JSONArray(done)).put("wait", if (done.isEmpty()) wait else 0), token)
+                JSONObject().put("done", JSONArray(done)).put("wait", if (done.isEmpty() && store.write) wait else 0), token)
             store.reported(done.map { it.getString("id") })
             val items = res.getJSONArray("items")
             for (i in 0 until items.length()) handle(context, items.getJSONObject(i))
