@@ -228,7 +228,7 @@ function createPeer(opts) {
   // A device known by a certificate's fingerprint (64 hex digits, as LocalSend's) must show that certificate again.
   const call = (dev, method, pathq, o = {}) => request(dev, method, pathq, { ...o, tls: st.tls, expect: CERT_FP.test(dev.fingerprint || '') ? dev.fingerprint : null });
   const snapshot = () => ({
-    me: { alias, port, lan: st.lan, tailnet: !!selfIp, listening: listeningOn.length > 0, error: listenError, dir },
+    me: { alias, port, lan: st.lan, multicast: !!sock, tailnet: !!selfIp, listening: listeningOn.length > 0, error: listenError, dir },
     devices: Object.values(st.devices).map((d) => ({ ...d, online: Date.now() - d.seen < ONLINE_MS })).sort((a, b) => b.seen - a.seen),
     items: st.items,
     ask: asking && { id: asking.id, device: asking.device, count: asking.count, size: asking.size, names: asking.names, text: asking.text },
@@ -306,6 +306,8 @@ function createPeer(opts) {
       res.writeHead(code, body ? { 'Content-Type': 'application/json' } : {});
       res.end(body ? JSON.stringify(body) : undefined);
     };
+    // Off the local network, what still comes over it (on a connection kept open from before) is refused.
+    if (!st.lan && local !== selfIp && !extraHosts.includes(local)) { res.shouldKeepAlive = false; return reply(403, { message: 'Not listening here' }); }
     try {
       const route = `${req.method} ${url.pathname}`;
       if (route === `GET ${API}/info`) return reply(200, info());
@@ -571,7 +573,7 @@ function createPeer(opts) {
   }
   function multicast(on) {
     if (!on) { try { sock?.close(); } catch { /* closed */ } sock = null; return; }
-    if (sock) return;
+    if (sock || stopped) return;
     const s = dgram.createSocket({ type: 'udp4', reuseAddr: true });
     sock = s;
     s.on('message', onMulticast);
@@ -632,9 +634,12 @@ function createPeer(opts) {
     st.lan = !!on;
     st.lanChosen = true;
     save();
-    multicast(st.lan);
-    if (!st.lan && asking?.overLan) asking.resolve(false); // asked over the local network, which it no longer hears
+    if (!st.lan) {
+      multicast(false);
+      if (asking?.overLan) asking.resolve(false); // asked over the local network, which it no longer hears
+    }
     await listen();
+    multicast(st.lan); // on: once listening, so its announcement names the port it got
     emit('state');
   }
 

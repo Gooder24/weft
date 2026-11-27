@@ -16,6 +16,8 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'weft-localsend-'));
 const API = '/api/localsend/v2';
 let failed = 0;
 const results = [];
+// A request a check started but did not wait for yet must not end the run unnamed: it counts as a failure.
+process.on('unhandledRejection', (err) => { failed++; results.push(`FAIL a request nobody waited for: ${err.stack || err}`); });
 async function check(name, fn) {
   try { await fn(); results.push(`PASS ${name}`); } catch (err) { failed++; results.push(`FAIL ${name}: ${err.stack || err}`); }
 }
@@ -543,6 +545,25 @@ const settled = (p, id) => until(() => { const it = item(p, id); return it && ![
     assert.deepEqual(on.state().devices.map((d) => [d.fingerprint, d.via, d.default]), [['fp-probe', 'tailnet', true]]);
     await on.stop();
     phone.close();
+  });
+
+  await check('a connection kept open over an address the board left is refused, not asked about', async () => {
+    let self = '127.0.0.20';
+    const k = createPeer({ dir: path.join(tmp, 'k', 'in'), statePath: path.join(tmp, 'k.json'), alias: 'Weft k', lan: false, hosts: ['127.0.0.1'],
+      port: await freePort(), trusted: (ip) => ip === '127.0.0.9', tailnet: async () => ({ self, peers: [] }), log: () => {} });
+    await k.start();
+    const agent = new https.Agent({ keepAlive: true, maxSockets: 1 });
+    const body = { info: { alias: 'Cudzí', fingerprint: 'cudzi-k' }, files: { f: { id: 'f', fileName: 'x.txt', size: 1, fileType: 'text/x' } } };
+    const first = raw(k.port, 'POST', `${API}/prepare-upload`, body, { host: '127.0.0.20', agent });
+    const ask = await until(() => k.state().ask);
+    self = '127.0.0.21';
+    await k.scan(); // its Tailscale address moved: the old listener closes, this connection stays open
+    k.respond(ask.id, false);
+    assert.equal((await first).status, 403);
+    const again = await raw(k.port, 'POST', `${API}/prepare-upload`, body, { host: '127.0.0.20', agent });
+    assert.deepEqual([again.status, again.data?.message, k.state().ask], [403, 'Not listening here', null]);
+    agent.destroy();
+    await k.stop();
   });
 
   await check('turning the local network off answers a question asked over it at once', async () => {

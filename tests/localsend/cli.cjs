@@ -106,6 +106,37 @@ console.log('runtime', process.versions.electron ? `Electron ${process.versions.
   const landed = path.join(D, 'mine2', 'napoly.bin');
   check('the transfer halfway then still lands whole', upStatus === 200 && fs.existsSync(landed) && fs.readFileSync(landed).equals(big), String(upStatus));
   await p2.stop();
+
+  // 4. Turned on where its port is taken on the local network, it announces the port it got instead.
+  const dgram = require('node:dgram');
+  const heard = [];
+  const cap = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+  cap.on('message', (b) => { try { heard.push(JSON.parse(b)); } catch { /* not LocalSend */ } });
+  await new Promise((r) => cap.bind(53317, r));
+  cap.addMembership('224.0.0.167', '10.77.0.1');
+  const blocker = require('node:net').createServer().listen(53500, '10.77.0.1');
+  await new Promise((r) => blocker.once('listening', r));
+  const p3 = createPeer({ dir: `${D}/mine3`, statePath: `${D}/board3.json`, alias: 'Weft p3', port: 53500, lan: false, trusted: () => true,
+    tailnet: async () => ({ self: '100.101.0.1', peers: [] }), log: () => {} });
+  await p3.start();
+  const before = p3.port;
+  await p3.setLan(true);
+  const said = await until(() => heard.find((m) => m.alias === 'Weft p3'), 5000);
+  check('turned on where its port is taken, it announces the port it got', before === 53500 && p3.port === 53501 && said?.port === 53501, JSON.stringify({ before, now: p3.port, said: said?.port }));
+  await p3.stop();
+  blocker.close();
+  cap.close();
+
+  // 5. Stopped while it starts (the app quit at once), it opens no multicast afterwards.
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const p4 = createPeer({ dir: `${D}/mine4`, statePath: `${D}/board4.json`, alias: 'Weft p4', port: 53510, trusted: () => true,
+    tailnet: async () => { await gate; return { self: '100.101.0.1', peers: [] }; }, log: () => {} });
+  const starting = p4.start();
+  await p4.stop();
+  release();
+  await starting;
+  check('stopped while it starts, it opens no multicast afterwards', p4.state().me.multicast === false && p4.state().me.lan === true, JSON.stringify(p4.state().me));
   console.log(failed ? `${failed} failed` : 'all passed');
   process.exit(failed ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(2); });
