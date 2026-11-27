@@ -5,12 +5,12 @@ import { Database } from 'bun:sqlite';
 import { flatten } from './mail.ts';
 import { Matrix, MatrixError } from './matrix.ts';
 import { key as phoneKey, parse as phoneItem } from './connectors/phone.ts';
+import { MARK, Outbox } from './outbox.ts';
 import type { Connector, Item, Mail, PhoneItem } from './types.ts';
 
 const DAY = 86_400_000;
 export const BACK = 30 * DAY; // how far back a connector looks the first time (and after being off)
 const SEEN = DAY; // an item older than this when it comes is posted read: it is history, not news
-const MARK = 'sk.karchi.connect';
 const WEFT_SEEN = 'sk.karchi.edupage.seen'; // „seen up to“ per room that `weft chats` reads; Weft's inbox counts by receipt
 
 type Row = { rowid: number; id: string; ts: number; sender: string; body: string };
@@ -18,6 +18,7 @@ type Row = { rowid: number; id: string; ts: number; sender: string; body: string
 export class Host {
   readonly db: Database;
   readonly archive: Database;
+  readonly outbox: Outbox;
   private busy: Promise<number> | null = null;
   private line: Promise<unknown> = Promise.resolve(); // mail and the phone post one at a time: a new thread gets one room
 
@@ -32,6 +33,7 @@ export class Host {
       CREATE TABLE IF NOT EXISTS posted (key TEXT PRIMARY KEY, connector TEXT NOT NULL, room TEXT NOT NULL, event TEXT NOT NULL, ts INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS unseen (room TEXT PRIMARY KEY, ts INTEGER NOT NULL);`);
     this.archive = new Database(opts.archive, { readonly: true, strict: true });
+    this.outbox = new Outbox(this.db, opts.matrix, () => this.now());
   }
 
   now() {
@@ -80,8 +82,13 @@ export class Host {
       let posted = 0;
       for (const p of items.toSorted((a, b) => a.ts - b.ts)) {
         const made = phoneItem(p);
-        if (made && this.isOn(made[0].id) && this.now() - p.ts < BACK) {
-          await this.post(made[0], `phone:${phoneKey(p)}`, p.ts, made[1], { phone: device }, () => {
+        const key = `phone:${phoneKey(p)}`;
+        const echo = made && !this.db.query('SELECT 1 FROM posted WHERE key = ?').get(key) ? this.outbox.echo(p) : null;
+        if (made && echo) {
+          // Karchi wrote it in Weft and the phone sent it: his message is already in the chat.
+          this.db.query('INSERT INTO posted VALUES (?, ?, ?, ?, ?)').run(key, made[0].id, echo.room, echo.event, p.ts);
+        } else if (made && this.isOn(made[0].id) && this.now() - p.ts < BACK) {
+          await this.post(made[0], key, p.ts, made[1], { phone: device }, () => {
             posted++;
             counted();
           });

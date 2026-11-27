@@ -2529,12 +2529,17 @@ const readable = (r, ev) => Object.keys(ev?.content || {}).length > 0 && !ev.uns
 const discordTargetSeen = (r, id) => readable(r, r.events.get(id) || r.pending.get(id));
 /** The reply part of a message to `r` going out now: null without one, false when it may not go (see above). */
 function replyRel(r) {
+  if (r?.app === 'phone' && S.replyTo?.room !== r.id) {
+    const ev = phoneTarget(r);
+    return ev ? { 'm.in_reply_to': { event_id: ev.event_id } } : false;
+  }
   if (S.replyTo?.room !== r.id) return null;
   if (inDiscordThread(r, S.replyTo.event) || (r.app === 'discord' && !discordTargetSeen(r, S.replyTo.event))) return false;
   return { 'm.in_reply_to': { event_id: S.replyTo.event } };
 }
 /** Why the reply being written in `r` may not go (replyRel gave false). */
-const replyNote = (r) => (inDiscordThread(r, S.replyTo?.event) ? threadNote() : unreadNote());
+const replyNote = (r) => (r?.app === 'phone' && S.replyTo?.room !== r.id ? T('V tomto chate ešte nie je správa, na ktorú by sa dalo odpovedať.')
+  : inDiscordThread(r, S.replyTo?.event) ? threadNote() : unreadNote());
 /** A reply to `id` in room `room` (model `r`) that goes out later: '' when it may go, else why not. The target is
  *  read from the homeserver when this window does not have it; a network error is thrown (try again later). */
 async function heldReply(r, room, id) {
@@ -5923,8 +5928,9 @@ const EDU_MAX_FILE = 25 * 1024 * 1024;
 // ------------------------------------------------------------------ inbox, panels, shortcuts
 
 /** Apps that can feed the inbox; each chat belongs to one. */
-/** Connectors (server/connect): chats made from the mails a platform sends or from Karchi's phone (`phone`), read-only.
- *  The host on asus has the rules; here are their name, icon, page and what Settings → Účty says about them. */
+/** Connectors (server/connect): chats made from the mails a platform sends (read-only) or from Karchi's phone (`phone`;
+ *  beta: what he writes there goes out from the phone, see phoneChat). The host on asus has the rules; here are
+ *  their name, icon, page and what Settings → Účty says about them. */
 const CONNECTORS = [
   { id: 'vinted', name: 'Vinted', icon: '/vinted.png', link: 'https://www.vinted.sk/inbox', about: T('Nákupy, ponuky a nové správy, chat ku každej veci.') },
   { id: 'packeta', name: 'Packeta', icon: '/packeta.png', link: 'https://tracking.packeta.com/', about: T('Zásielky: kde sú, do kedy a kód na Z-BOX.') },
@@ -5932,6 +5938,14 @@ const CONNECTORS = [
   { id: 'phone', name: T('Telefón'), icon: '/phone.svg', phone: true, about: T('Notifikácie appiek, ktoré si v telefóne vybral, chat ku každej appke.') },
 ];
 const isConnector = (r) => !!r && CONNECTORS.some((c) => c.id === r.app);
+/** Beta: the phone's chats take messages. An SMS chat's go out as SMS; in an app's chat (many conversations in one)
+ *  each answers one message, through its notification on the phone (server/connect/outbox.ts). */
+const phoneChat = (r) => !!r && (r.app === 'sms' || r.app === 'phone');
+/** What a message in an app's chat answers when none was picked: the newest that came from someone. */
+function phoneTarget(r) {
+  const t = timelineOf(r);
+  return t.msgs.findLast((x) => x.sender !== S.userId && !x.pending && x.content?.msgtype !== 'm.notice' && !isRedacted(roomModel(t.roomOf(x)), x)) || null;
+}
 const APPS = [
   { id: 'edupage', name: 'EduPage', icon: '/edupage.png' },
   { id: 'messenger', name: 'Messenger', icon: '/messenger.ico' },
@@ -6047,7 +6061,7 @@ function archiveAllRead() {
 
 function replyToLast() {
   const open = S.rooms.get(S.selected);
-  if (!open || open.archiveOnly || isConnector(open)) return;
+  if (!open || open.archiveOnly || (isConnector(open) && open.app !== 'phone')) return;
   const t = timelineOf(open);
   const ev = t.msgs.findLast((x) => x.sender !== S.userId && !x.pending && !isRedacted(roomModel(t.roomOf(x)), x));
   if (!ev) return;
@@ -8089,7 +8103,7 @@ function bubbleView(r, m, ev, grouped, group, sug = null, read = null) {
   const quoted = reply && m.byId.get(reply);
   const reacts = m.reactions.get(ev.event_id);
   const member = r.members.get(ev.sender);
-  const acts = !(gone || ev.pending || ev.archived || isConnector(r));
+  const acts = !(gone || ev.pending || ev.archived || (isConnector(r) && r.app !== 'phone'));
   const fail = mine && !gone ? (ev.pending ? (ev.failed ? { reason: ev.failed, sure: true } : null) : m.failed?.get(ev.event_id)) : null;
   return h('div', {
     class: `msg${mine ? ' mine' : lookClass(r, ev.sender)}${grouped ? ' grouped' : ''}${ev.pending && !fail ? ' pending' : ''}${fail ? ' failed' : ''}${S.focusEvent === ev.event_id ? ' focus' : ''}${S.actsFor === ev.event_id ? ' acts' : ''}${S.pick?.event === ev.event_id ? ' picked' : ''}`,
@@ -8329,6 +8343,11 @@ function receiptLogFor(r, oldest) {
 let hoverMsg = null; // the message whose bar the mouse last opened: a render keeps that one bar
 /** The bar over a message: quick reactions, another reaction, reply, and for his own edit or delete. */
 function msgActs(r, m, ev, mine) {
+  // An app's chat from the phone: only an answer to one of its messages goes back (beta).
+  if (isConnector(r)) return h('div', { class: 'macts', 'data-seq': receiptSeq }, mine || contentOf(m, ev).msgtype === 'm.notice' ? null : h('button', {
+    class: 'qreply', title: T('Odpovedať (Ctrl+R)'),
+    onclick: () => { writeIn(r); S.replyTo = { room: r.id, event: ev.event_id }; S.focusComposer = true; render(); },
+  }, icon('undo')));
   const seen = mine ? seenOf(r, ev) : [];
   return h('div', { class: 'macts', 'data-seq': receiptSeq },
     seen.length ? h('span', { class: 'mseen' }, seenView(r, seen, dmPartner(r))) : null,
@@ -8399,6 +8418,7 @@ const LIMITS = {
 // What the room's bridge announces, else LIMITS by network. Of several announcements the one under the same
 // state key as the room's m.bridge wins, else the first by key; an empty one announces nothing.
 function msgRules(r) {
+  if (phoneChat(r)) return { editOk: false, deleteOk: false }; // what the phone sent stays as it went
   const bridgeKey = [...r.state.keys()].find((k) => k.startsWith('m.bridge|'))?.slice('m.bridge|'.length);
   const found = [...r.state].filter(([k, c]) => k.startsWith(`${ROOM_FEATURES}|`) && c && Object.keys(c).length)
     .map(([k, c]) => [k.slice(ROOM_FEATURES.length + 1), c]).sort(([a], [b]) => (a === bridgeKey ? -1 : b === bridgeKey ? 1 : a < b ? -1 : a > b ? 1 : 0));
@@ -9094,7 +9114,7 @@ function chatView(r, e = null) {
       h('div', { class: 'tonew', 'data-key': '__tonew' }, h('button', { type: 'button', title: T('Na najnovšie správy (Ctrl+↓)'), 'aria-label': T('Na najnovšie správy'), hidden: !S.chatAway, onclick: chatToNew }, icon('arrow-down'), h('kbd', {}, 'Ctrl+↓')))),
     rail,
     forwardBar(t.parts),
-    r.archiveOnly ? archiveCompose(r) : isConnector(r) ? connectorCompose(r) : chatCompose(r, m, merged ? t : null));
+    r.archiveOnly ? archiveCompose(r) : phoneChat(r) ? [phoneNote(r, m), chatCompose(r, m)] : isConnector(r) ? connectorCompose(r) : chatCompose(r, m, merged ? t : null));
 }
 
 /* An old chat only the archive has (an export) knows its person by name alone: Instagram's export keeps a slug of
@@ -9149,9 +9169,18 @@ async function reachArchived(r) {
 /** A connector's chat takes no message: it says where it comes from and opens the platform. */
 function connectorCompose(r) {
   const c = CONNECTORS.find((x) => x.id === r.app);
-  if (c.phone) return h('div', { class: 'cnote' }, T('Z tvojho telefónu · iba na čítanie, odpíšeš v ňom'));
   return h('div', { class: 'cnote' }, T`Z mailov, ktoré ti posiela ${c.name} · iba na čítanie `,
     h('button', { class: 'primary', type: 'button', onclick: () => window.open(c.link, '_blank', 'noopener') }, T`Otvoriť ${c.name}`));
+}
+
+/** Over the message box of a phone's chat: where the message goes (beta). */
+function phoneNote(r, m) {
+  if (r.app === 'sms') return h('div', { class: 'cnote', 'data-key': 'phonenote' }, T('Odíde ako SMS z tvojho telefónu (beta). Ak neodíde, Weft to napíše pod správu.'));
+  const picked = S.replyTo?.room === r.id;
+  const to = picked ? m.byId.get(S.replyTo.event) : phoneTarget(r);
+  return h('div', { class: 'cnote', 'data-key': 'phonenote' }, !to ? T('Odpovedať sa dá len na správu, ktorá prišla z telefónu.')
+    : picked ? T('Odpoveď odíde cez notifikáciu v telefóne (beta), kým tam ešte je.')
+    : T`Odpovieš: ${memberName(r, to.sender)}, cez notifikáciu v telefóne (beta). Inému cez Odpovedať pri jeho správe.`);
 }
 
 function archiveCompose(r) {
@@ -14991,8 +15020,9 @@ function phoneSettings() {
   // The phone reaches Weft on the address its certificate names (PHONE_URL on asus), not a tunnel or name this window uses.
   const base = (code && code.address) || location.origin;
   return [
-    h('h3', {}, T('Telefón')),
+    h('h3', {}, T('Telefón (beta)')),
     h('p', { class: 'hint' }, T('Appka Weft Telefón (Android 8 a novší, s Tailscale) posiela SMS a notifikácie appiek, ktoré si v nej vyberieš. Číta len to, čo už máš v telefóne, takže ti žiadny účet nezablokujú.')),
+    h('p', { class: 'hint' }, T('Keď v nej zapneš „Posielať z Weftu“, odpíšeš odtiaľto: v chate SMS ako SMS, v chate appky na konkrétnu správu cez jej notifikáciu. Beta: zatiaľ neodskúšané na skutočnom telefóne.')),
     phones === undefined ? h('p', { class: 'hint' }, T('zisťujem…')) : phones === null ? h('p', { class: 'hint' }, T('služba neodpovedá'))
       : phones.map((p) => h('div', { class: 'acct', 'data-key': `phone:${p.id}` },
         h('img', { class: 'appicon', src: '/phone.svg', alt: '' }),

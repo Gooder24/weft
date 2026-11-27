@@ -6,10 +6,12 @@ import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Typeface
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.provider.Settings
 import android.text.InputType
 import android.view.WindowInsets
@@ -25,7 +27,8 @@ import org.json.JSONObject
 import kotlin.concurrent.thread
 
 /** One screen: pairing with Weft (its address and the code from Settings → Účty → Telefón), then what goes there:
- *  SMS and the notifications of the apps ticked here. Nothing is sent anywhere else. */
+ *  SMS and the notifications of the apps ticked here, and whether what Karchi writes in Weft goes out from here
+ *  (beta). Nothing is sent anywhere else. */
 class MainActivity : Activity() {
     private val store by lazy { Store.get(this) }
     private val ticker = Handler(Looper.getMainLooper())
@@ -138,6 +141,19 @@ class MainActivity : Activity() {
             }
         })
 
+        root.addView(text("Z Weftu do telefónu (beta)", 18f, bold = true))
+        root.addView(Switch(this).apply {
+            text = "Posielať z Weftu: SMS a odpovede na notifikácie"
+            isChecked = store.write
+            setOnCheckedChangeListener { _, on ->
+                if (!on) { store.write = false; Waiter.stop(this@MainActivity); return@setOnCheckedChangeListener }
+                val ask = listOfNotNull(Manifest.permission.SEND_SMS,
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) Manifest.permission.POST_NOTIFICATIONS else null)
+                requestPermissions(ask.toTypedArray(), WRITE)
+            }
+        })
+        root.addView(text("Čo napíšeš vo Wefte do chatu SMS, odíde z tohto telefónu ako SMS. V chate appky odpovedáš na konkrétnu správu a odíde cez tlačidlo Odpovedať jej notifikácie, kým je notifikácia ešte v telefóne. Telefón musí byť zapnutý a na internete. Beta: zatiaľ neodskúšané na skutočnom telefóne.", 13f))
+
         root.addView(text("Notifikácie", 18f, bold = true))
         if (listening()) root.addView(text("Prístup k notifikáciám: povolený."))
         else {
@@ -165,11 +181,23 @@ class MainActivity : Activity() {
         val ca = store.ca
         store.forget()
         Sync.stop(this)
+        Waiter.stop(this)
         draw()
         if (server != null && token != null) thread { runCatching { Net.post(server, ca, "/_connect/phone/forget", JSONObject(), token) } }
     }
 
     override fun onRequestPermissionsResult(code: Int, permissions: Array<out String>, results: IntArray) {
+        if (code == WRITE) {
+            // Answers to notifications go without SMS permission; an SMS then says in Weft why it did not go.
+            store.write = true
+            val power = getSystemService(PowerManager::class.java)
+            if (!power.isIgnoringBatteryOptimizations(packageName)) runCatching {
+                startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
+            }
+            Waiter.start(this)
+            draw()
+            return
+        }
         if (code != SMS) return
         if (checkSelfPermission(Manifest.permission.READ_SMS) == PackageManager.PERMISSION_GRANTED) {
             store.sms = true
@@ -187,5 +215,8 @@ class MainActivity : Activity() {
         if (bold) setTypeface(typeface, Typeface.BOLD)
     }
 
-    private companion object { const val SMS = 1 }
+    private companion object {
+        const val SMS = 1
+        const val WRITE = 2
+    }
 }

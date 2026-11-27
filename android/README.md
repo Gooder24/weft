@@ -10,6 +10,11 @@ platform sees anything new and no account can be banned. It needs Tailscale on t
   chat per number, Karchi's own as his messages. RCS does not reach other apps: tick Google Messages for those.
 - Notifications: each ticked app is one chat; chat apps' messages one by one (MessagingStyle).
 - Everything waits in a queue on the phone until Weft took it; a job sends it at once and every 15 minutes.
+- Beta, „Posielať z Weftu“: what Karchi writes in Weft goes out from the phone (`Outbox.kt`). An SMS chat's message
+  as an SMS (SEND_SMS; the system keeps it in the SMS store, and Weft knows it when it comes back), an app's chat's
+  answer through the Reply button of the notification it answers, while that notification is still on the phone.
+  A quiet foreground service (`Waiter.kt`, type remoteMessaging) waits on Weft, so it goes in seconds; each message
+  goes at most once, and how it went is reported back.
 - „Odpojiť od Weftu“ here, and „Odpojiť“ in Weft (which ends the token), are the ways out.
 
 Build on asus: `./build.sh` (gets the SDK parts and Gradle, no daemons, about 2.5 GB at its peak), `./build.sh publish`

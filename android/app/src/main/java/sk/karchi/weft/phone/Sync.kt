@@ -11,7 +11,8 @@ import org.json.JSONObject
 import kotlin.concurrent.thread
 
 /** Sends the queue to Weft whenever there is a network: at once after a new item, and every 15 minutes (which also
- *  catches sent SMS). A failure keeps the queue and the job tries again later; Weft's „Odpojiť“ unpairs the phone. */
+ *  catches sent SMS), then reports and takes what Karchi wrote in Weft (beta). A failure keeps the queue and the job
+ *  tries again later; Weft's „Odpojiť“ unpairs the phone. */
 class Sync : JobService() {
     override fun onStartJob(params: JobParameters): Boolean {
         thread {
@@ -19,11 +20,7 @@ class Sync : JobService() {
                 run(this)
                 false
             } catch (e: Net.HttpError) {
-                if (e.code == 401) {
-                    Store.get(this).forget()
-                    Store.get(this).error = "Vo Wefte odpojený. Spáruj ho znova."
-                    stop(this)
-                } else Store.get(this).error = e.message
+                if (e.code == 401) unpaired(this) else Store.get(this).error = e.message
                 e.code != 401
             } catch (e: Exception) {
                 Store.get(this).error = e.message ?: e.toString()
@@ -57,6 +54,16 @@ class Sync : JobService() {
                 store.error = null
                 if (gone == 0) break // Weft answered ids this queue does not have: try again later, never in a loop
             }
+            Outbox.run(context, 0) // beta: what Karchi wrote in Weft, also when the waiting service is not running
+            Waiter.start(context)
+        }
+
+        /** Weft no longer knows this phone („Odpojiť“ there): it forgets the pairing and stops. */
+        fun unpaired(context: Context) {
+            Store.get(context).forget()
+            Store.get(context).error = "Vo Wefte odpojený. Spáruj ho znova."
+            stop(context)
+            Waiter.stop(context)
         }
 
         /** The ids Weft took. A batch it refuses as a whole (too big, or one item it cannot read) goes one by one, and

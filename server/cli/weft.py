@@ -81,7 +81,8 @@ RELAY_STATUS = {"waiting": "čaká na odpoveď", "captured": "odpoveď je v konc
 NETWORKS = {"facebookgo": "messenger", "facebook": "messenger", "instagramgo": "instagram", "instagram": "instagram",
             "discordgo": "discord", "discord": "discord", "whatsapp": "whatsapp", "teams": "teams",
             "vinted": "vinted", "packeta": "packeta", "sms": "sms", "phone": "phone"}
-READ_ONLY = {"vinted", "packeta", "sms", "phone"}  # connectors (server/connect): chats made from mail or the phone, nothing goes back
+READ_ONLY = {"vinted", "packeta"}  # connectors (server/connect) made from mail: nothing goes back
+PHONE = {"sms", "phone"}  # beta: Karchi's phone sends it (server/connect/outbox.ts), an app's chat only as an answer
 BOT = re.compile(r"^@(messenger|instagram|discord|edupage|whatsapp|gmail|telegram|teams)bot:")
 EDU_FILES = "sk.karchi.edupage.files"          # files of an EduPage message, as Weft sends them
 EDU_TO = "sk.karchi.edupage.to"                # the teacher's name a new EduPage message shows
@@ -1158,7 +1159,9 @@ def main(argv=None):
         text, files = text_arg(a.text) if a.text else "", files_arg(a.file)
         if not text and not files: raise Fail("prázdny text")
         net = rooms.data["rooms"].get(rid, {}).get("net") or "matrix"
-        if net in READ_ONLY: raise Fail(f"{net} je len na čítanie ({'z telefónu' if net in ('sms', 'phone') else 'z mailov'}): odpíš priamo v ňom")
+        if net in READ_ONLY: raise Fail(f"{net} je len na čítanie (z mailov): odpíš priamo v ňom")
+        if net in PHONE and files: raise Fail("cez telefón ide zatiaľ len text")
+        if net == "phone" and not a.reply: raise Fail("chat appky z telefónu má veľa ľudí: odpovedz na konkrétnu správu, --reply ID")
         where = f"{rooms.name(rid)} ({net}, {rid})"
         edu = net == "edupage"
         lines = []
@@ -1196,6 +1199,7 @@ def main(argv=None):
                                  "info": {"mimetype": f["mimetype"], "size": f["size"]}, **(reply if not ids else {})}))
             if text: ids.append(send({"msgtype": "m.text", "body": text, **(reply if not ids else {})}))
             note = ""
+        if net in PHONE: note = f"; odíde z telefónu (beta), a ak neodíde, Weft to napíše pod správu: weft read {rid}"
         return out({"room": rid, "sent": True, "event_ids": ids}, [f"odoslané do {where}" + note])
     if a.cmd == "draft":
         rid, text, files = find_chat(rooms, mx, a.chat), text_arg(a.text) if a.text else "", files_arg(a.file)

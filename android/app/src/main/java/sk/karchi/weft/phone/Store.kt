@@ -6,8 +6,9 @@ import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import org.json.JSONObject
 
-/** What the app keeps: Weft's address, this phone's token and the server's CA (preferences), the picked apps, and the
- *  items Weft has not taken yet (a small SQLite queue, so nothing is lost while the phone is offline). */
+/** What the app keeps: Weft's address, this phone's token and the server's CA (preferences), the picked apps, the
+ *  items Weft has not taken yet (a small SQLite queue, so nothing is lost while the phone is offline) and the messages
+ *  from Weft it sent. */
 class Store private constructor(context: Context) {
     private val prefs = context.getSharedPreferences("weft", Context.MODE_PRIVATE)
     private val db = Queue(context).writableDatabase
@@ -44,6 +45,10 @@ class Store private constructor(context: Context) {
     var sent: Long // when Weft last took items
         get() = prefs.getLong("sent", 0)
         set(v) = prefs.edit().putLong("sent", v).apply()
+    /** Beta: what Karchi writes in Weft (SMS, answers to notifications) goes out from this phone. */
+    var write: Boolean
+        get() = prefs.getBoolean("write", false)
+        set(v) = prefs.edit().putBoolean("write", v).apply()
     var error: String?
         get() = prefs.getString("error", null)
         set(v) = prefs.edit().putString("error", v).apply()
@@ -79,6 +84,36 @@ class Store private constructor(context: Context) {
         return gone
     }
 
+    /** A message from Weft this phone is taking now: false when it took it before, so nothing goes out twice (also
+     *  when its report never reached Weft and Weft hands it out again). */
+    @Synchronized
+    fun took(id: String): Boolean {
+        db.delete("handled", "at < ?", arrayOf((System.currentTimeMillis() - 30 * 86_400_000L).toString()))
+        val row = ContentValues().apply { put("id", id); put("at", System.currentTimeMillis()) }
+        return db.insertWithOnConflict("handled", null, row, SQLiteDatabase.CONFLICT_IGNORE) != -1L
+    }
+
+    /** How it went: a failure wins over a success not yet reported (another part of a long SMS failed). */
+    @Synchronized
+    fun result(id: String, ok: Boolean, error: String?) {
+        val row = ContentValues().apply { put("ok", if (ok) 1 else 0); put("error", error) }
+        if (ok) db.update("handled", row, "id = ? AND ok IS NULL", arrayOf(id))
+        else db.update("handled", row, "id = ? AND reported = 0", arrayOf(id))
+    }
+
+    /** What Weft has not heard yet: {id, ok, error}. */
+    fun results(): List<JSONObject> =
+        db.rawQuery("SELECT id, ok, error FROM handled WHERE ok IS NOT NULL AND reported = 0 LIMIT 100", null).use { c ->
+            buildList {
+                while (c.moveToNext()) add(JSONObject().put("id", c.getString(0)).put("ok", c.getInt(1) == 1).also { if (!c.isNull(2)) it.put("error", c.getString(2)) })
+            }
+        }
+
+    @Synchronized
+    fun reported(ids: Collection<String>) {
+        for (id in ids) db.update("handled", ContentValues().apply { put("reported", 1) }, "id = ?", arrayOf(id))
+    }
+
     /** Unpaired: the token, the CA and what was waiting go; the picked apps stay for the next pairing. */
     fun forget() {
         prefs.edit().remove("token").remove("ca").remove("smsLast").remove("error").remove("sent").apply()
@@ -91,8 +126,13 @@ class Store private constructor(context: Context) {
     }
 }
 
-private class Queue(context: Context) : SQLiteOpenHelper(context, "queue.db", null, 1) {
-    override fun onCreate(db: SQLiteDatabase) =
+private class Queue(context: Context) : SQLiteOpenHelper(context, "queue.db", null, 2) {
+    override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE queue (id TEXT PRIMARY KEY, json TEXT NOT NULL, ts INTEGER NOT NULL)")
-    override fun onUpgrade(db: SQLiteDatabase, old: Int, new: Int) {}
+        onUpgrade(db, 1, 2)
+    }
+    override fun onUpgrade(db: SQLiteDatabase, old: Int, new: Int) {
+        // What came from Weft to send: kept a month, so the same message never goes twice.
+        if (old < 2) db.execSQL("CREATE TABLE handled (id TEXT PRIMARY KEY, at INTEGER NOT NULL, ok INTEGER, error TEXT, reported INTEGER NOT NULL DEFAULT 0)")
+    }
 }

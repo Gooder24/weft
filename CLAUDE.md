@@ -319,9 +319,14 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   Android phone sends SMS (both ways, one chat per number; his own as himself) and the notifications of apps he ticks
   (one chat per app) through `android/` (Weft Telefón, Kotlin, minSdk 26 as Tailscale; `android/build.sh publish` on
   asus puts the APK where Weft offers it): Settings → Účty → Telefón gives a 10-minute code, the phone gets its own
-  token (`server/connect/phone.ts`, `/_connect/phone/`) and pins Caddy's CA; „Odpojiť“ ends it. Sending SMS and SMS
-  codes in the corner window are not built yet. Design and the later steps (official APIs):
-  `docs/navrhy/2026-11-konektory/`. Checks: `bun run check` there, `bun dry-run.ts`, `overenie/telefon/run.sh`.
+  token (`server/connect/phone.ts`, `/_connect/phone/`) and pins Caddy's CA; „Odpojiť“ ends it. Beta (untested on a
+  real phone): with „Posielať z Weftu“ on in the app, what Karchi writes in an SMS chat goes out as an SMS from the
+  phone, and in an app's chat it answers one message through its notification's Reply button
+  (`server/connect/outbox.ts`: the appservice hears it, the phone waits on `/_connect/phone/outbox` in a foreground
+  service, each message goes at most once, what did not go is said under it). SMS codes in the corner window are not
+  built yet. Design and the later steps (official APIs):
+  `docs/navrhy/2026-11-konektory/`. Checks: `bun run check` there, `bun dry-run.ts`, `TUWUNEL=~/matrix-spike/bin/tuwunel bun
+  tuwunel-check.ts` (the way back against a throwaway Tuwunel), `overenie/telefon/run.sh`.
 - `server/sendlater/` is the send-later service (source of truth here, deployed to asus `~/matrix-spike/sendlater/`,
   unit `matrix-spike-sendlater`): it sends the messages Weft keeps in account data `sk.karchi.sendlater` when due.
   An item with `gap` (ms) goes at most one batch per `gap` per network (`net`), also after an outage. Check:

@@ -2,18 +2,21 @@
 // ADMIN_MXID, HOMESERVER, REGISTRATION (appservices/connect.yaml), DOUBLEPUPPET, ARCHIVE_DB, CONNECT_STATE, CONNECT_PORT.
 //
 // HTTP on 127.0.0.1 only:
-//   /_matrix/app/v1/…           the homeserver's appservice calls (hs_token); nothing comes back from Weft's side
+//   /_matrix/app/v1/…           the homeserver's appservice calls (hs_token): Karchi's messages in the phone's chats
 //   GET /_connect/connectors     Karchi's token: each connector, whether it is on, its chats and items
 //   PUT /_connect/connectors/<id> {"on": bool}
 //   POST /_connect/phones/code      Karchi's token: a pairing code for a phone (10 minutes, once)
 //   GET /_connect/phones, DELETE /_connect/phones/<id>
 //   POST /_connect/phone/claim {code, name}   the phone: its id and token for a valid code
 //   POST /_connect/phone/items {items}        the phone's token: SMS and notifications, answers the ids it took
+//   POST /_connect/phone/outbox {done, wait}  the phone's token: how what it sent went, and what to send (outbox.ts);
+//                                             with wait (≤ 50 s) it waits for something new
 //   POST /_connect/phone/forget               the phone's token: the phone unpaired itself, the token ends
 //   GET /_connect/phone/ca.crt, /_connect/phone/weft-telefon.apk   for setting a phone up (nothing secret)
 import { CONNECTORS } from './connectors/index.ts';
 import { Host } from './host.ts';
 import { Matrix, registrationToken } from './matrix.ts';
+import { reports } from './outbox.ts';
 import { items, Phones } from './phone.ts';
 
 const env = (key: string, fallback?: string) => {
@@ -66,12 +69,17 @@ Bun.serve({
   hostname: '127.0.0.1',
   port: Number(env('CONNECT_PORT', '29335')),
   maxRequestBodySize: 4 * 1024 * 1024, // a phone sends at most 500 items at once
+  idleTimeout: 120, // a phone's outbox request waits up to 50 s
   async fetch(req) {
     const url = new URL(req.url);
     if (url.pathname.startsWith('/_matrix/app/')) {
       const token = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/, '') || url.searchParams.get('access_token');
       if (token !== hsToken) return json({ errcode: 'M_FORBIDDEN' }, 403);
-      if (req.method === 'PUT' && url.pathname.startsWith('/_matrix/app/v1/transactions/')) return json({});
+      if (req.method === 'PUT' && url.pathname.startsWith('/_matrix/app/v1/transactions/')) {
+        const body: { events?: unknown } = await req.json().catch(() => ({}));
+        await host.outbox.take(Array.isArray(body.events) ? body.events : []);
+        return json({});
+      }
       if (url.pathname === '/_matrix/app/v1/ping') return json({});
       return json({ errcode: 'M_NOT_FOUND' }, 404); // ghosts and rooms exist only when the host makes them
     }
@@ -122,6 +130,14 @@ async function phone(req: Request, url: URL) {
     console.log(`phone ${device} unpaired itself`);
     return json({});
   }
+  if (url.pathname === '/_connect/phone/outbox') {
+    const device = phones.auth(req.headers.get('Authorization'));
+    if (!device) return json({ errcode: 'M_UNKNOWN_TOKEN' }, 401);
+    const done = reports(body);
+    const wait = (body as { wait?: unknown } | null)?.wait;
+    if (!done) return json({ errcode: 'M_BAD_JSON' }, 400);
+    return json({ items: await host.outbox.next(device, done, typeof wait === 'number' ? Math.min(Math.max(wait, 0), 50) : 0) });
+  }
   if (url.pathname === '/_connect/phone/items') {
     const device = phones.auth(req.headers.get('Authorization'));
     if (!device) return json({ errcode: 'M_UNKNOWN_TOKEN' }, 401);
@@ -139,4 +155,7 @@ async function phone(req: Request, url: URL) {
 }
 
 await round('start');
-setInterval(() => void round('mail'), 60_000);
+setInterval(() => {
+  void round('mail');
+  host.outbox.expire().catch((err) => console.log(`outbox: ${err instanceof Error ? err.message : err}`));
+}, 60_000);
