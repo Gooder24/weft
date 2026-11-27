@@ -8272,12 +8272,27 @@ function seenOf(r, ev) {
 /** When `id` saw Karchi's message `ev`: a time, null when they saw it but when is not known, undefined when not. */
 function seenWhen(r, ev, id) {
   const at = ev.origin_server_ts;
-  const tsOf = (x) => x.event_ts ?? r.events.get(x.event)?.origin_server_ts ?? -1;
-  const first = r.receiptLog?.find((x) => x.user === id && tsOf(x) >= at);
+  // A receipt reaches ev when it names ev or a later event; in one millisecond (an album) the order of the chat
+  // decides, and a receipt on an event of that millisecond Weft does not have reaches nothing.
+  const reaches = (event, ts) => {
+    if (event === ev.event_id) return true;
+    if (ts !== at) return ts > at;
+    const order = eventOrder(r);
+    return order.has(event) && order.get(event) > order.get(ev.event_id);
+  };
+  const first = r.receiptLog?.find((x) => x.user === id && reaches(x.event, x.event_ts ?? r.events.get(x.event)?.origin_server_ts ?? -1));
   if (first) return !first.base || first.event === ev.event_id ? first.ts : null;
   const cur = r.events.get(r.receipts.get(id));
-  if (cur && cur.origin_server_ts >= at) return cur.event_id === ev.event_id ? r.receiptAt.get(id) || null : null;
+  if (cur && reaches(cur.event_id, cur.origin_server_ts)) return cur.event_id === ev.event_id ? r.receiptAt.get(id) || null : null;
   return undefined;
+}
+/** Each event's place in the room, in the order the chat draws them (by time; arrival order within a millisecond). */
+function eventOrder(r) {
+  if (r.orderOf?.version !== r.version) {
+    const all = [...r.events.values()].sort((a, b) => a.origin_server_ts - b.origin_server_ts);
+    r.orderOf = { version: r.version, map: new Map(all.map((e, i) => [e.event_id, i])) };
+  }
+  return r.orderOf.map;
 }
 /** "Videné 14:32" in a one-to-one chat, else "Videli: Jana 14:32, Peter" with at most `most` names. */
 function seenText(r, seen, partner, most) {
