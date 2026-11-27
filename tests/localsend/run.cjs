@@ -58,10 +58,11 @@ function hold(obj, key, pick) {
 }
 /** A board off the local network whose own address is at.ip (a test may change it) and whose senders are all its own. */
 async function lone(name, at = { ip: '127.0.0.250' }) {
+  const events = [];
   const k = createPeer({ dir: path.join(tmp, name, 'in'), statePath: path.join(tmp, `${name}.json`), alias: `Weft ${name}`, lan: false, hosts: ['127.0.0.1'],
-    port: await freePort(), trusted: () => true, tailnet: async () => ({ self: at.ip, peers: [] }), log: () => {} });
+    port: await freePort(), trusted: () => true, tailnet: async () => ({ self: at.ip, peers: [] }), onEvent: (ev) => events.push(ev), log: () => {} });
   await k.start();
-  return Object.assign(k, { inbox: path.join(tmp, name, 'in') });
+  return Object.assign(k, { inbox: path.join(tmp, name, 'in'), events, saved: () => { try { return JSON.parse(fs.readFileSync(path.join(tmp, `${name}.json`), 'utf8')); } catch { return { items: [] }; } } }); // not yet written, or being written
 }
 const twoFiles = (fp) => ({ info: { alias: 'mobil', fingerprint: fp }, files: { a: { id: 'a', fileName: 'a.txt', size: 1, fileType: 'text/x' }, b: { id: 'b', fileName: 'b.txt', size: 1, fileType: 'text/x' } } });
 const uploadTo = (k, prep, id, body, host = '127.0.0.1') => raw(k.port, 'POST', `${API}/upload?sessionId=${prep.data.sessionId}&fileId=${id}&token=${prep.data.files[id]}`, Buffer.from(body), { host });
@@ -813,6 +814,7 @@ const settled = (p, id) => until(() => { const it = item(p, id); return it && ![
     } finally { h.restore(); }
     assert.equal(k.state().items.find((x) => x.files?.[0]?.name === 'a.txt')?.status, 'partial');
     assert.deepEqual(left(k), ['a.txt']);
+    assert.deepEqual(k.events.filter((e) => e.type === 'arrived').at(-1)?.item.files.map((x) => x.name), ['a.txt']); // the corner window says what came
     await k.stop();
   });
 
@@ -869,6 +871,66 @@ const settled = (p, id) => until(() => { const it = item(p, id); return it && ![
     assert.deepEqual(left(k2), ['a.txt']);
     const saved = JSON.parse(fs.readFileSync(path.join(tmp, 'k13.json'), 'utf8')).items.find((x) => x.files?.[0]?.name === 'a.txt');
     assert.deepEqual([saved.status, saved.files[0].done], ['partial', true]);
+  });
+
+  await check('one upload of a file at a time: a second one meanwhile is refused, and one copy lands', async () => {
+    const k = await lone('k14');
+    const prep = await raw(k.port, 'POST', `${API}/prepare-upload`, twoFiles('fp-k14'));
+    const h = hold(require('node:fs/promises'), 'rename', (from, to) => path.basename(String(to)) === 'a.txt');
+    try {
+      const first = later(uploadTo(k, prep, 'a', 'a'));
+      await h.inside;
+      assert.equal((await uploadTo(k, prep, 'a', 'a')).status, 409);
+      h.release();
+      assert.equal((await first).status, 200);
+    } finally { h.restore(); }
+    assert.deepEqual(left(k), ['a.txt']);
+    assert.equal(k.state().items.find((x) => x.files?.[0]?.name === 'a.txt')?.got, 1);
+    await k.stop();
+  });
+
+  await check('a name whose reservation cannot be closed is not left behind', async () => {
+    const k = await lone('k15');
+    const prep = await raw(k.port, 'POST', `${API}/prepare-upload`, twoFiles('fp-k15'));
+    const fsp = require('node:fs/promises');
+    const open = fsp.open;
+    fsp.open = async (file, ...rest) => {
+      const h = await open(file, ...rest);
+      if (path.basename(String(file)) !== 'a.txt') return h;
+      return { close: async () => { await h.close(); throw Object.assign(new Error('EIO'), { code: 'EIO' }); } };
+    };
+    try { assert.equal((await uploadTo(k, prep, 'a', 'a')).status, 500); } finally { fsp.open = open; }
+    assert.deepEqual(left(k), []);
+    await k.stop();
+  });
+
+  await check('what came of a cancelled batch is announced, and bytes that did not stay are not kept saved', async () => {
+    const k = await lone('k16');
+    let prep = await raw(k.port, 'POST', `${API}/prepare-upload`, twoFiles('fp-k16'));
+    assert.equal((await uploadTo(k, prep, 'a', 'a')).status, 200);
+    assert.equal((await raw(k.port, 'POST', `${API}/cancel?sessionId=${prep.data.sessionId}`)).status, 200);
+    assert.deepEqual(k.events.filter((e) => e.type === 'arrived').at(-1)?.item.files.map((x) => x.name), ['a.txt']);
+    // Cancelled while its file gets a name, which then fails: the byte counted for it goes from board.json too.
+    prep = await raw(k.port, 'POST', `${API}/prepare-upload`, twoFiles('fp-k16b'));
+    const fsp = require('node:fs/promises');
+    const rename = fsp.rename;
+    let entered, release;
+    const inside = new Promise((r) => { entered = r; });
+    const gate = new Promise((r) => { release = r; });
+    fsp.rename = async (from, to) => {
+      if (path.basename(String(to)) !== 'a (1).txt') return rename(from, to);
+      entered(); await gate; throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
+    };
+    try {
+      const up = later(uploadTo(k, prep, 'a', 'a'));
+      await inside;
+      await raw(k.port, 'POST', `${API}/cancel?sessionId=${prep.data.sessionId}`);
+      await until(() => k.saved().items.find((x) => x.status === 'cancelled')?.got === 1); // written with its byte
+      release();
+      await up.catch(() => {});
+    } finally { release(); fsp.rename = rename; }
+    await until(() => k.saved().items.find((x) => x.status === 'cancelled')?.got === 0);
+    await k.stop();
   });
 
   await check('a probe that stop() caught midway asks nothing more', async () => {

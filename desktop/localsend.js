@@ -62,7 +62,10 @@ async function claim(dir, parts) {
   for (let i = 0; i < 1000; i++) {
     const file = path.join(folder, i ? `${stem} (${i})${ext}` : name);
     if (!file.startsWith(root + path.sep)) throw Object.assign(new Error('bad name'), { status: 400 });
-    try { await (await fsp.open(file, 'wx')).close(); return file; } catch (err) { if (err.code !== 'EEXIST') throw err; }
+    let h;
+    try { h = await fsp.open(file, 'wx'); } catch (err) { if (err.code === 'EEXIST') continue; throw err; }
+    try { await h.close(); } catch (err) { await fsp.rm(file, { force: true }).catch(() => {}); throw err; }
+    return file;
   }
   throw new Error('no free name');
 }
@@ -214,7 +217,7 @@ function createPeer(opts) {
   let listenError = '';
   let sock = null; // multicast, only with st.lan
   let session = null; // the one transfer being received
-  const jobs = new Set(); // files being received, which stop() waits for
+  const jobs = new Map(); // files being received (and their requests), which stop() cuts off and waits for
   let asking = null; // { id, resolve, ... } files from outside the tailnet waiting for Prijať
   let saveTimer = null;
   let stateTimer = null;
@@ -405,14 +408,17 @@ function createPeer(opts) {
     const f = session.files.get(fid);
     if (!f || f.token !== token || session.ip !== ip) return reply(403, { message: 'Invalid token or IP address' });
     if (f.done) { req.resume(); return reply(200); }
+    // One upload of a file at a time (LocalSend sends each once): a second would land beside the first.
+    if (f.busy) return reply(409, { message: 'Already receiving this file' });
     const s = session;
     s.touched = Date.now();
     // This session's transfer until it ends here: meanwhile nothing ends the session for it (endSession() still cuts
     // it off) and no other starts. stop() waits for it, so a quit leaves no half file behind.
     s.streams.add(req);
+    f.busy = true;
     const job = receive(s, f, req);
-    jobs.add(job);
-    const r = await job.finally(() => jobs.delete(job));
+    jobs.set(job, req);
+    const r = await job.finally(() => { jobs.delete(job); f.busy = false; });
     reply(r.status, r.message && { message: r.message });
   }
 
@@ -452,6 +458,7 @@ function createPeer(opts) {
       if (target) await fsp.rm(target, { force: true }).catch(() => {});
       s.item.got -= got;
       s.streams.delete(req);
+      save();
       dropUnheard(); // its sender may no longer reach the board to cancel
       return { status: err.status || 500, message: err.status ? err.message : 'Upload failed' };
     }
@@ -460,10 +467,11 @@ function createPeer(opts) {
     f.done = true;
     Object.assign(s.item.files[f.index], { path: target, name: path.relative(dir, target), done: true });
     const all = [...s.files.values()].every((x) => x.done);
-    if (session !== s) s.item.status = all ? 'done' : 'partial';
+    const ended = session !== s;
+    if (ended) s.item.status = all ? 'done' : 'partial';
     else if (all) { s.item.status = 'done'; session = null; }
     save();
-    if (all) emit('arrived', { item: s.item });
+    if (all || ended) arrived(s.item);
     else { emitSoon(); dropUnheard(); }
     return { status: 200 };
   }
@@ -476,8 +484,11 @@ function createPeer(opts) {
     for (const r of s.streams) r.destroy();
     s.item.status = s.item.files.some((x) => x.done) ? 'partial' : status;
     save();
-    emit('state');
+    if (s.item.status === 'partial') arrived(s.item);
+    else emit('state');
   }
+  /** Tells the page what came, for its corner window and notification: of a partial item only the files that did. */
+  const arrived = (item) => emit('arrived', { item: { ...item, files: item.files?.filter((x) => x.done) } });
 
   // ---------------------------------------------------------------- sending
 
@@ -740,7 +751,8 @@ function createPeer(opts) {
     multicast(false);
     if (session) endSession('stopped');
     if (asking) asking.resolve(false);
-    await Promise.all([...jobs]); // cut off above, they only clean up or name a file that arrived whole
+    for (const r of jobs.values()) r.destroy();
+    await Promise.all([...jobs.keys()]); // cut off, they only clean up or name a file that arrived whole
     clearTimeout(saveTimer);
     await saving; // a write in flight must not land after the last one
     try { fs.writeFileSync(statePath, JSON.stringify(st), { mode: 0o600 }); } catch { /* no disk */ }
