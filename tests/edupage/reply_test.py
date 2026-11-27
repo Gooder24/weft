@@ -80,6 +80,7 @@ class Session:
     answer: dict = {}
     tab: list = []
     lost = None  # an exception the send's connection ends with
+    tab_lost = None  # an exception reading the message tab again ends with
 
     def __init__(self): self.posts, self.cookies = [], {}
 
@@ -91,6 +92,8 @@ class Session:
             raise Session.lost
         if "createReply" in url or "createItem" in url:
             return Resp(Session.answer)
+        if Session.tab_lost:
+            raise Session.tab_lost
         return Resp({"timelineItems": Session.tab})  # the message tab read again
 
 
@@ -418,6 +421,44 @@ acct.send_outbox(rooms4)
 check("a send EduPage names leaves nothing pending",
       db.execute("SELECT event_id FROM items WHERE id = 75").fetchone() == ("$fine",)
       and not db.execute("SELECT 1 FROM unnamed WHERE event_id = '$fine' UNION ALL SELECT 1 FROM unsure WHERE event_id = '$fine'").fetchall())
+
+# EduPage answers without a status and the tab cannot be read to look: not known either way, so the poll decides.
+said.clear()
+events.clear()
+acct.edu = Edu()
+Session.answer, Session.tab_lost = {"changes": []}, b.requests.ReadTimeout("read timed out")
+acct.outbox.put(("!room", "$mute", "$own", "Bez stavu", "", [], ""))
+acct.send_outbox(rooms4)
+Session.tab_lost = None
+check("no status and the tab not read: nothing said, pending",
+      not said and db.execute("SELECT 1 FROM unsure WHERE event_id = '$mute'").fetchone()
+      and db.execute("SELECT 1 FROM unnamed WHERE event_id = '$mute'").fetchone(), said)
+Session.answer, Session.tab = {"changes": []}, []
+acct.edu = Edu()
+acct.outbox.put(("!room", "$nothing", "$own", "Nič", "", [], ""))
+acct.send_outbox(rooms4)
+check("no status and the tab read without it: said at once, nothing pending", len(said) == 1 and "neodišla" in said[0]
+      and not db.execute("SELECT 1 FROM unnamed WHERE event_id = '$nothing' UNION ALL SELECT 1 FROM unsure WHERE event_id = '$nothing'").fetchall(), said)
+
+# EduPage named it but writing that down failed (a locked database): nothing false is said and the poll links it.
+class Locked(Rooms2):
+    def mark_sent(self, item_id, root, event_id): raise sqlite3.OperationalError("database is locked")
+
+
+said.clear()
+events.clear()
+acct.edu = Edu()
+Session.answer = {"changes": [{"timelineid": "76"}]}
+acct.outbox.put(("!room", "$locked", "$own", "Zamknuté", "", [], ""))
+acct.send_outbox(Locked(db))
+check("named but not recorded: nothing said, still pending", not said
+      and db.execute("SELECT 1 FROM unnamed WHERE event_id = '$locked'").fetchone()
+      and db.execute("SELECT 1 FROM unsure WHERE event_id = '$locked'").fetchone(), said)
+now = b.datetime.now(b.LOCAL).strftime("%Y-%m-%d %H:%M:%S")
+check("…and the poll links it with a ✓, not posting it again",
+      rooms4.sync([{"timelineid": "76", "typ": "sprava", "reakcia_na": "14", "vlastnik": ME, "text": "Zamknuté", "cas_pridania": now}], "skola", ME) == 0
+      and db.execute("SELECT event_id FROM items WHERE id = 76").fetchone() == ("$locked",) and ("SUCCESS", "$locked") in events and not said, (events, said))
+db.execute("DELETE FROM unsure")
 
 old = sqlite3.connect(":memory:")
 old.execute("CREATE TABLE unsure (event_id TEXT PRIMARY KEY, room_id TEXT NOT NULL, at TEXT NOT NULL)")

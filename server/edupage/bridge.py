@@ -1226,15 +1226,19 @@ def sent_id(edu: Edupage, data, user_id: str, text: str, root: int | None, known
     replies = [*(data.get("reakcie") or []), *(inner.get("reakcie") or [])]
     found = own_item([{"reakcia_na": root, **r} for r in replies if isinstance(r, dict)], user_id, text, root, known,
                      since) if root is not None else None
+    unread = False
     if found is None and user_id:
         try:
             found = own_item(fetch_tab(edu, date.today() - timedelta(days=1), "messages"), user_id, text, root, known, since)
         except Exception as err:  # it may still have gone; the status below decides what Karchi hears
             log("sent item lookup failed:", type(err).__name__)
+            unread = True
     if found is not None:
         return found
     if status == "ok":
         return None
+    if unread:  # EduPage said neither yes nor no and the tab could not be read: the poll decides
+        raise Unsure("no status and the message tab not read")
     raise RuntimeError(refused)
 
 
@@ -2065,6 +2069,7 @@ class Account:
             if not creds:
                 rooms.say(room_id, "Neodoslané: EduPage nie je pripojený.", event_id)
                 continue
+            accepted = False
             try:
                 if edu is None:
                     edu = self.connect(creds)
@@ -2122,6 +2127,7 @@ class Account:
                     still_signed_in()  # never sign in again for an account that is gone or was replaced
                     edu = self.connect({**creds, "session": ""})
                     item_id = send(edu)
+                accepted = True  # from here on nothing may say it did not go
                 rooms.db.execute("DELETE FROM unsure WHERE event_id = ?", (event_id,))
                 if item_id is None:
                     log("sent, but EduPage did not say under which id; the next poll links it")
@@ -2145,6 +2151,10 @@ class Account:
                 rooms.forget_pending(event_id)
                 rooms.say(room_id, f"Neodoslané: {err}.", event_id)
             except Exception as err:
+                if accepted:  # EduPage has it; a failed write here leaves it pending for the poll to link with its ✓
+                    rooms.db.rollback()
+                    log("sent, not recorded:", repr(err))
+                    continue
                 log("reply failed:", repr(err))
                 rooms.forget_pending(event_id)
                 rooms.say(room_id, "Táto správa neodišla do EduPage. Skús to znova alebo odpovedz na edupage.org.", event_id)
