@@ -1848,6 +1848,7 @@ class Teams:
             page = self.graph(account, "GET", url)
             chats += [c for c in page.get("value") or [] if isinstance(c, dict)]
             url = page.get("@odata.nextLink") if adopt else None
+        whole = not url  # the list was read to its end: only then is the adoption done
         moved = []
         for info in chats:
             if not isinstance(info, dict) or not info.get("id"):
@@ -1883,7 +1884,7 @@ class Teams:
                 log("teams: chat sync", type(err).__name__, getattr(err, "status", ""), getattr(err, "code", "") or getattr(err, "errcode", ""))
         if first:
             self.kv(f"since:{account}", str(since))
-        if adopt and not failed:  # else the next poll adopts again what is still missing
+        if adopt and whole and not failed:  # else a later poll (ADOPT_RETRY) adopts again what is still missing
             self.kv(f"adopted:{account}", str(started))
         self.kv(f"polled:{account}", str(started))
 

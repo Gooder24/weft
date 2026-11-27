@@ -895,11 +895,12 @@ def fetch_more(c, network, room, owner, has_older):
             c.executemany(ADD_MEDIA, [r for m in msgs for r in bridge_media(network, room, m)])
             oldest = min(msgs, key=lambda m: m["ts"], default=None)
             moved = oldest is not None or (page or {}).get("cursor", "") not in ("", st["cursor"])
+            advanced = (page or {}).get("cursor", "") not in ("", st["cursor"])  # Teams: only a new page cursor is progress
             st["empty"] = 0 if rows else st["empty"] + 1
             st |= {"cursor": (page or {}).get("cursor", "") or st["cursor"], "failed_at": None,
                    # Teams' bridge says has_more false only at the chat's start, also on an empty page (a chat no longer
-                   # than what its room has), and its empty pages (system notes) move on; Meta's say it also when they cannot page
-                   "done": 2 if page is None else (1 if not page.get("has_more") else 0 if moved else 2) if network in HISTORY_AHEAD
+                   # than what its room has), and its empty pages (system notes) go on while the cursor does; Meta's say it also when they cannot page
+                   "done": 2 if page is None else (1 if not page.get("has_more") else 0 if advanced else 2) if network in HISTORY_AHEAD
                            else 2 if not moved or st["empty"] >= MAX_EMPTY else 0 if page.get("has_more") else 1}
             if st["done"] == 2: st["failed_at"] = time.time()
             if oldest: st |= {"before_id": oldest["id"], "before_ts": oldest["ts"]}
