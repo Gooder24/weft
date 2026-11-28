@@ -743,7 +743,7 @@ function adoptAgentDrafts() {
   const add = [];
   for (const it of S.account[AGENT_DRAFTS]?.items || []) {
     if (!it?.id || !it.room || !(it.body || it.files?.length) || Date.now() - (it.at || 0) > GONE_MS) continue;
-    const op = { op: 'add', item: { id: `agent:${it.id}`, room: it.room, body: it.body || '', at: it.at, pos: it.at, by: it.by || 'agent', ...(it.files?.length ? { files: it.files } : {}), ...(it.relay ? { relay: it.relay } : {}) } };
+    const op = { op: 'add', item: { id: `agent:${it.id}`, room: it.room, body: it.body || '', at: it.at, pos: it.at, by: it.by || 'agent', ...(it.files?.length ? { files: it.files } : {}), ...(it.relay ? { relay: it.relay } : {}), ...(it.mail ? { mail: it.mail } : {}) } };
     if (!stashHas(view, op) && !ops.some((o) => sameOp(o, op))) add.push(op);
   }
   if (add.length) stashDo(...add);
@@ -807,6 +807,7 @@ const boxStash = new Map(); // room id -> ids of items with files in its box: th
 /** The item goes into the chat's message box after what is typed there and leaves the stash. One with files stays
  *  there (hidden in this window) until the box is sent or emptied: files in a box do not survive a reload. */
 function takeStashed(r, it) {
+  if (isMailDraft(it)) return takeMailDraft(it);
   if (S.editing?.room === r.id) return;
   S.stashSel = null;
   S.stashEdit = null;
@@ -831,19 +832,21 @@ function doneBoxStash(roomId) {
   boxStash.delete(roomId);
   if (ids.length) stashDo(...ids.map((id) => ({ op: 'del', id })));
 }
+/** A stashed item's files, downloaded from asus. */
+const stashedFiles = (it) => Promise.all((it.files || []).map(async (f) => {
+  const [server, id] = f.url.slice(6).split('/');
+  const res = await fetch(`/_matrix/client/v1/media/download/${q(server)}/${q(id)}`, { headers: { Authorization: `Bearer ${S.token}` } });
+  if (!res.ok) throw new Error(res.status);
+  const blob = await res.blob();
+  return new File([blob], f.name || 'subor', { type: f.mimetype || blob.type });
+}));
 /** A taken item's files come down into the box's attachments, then its text; if they do not come, it stays stashed. */
 async function takeStashFiles(r, it) {
   hiddenHere.add(it.id);
   stashMemo.of.clear();
   render();
   try {
-    const files = await Promise.all(it.files.map(async (f) => {
-      const [server, id] = f.url.slice(6).split('/');
-      const res = await fetch(`/_matrix/client/v1/media/download/${q(server)}/${q(id)}`, { headers: { Authorization: `Bearer ${S.token}` } });
-      if (!res.ok) throw new Error(res.status);
-      const blob = await res.blob();
-      return new File([blob], f.name || 'subor', { type: f.mimetype || blob.type });
-    }));
+    const files = await stashedFiles(it);
     S.attach.set(r.id, [...(S.attach.get(r.id) || []), ...files]);
     for (const f of files) imageSize(f);
     boxStash.set(r.id, [...(boxStash.get(r.id) || []), it.id]);
@@ -862,6 +865,7 @@ async function takeStashFiles(r, it) {
  *  list is one blob another window may overwrite with an older copy, so the hand-over is kept (ep_stash_send) and
  *  made again after every sync that lacks it, and the draft leaves the stash only once the service says it is sent. */
 function sendStashed(r, it) {
+  if (isMailDraft(it)) return takeMailDraft(it); // a mail goes from the mail form, where Karchi sees whom it goes to
   const to = S.rooms.get(it.room) && liveChat(S.rooms.get(it.room)) ? S.rooms.get(it.room) : r;
   // Files come down first: they go out from the box; so does everything where the send-later service is not offered.
   if (it.files?.length || !offered.later()) return takeStashed(r, it);
@@ -1081,7 +1085,7 @@ function stashView(r) {
       class: 'stashlist', tabindex: 0, role: 'listbox', 'aria-label': T('Odložené koncepty'),
       'aria-activedescendant': sel ? `stash-${sel.id}` : undefined, onkeydown: (e) => stashKey(e, r),
     }, list.map((it) => stashRow(r, it, it === sel)),
-    h('small', { class: 'stashkeys' }, T('Enter vziať · Ctrl+Enter poslať · E upraviť · Alt+↑↓ posunúť · Del zmazať · Esc späť'))) : null,
+    h('small', { class: 'stashkeys' }, r.archiveOnly ? T('Enter do mailu · E upraviť · Alt+↑↓ posunúť · Del zmazať') : T('Enter vziať · Ctrl+Enter poslať · E upraviť · Alt+↑↓ posunúť · Del zmazať · Esc späť'))) : null,
     S.stashing === r.id ? h('div', { class: 'stashinfo' }, h('span', {}, T('Odkladám prílohy…'))) : null,
     note ? h('div', { class: 'stashinfo' }, h('span', {}, note), S.stashNote ? h('button', { class: 'ghost', title: T('Zavrieť'), onclick: () => { S.stashNote = null; render(); } }, icon('close')) : null) : null,
     undo ? h('div', { class: 'stashinfo' }, h('span', {}, T('Odložený koncept je zmazaný.')),
@@ -1124,8 +1128,9 @@ function stashRow(r, it, on) {
   }) : h('div', { class: 'stashtext' }, it.body || (it.files || []).map((f) => f.name).join(', ')),
   meta ? h('small', {}, meta) : null,
   on && !editing ? h('div', { class: 'stashacts' },
-    h('button', { class: 'ghost', title: T('Do poľa správy (Enter)'), onclick: () => takeStashed(r, it) }, icon('arrow-down'), h('span', {}, T('Vziať'))),
-    it.files?.length ? null : h('button', { class: 'ghost', title: T('Poslať hneď, pole správy ostane (Ctrl+Enter)'), onclick: () => sendStashed(r, it) }, icon('arrow-up'), h('span', {}, T('Poslať'))),
+    isMailDraft(it) ? h('button', { class: 'ghost', title: T('Otvoriť ako mail, odošleš ho tam (Enter)'), onclick: () => takeMailDraft(it) }, icon('mail'), h('span', {}, T('Do mailu')))
+      : h('button', { class: 'ghost', title: T('Do poľa správy (Enter)'), onclick: () => takeStashed(r, it) }, icon('arrow-down'), h('span', {}, T('Vziať'))),
+    it.files?.length || isMailDraft(it) ? null : h('button', { class: 'ghost', title: T('Poslať hneď, pole správy ostane (Ctrl+Enter)'), onclick: () => sendStashed(r, it) }, icon('arrow-up'), h('span', {}, T('Poslať'))),
     h('button', { class: 'ghost', title: T('Upraviť tu (E)'), onclick: () => startStashEdit(it) }, icon('pencil'), h('span', {}, T('Upraviť'))),
     h('button', { class: 'ghost', title: T('Posunúť vyššie (Alt+↑)'), onclick: () => moveStashed(r, it, -1) }, icon('arrow-up'), h('span', {}, T('Vyššie'))),
     h('button', { class: 'ghost', title: T('Posunúť nižšie (Alt+↓)'), onclick: () => moveStashed(r, it, 1) }, icon('arrow-down'), h('span', {}, T('Nižšie'))),
@@ -5299,7 +5304,7 @@ function chatEntries(all, extra = null) {
   const muted = mutedRooms();
   const off = serversOff();
   for (const r of S.rooms.values()) {
-    if (r.archiveOnly && !all && r.id !== S.selected && !extra?.has(r.id)) continue;
+    if (r.archiveOnly && !all && r.id !== S.selected && !extra?.has(r.id) && !stashedRooms().has(r.id)) continue;
     if (!isChat(r) || serverOff(r, off)) continue;
     const m = roomModel(r);
     if (r.archiveOnly) {
@@ -6211,8 +6216,9 @@ function setBox(box) {
 /** The chats the list shows: one of the views, and in the inbox only unread ones unless Ctrl+Shift+S. */
 function visibleEntries(list = entries(S.box === 'mail')) {
   const hidden = hiddenApps();
-  // Conversations that exist only in the archive (no bridge room) are in no list but Maily: Ctrl+K finds them.
-  const mine = list.filter((e) => !hidden.has(e.app) && (!e.room?.archiveOnly || (S.box === 'mail' && MAIL_APPS.includes(e.app))));
+  // Conversations that exist only in the archive (no bridge room) are in no list but Maily: Ctrl+K finds them. A mail
+  // thread with a draft waiting (an agent's `weft draft`) is in the inbox too, until the draft is sent or deleted.
+  const mine = list.filter((e) => !hidden.has(e.app) && (!e.room?.archiveOnly || (MAIL_APPS.includes(e.app) && (S.box === 'mail' || stashedRooms().has(e.room.id)))));
   const pool = mine.filter(inBox(S.box));
   // As in Beeper, a chat leaves the unread list as soon as it is read, even while it stays open.
   const shown = S.showAll || S.box !== 'inbox' ? pool : pool.filter((e) => e.unread || !!entryDraft(e).trim() || entryStash(e).length > 0);
@@ -6664,7 +6670,7 @@ function sideItems() {
   const { shown, pool } = sideLast;
   const [from, to] = sideRange(shown.length);
   const rowH = sideRowH || 56;
-  const items = [...(S.offline ? [offlineBanner()] : disconnectedBanners())];
+  const items = [...(S.offline ? [offlineBanner()] : disconnectedBanners()), ...newMailDrafts()];
   if (shown.length > SIDE_ALL) items.push(h('div', { 'data-key': '__top', 'aria-hidden': 'true', style: { height: `${from * rowH}px` } }));
   const today = new Date().toDateString(); // the rows' dates read "today" or "yesterday"
   items.push(...shown.slice(from, to).map((e) => itemRow(e, today)));
@@ -9424,8 +9430,8 @@ function archiveCompose(r) {
   if (!app) return h('div', { class: 'cnote' }, T('Uložená história · iba na čítanie'));
   if (MAIL_APPS.includes(to.app)) {
     // Only from the app the thread came to: an Outlook thread is never answered from Gmail.
-    if (!mailAccounts().some((l) => l.app.id === to.app)) return h('div', { class: 'cnote' }, T`Odpovedať mailom sa dá po pripojení ${app.name} v Nastaveniach → Účty.`);
-    return h('div', { class: 'cnote' }, h('button', { class: 'primary', onclick: () => writeArchived(r) }, T('Odpovedať mailom')));
+    if (!mailAccounts().some((l) => l.app.id === to.app)) return [stashView(r), h('div', { class: 'cnote' }, T`Odpovedať mailom sa dá po pripojení ${app.name} v Nastaveniach → Účty.`)];
+    return [stashView(r), h('div', { class: 'cnote' }, h('button', { class: 'primary', onclick: () => writeArchived(r) }, T('Odpovedať mailom')))];
   }
   const reach = reachOf.get(r.id);
   if (!reach || (reach.state !== 'loading' && Date.now() - reach.at > REACH_TTL)) {
@@ -9668,7 +9674,9 @@ function writeArchived(r) {
   const ofApp = mailAccounts().filter((l) => l.app.id === to.app);
   const from = ofApp.find((l) => l.name === to.account || l.id === to.account) || ofApp[0];
   if (!from) return;
-  return openMail(to.mail, to.subject, from.key);
+  openMail(to.mail, to.subject, from.key);
+  // An answer goes into the thread (In-Reply-To its newest mail), unless the form already held a mail to someone else.
+  if (S.mail && !S.mail.sent && !S.mail.stash && S.mail.to.trim().toLowerCase() === to.mail.toLowerCase()) Object.assign(S.mail, { reply: r.id, replyFrom: from.key });
 }
 
 /** The old chat's history now belongs to the live room: the archive pages it under that room, and the old chat
@@ -11363,7 +11371,7 @@ function mailView() {
   const head = h('div', { class: 'chead' },
     h('button', { class: 'back', title: T('Späť'), onclick: closeThread }, '‹'),
     h('div', { class: 'icon mailicon' }, icon('mail')),
-    h('div', { class: 'ctitle' }, h('b', {}, T('Nový mail')), h('small', {}, h('img', { src: mailApp().icon, alt: '' }), appLabel(mailApp()))));
+    h('div', { class: 'ctitle' }, h('b', {}, m.reply && sender?.key === m.replyFrom ? T('Odpoveď mailom') : T('Nový mail')), h('small', {}, h('img', { src: mailApp().icon, alt: '' }), appLabel(mailApp()))));
   if (m.sent) {
     return h('div', { class: 'detail chat mail' }, head,
       h('div', { class: 'msgs' }, h('div', { class: 'cstart' }, m.sent,
@@ -11380,6 +11388,9 @@ function mailView() {
           sender ? null : h('option', { value: '', selected: true, disabled: true }, T('vyber účet (pôvodný už nie je pripojený)')),
           accounts.map((l) => h('option', { value: l.key, selected: l.key === sender?.key }, new Set(accounts.map((x) => x.app)).size > 1 ? `${l.name} (${l.app.name})` : l.name))))
         : h('div', { class: 'mfield' }, h('span', {}, T('Od')), h('span', { class: 'mfrom' }, accounts[0].name)),
+      m.reply ? h('div', { class: 'note', 'data-key': 'mreply' }, sender?.key === m.replyFrom
+        ? T`Odpoveď vo vlákne ${mailThreadTitle(m.reply)}`
+        : T`Z iného účtu, ako na ktorý vlákno ${mailThreadTitle(m.reply)} prišlo, odíde ako nový mail.`) : null,
       field('to', 'Komu', { placeholder: T('adresa@gmail.com, ďalšia@…'), type: 'email', multiple: true }),
       field('cc', T('Kópia')),
       field('subject', T('Predmet')),
@@ -11415,14 +11426,68 @@ async function sendMail() {
       const c = await fileContent(f);
       return { url: c.url, name: f.name, mimetype: c.info.mimetype };
     }));
-    await prov(sender.app, 'POST', `/send/${q(sender.id)}`, { to: m.to, cc: m.cc, subject: m.subject, text: m.text, files: uploaded });
-    S.mail = { from: sender.key, sent: T`Mail odišiel z ${sender.name} na ${m.to.trim()}. ${sender.app.name} ho má v Odoslanej pošte.` };
+    const reply = m.reply && sender.key === m.replyFrom ? m.reply : '';
+    await prov(sender.app, 'POST', `/send/${q(sender.id)}`, { to: m.to, cc: m.cc, subject: m.subject, text: m.text, files: uploaded, ...(reply ? { reply } : {}) });
+    if (m.stash) stashDo({ op: 'del', id: m.stash }); // the draft it was made from is done
+    S.mail = { from: sender.key, sent: reply ? T`Odpoveď odišla z ${sender.name} na ${m.to.trim()} do vlákna ${mailThreadTitle(reply)}. ${sender.app.name} ju má v Odoslanej pošte.`
+      : T`Mail odišiel z ${sender.name} na ${m.to.trim()}. ${sender.app.name} ho má v Odoslanej pošte.` };
     S.attach.delete(MAIL);
   } catch (err) {
     m.error = err?.message || T('Mail neodišiel. Skús to znova.');
   }
   m.sending = false;
   render();
+}
+
+/** A stashed draft that is a mail: an answer in a mail thread, or a new mail (`weft draft --mail`, room „mail:new“). */
+const isMailDraft = (it) => it.room === MAIL || (it.room.startsWith('archive:') && MAIL_APPS.includes(S.rooms.get(it.room)?.app));
+/** A mail thread's subject, as its inbox row shows it. */
+const mailThreadTitle = (id) => { const t = S.rooms.get(id)?.bridgeName || ''; return `„${t.includes(' · ') ? t.slice(t.indexOf(' · ') + 3) : t || T('vlákno')}“`; };
+/** Rooms with something stashed (an old mail thread with a draft is shown in the inbox). */
+function stashedRooms() {
+  const view = stashNow();
+  if (stashMemo.rooms?.view !== view) stashMemo.rooms = { view, set: new Set((view.items || []).map((it) => it.room)) };
+  return stashMemo.rooms.set;
+}
+
+/** A mail's draft goes into the mail form: an answer in its thread (to its newest sender, from the account it came to,
+ *  In-Reply-To its newest mail) or a new mail. It stays in the stash until that mail is sent, so closing the form or a
+ *  reload loses nothing; sending it from the form takes it out. */
+async function takeMailDraft(it) {
+  if (S.mail?.stash === it.id && !S.mail.sent) { S.overlay = null; select(MAIL); return render(); }
+  const r = it.room === MAIL ? null : S.rooms.get(it.room);
+  const thread = r?.archiveTo?.mail ? r.archiveTo : null;
+  const want = it.mail || (thread && { to: thread.mail, subject: thread.subject, from: '' });
+  if (!want) return;
+  // The thread's account (as „Odpovedať mailom“), else the one the agent named, else the first.
+  const ofApp = thread ? mailAccounts().filter((l) => l.app.id === thread.app) : [];
+  const from = (thread && (ofApp.find((l) => l.name === thread.account || l.id === thread.account) || ofApp[0])?.key) || want.from || mailFrom()?.key || '';
+  if (mailUnsent() && !confirm(T`Máš rozpísaný mail${S.mail.to?.trim() ? T` pre ${S.mail.to.trim()}` : ''}. Zahodiť ho a otvoriť koncept?`)) return;
+  S.attach.delete(MAIL);
+  S.overlay = null;
+  S.mail = { from, to: want.to || '', cc: want.cc || '', subject: want.subject || '', text: it.body || '', stash: it.id, ...(r ? { reply: r.id, replyFrom: from } : {}) };
+  select(MAIL);
+  S.focusComposer = false;
+  render();
+  setTimeout(() => document.querySelector('[data-root="mail:text"]')?.focus());
+  if (!it.files?.length) return;
+  try {
+    const files = await stashedFiles(it);
+    if (S.mail?.stash === it.id) { S.attach.set(MAIL, [...(S.attach.get(MAIL) || []), ...files]); render(); }
+  } catch {
+    if (S.mail?.stash === it.id) { S.mail.error = T('Prílohy konceptu sa nepodarilo stiahnuť; ostali v Odložených, pridaj ich znova alebo skús koncept otvoriť neskôr.'); render(); }
+  }
+}
+
+/** New mails' drafts (`weft draft --mail`) over the list: a click opens one in the mail form, the bin deletes it. */
+function newMailDrafts() {
+  return stashFor([MAIL]).map((it) => h('div', { class: 'banner draft', 'data-key': `maildraft:${it.id}`, title: T('Otvoriť koncept mailu'), onclick: () => takeMailDraft(it) },
+    icon('mail'), h('span', {}, h('b', {}, T('Koncept mailu')), ` ${it.mail?.to || ''}${it.mail?.subject ? ` · ${it.mail.subject}` : ''}`,
+      it.by ? h('small', {}, ` · ${T`od ${it.by === 'agent' ? T('agenta') : it.by}`}`) : null),
+    h('button', { title: T('Zmazať koncept mailu'), 'aria-label': T('Zmazať koncept mailu'), onclick: (e) => {
+      e.stopPropagation();
+      if (confirm(T`Zmazať koncept mailu${it.mail?.to ? T` pre ${it.mail.to}` : ''}?`)) { stashDo({ op: 'del', id: it.id }); render(); }
+    } }, icon('trash'))));
 }
 
 function remindView(o) {
