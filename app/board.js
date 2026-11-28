@@ -14,8 +14,9 @@ const LINK = /^https?:\/\/\S+$/;
 export function statusText(it) {
   const pct = it.total ? Math.min(99, Math.floor((it.got / it.total) * 100)) : 0;
   const targets = it.targets || [];
-  // A device that has it asks its user (files) or shows it until closed (text); then it answers.
-  if (it.status === 'sending' && (!targets.length || targets.some((t) => t.status === 'sending'))) return T`posiela sa ${pct} %`;
+  // A device that has it asks its user (files) or shows it until closed (text); then it answers. With several devices
+  // at different steps each says its own.
+  if (it.status === 'sending' && targets.every((t) => t.status === 'sending')) return T`posiela sa ${pct} %`;
   if (it.status === 'receiving') return T`prijíma sa ${pct} %`;
   if (it.dir === 'in') return { partial: T('prišla len časť'), stopped: T('prerušené'), cancelled: T('zrušené odosielateľom') }[it.status] || '';
   const one = (s) => ({

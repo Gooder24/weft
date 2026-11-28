@@ -207,7 +207,11 @@ function createPeer(opts) {
   // never listened, so it gets a new one.
   const usable = (t) => { try { nodeTls.createSecureContext({ cert: t.cert, key: t.key }); return true; } catch { return false; } };
   if (!st.tls?.cert || !st.tls?.key || !usable(st.tls)) { st.tls = makeIdentity(); st.fingerprint = st.tls.fingerprint; }
-  for (const it of st.items) if (['sending', 'receiving'].includes(it.status)) it.status = 'stopped'; // the app quit midway
+  for (const it of st.items) { // the app quit midway: the item and every device it had not finished with
+    if (!['sending', 'receiving'].includes(it.status)) continue;
+    it.status = 'stopped';
+    for (const t of it.targets || []) if (['sending', 'waiting'].includes(t.status)) t.status = 'stopped';
+  }
   // State of an earlier version may hold one certificate under two spellings: one record (the HTTPS one, which pins
   // the certificate, else the newer), a default only if both were.
   const better = (x, y) => ((x.protocol === 'https') !== (y.protocol === 'https') ? (x.protocol === 'https' ? x : y) : x.seen > y.seen ? x : y);
@@ -239,6 +243,7 @@ function createPeer(opts) {
   let session = null; // the one transfer being received
   const jobs = new Map(); // files being received (and their requests), which stop() cuts off and waits for
   const running = new Map(); // item id → AbortController of its send, which Delete and stop() abort
+  const sends = new Set(); // sends under way; stop() waits for them to tell a device they were cut off
   let asking = null; // { id, resolve, ... } files from outside the tailnet waiting for Prijať
   let saveTimer = null;
   let stateTimer = null;
@@ -579,9 +584,13 @@ function createPeer(opts) {
       files: files?.map((f) => ({ name: f.name, size: f.size, type: f.type, path: f.path })),
       targets: targets.map((d) => ({ ...who(d), status: 'sending' })) });
     emit('state');
-    run(item, targets);
+    go(item, targets);
     return { id: item.id };
   }
+  const go = (item, targets) => {
+    const p = run(item, targets).catch((err) => log('board send', err.message)).finally(() => sends.delete(p));
+    sends.add(p);
+  };
 
   async function run(item, targets) {
     const payload = item.text != null ? { text: item.text } : { files: item.files };
@@ -594,6 +603,7 @@ function createPeer(opts) {
       const res = await sendOne(dev, payload, (n) => { item.got += n; emitSoon(); }, { signal: ctl.signal, stage });
       Object.assign(target(), res);
       if (res.status !== 'offline' && res.status !== 'stopped') { dev.seen = Date.now(); }
+      if (!ctl.signal.aborted) emit('state'); // the page hears each device's outcome while others still wait
     }));
     running.delete(item.id);
     if (stopped || !st.items.includes(item)) return; // deleted while it went, or the app quits (it starts „stopped“)
@@ -615,7 +625,7 @@ function createPeer(opts) {
     item.status = 'sending';
     item.got = 0;
     emit('state');
-    run(item, targets).catch((err) => log('board retry', err.message));
+    go(item, targets);
     return true;
   }
 
@@ -857,11 +867,13 @@ function createPeer(opts) {
     if (session) endSession('stopped');
     if (asking) asking.resolve(false);
     for (const c of running.values()) c.abort();
+    const leaving = [...sends]; // a device that was taking files hears /cancel, so it is not left „receiving“
     for (const r of jobs.values()) r.destroy();
     await Promise.all([...jobs.keys()]); // cut off, they only clean up or name a file that arrived whole
     clearTimeout(saveTimer);
     await saving; // a write in flight must not land after the last one
     try { fs.writeFileSync(statePath, JSON.stringify(st), { mode: 0o600 }); } catch { /* no disk */ }
+    await Promise.all(leaving);
     await listening;
     for (const c of conns) c.destroy();
     await Promise.all([...servers, ...retired].map((s) => new Promise((r) => { s.close(r); s.closeAllConnections?.(); })));

@@ -337,12 +337,59 @@ const settled = (p, id) => until(() => { const it = item(p, id); return it && ![
     held[3].res.writeHead(204); held[3].res.end();
     await settled(s, h2.id);
     assert.deepEqual(s.events.slice(from).filter((e) => e.type === 'sent').map((e) => e.item.id), [h2.id]);
-    // Quitting the app drops a wait too.
-    await s.send({ text: 'pri zatvorení' });
-    await until(() => held.length === 5);
+    // Quitting the app drops a wait too, and the next start says the item and its device were cut off.
+    const q = await s.send({ text: 'pri zatvorení' });
+    await until(() => held.length === 5 && item(s, q.id).targets[0].status === 'waiting');
     await s.stop();
     await until(() => closed.has(held[4]));
+    const again = await peer('slow');
+    assert.equal(item(again, q.id).status, 'stopped');
+    assert.deepEqual(item(again, q.id).targets.map((x) => x.status), ['stopped']);
+    await again.stop();
     await new Promise((r) => { srv.close(r); srv.closeAllConnections(); });
+  });
+
+  await check('with two devices the page hears the one that answered while the other still waits; quitting mid-upload tells the device', async () => {
+    // Two phones on one port, at 127.0.0.1 and 127.0.0.2, each with its own certificate.
+    const port = await freePort();
+    const phones = await Promise.all(['127.0.0.1', '127.0.0.2'].map(async (host, n) => {
+      const ph = { host, held: [], hits: [] };
+      ph.srv = https.createServer({ ...selfSigned(`two${n}`), requestCert: true, rejectUnauthorized: false }, (req, res) => {
+        const chunks = [];
+        const u = new URL(req.url, 'https://x');
+        ph.hits.push(u.pathname + (u.pathname.endsWith('/cancel') ? `?${u.searchParams}` : ''));
+        if (u.pathname === `${API}/upload`) { ph.held.push({ res, upload: true }); req.resume(); return; } // takes the bytes, never says done
+        req.on('data', (c) => chunks.push(c));
+        req.on('end', () => {
+          if (u.pathname === `${API}/register`) { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ alias: `Mobil ${n}`, version: '2.1', deviceModel: 'x', deviceType: 'mobile', fingerprint: 'x', download: false })); }
+          if (u.pathname === `${API}/prepare-upload`) return ph.held.push({ body: JSON.parse(Buffer.concat(chunks)), res });
+          res.writeHead(200); res.end();
+        });
+      });
+      await new Promise((r) => ph.srv.listen(port, host, r));
+      return ph;
+    }));
+    const w = await peer('two', { peers: phones.map((x) => ({ ip: x.host, online: true })), probePort: port });
+    await w.scan();
+    assert.equal(w.state().devices.filter((d) => d.default).length, 2);
+    // What the page gets is a copy made when the event is sent (the shell sends it over IPC); the events keep live items.
+    const copies = [];
+    w.events.push = (e) => { copies.push(JSON.parse(JSON.stringify(e))); return Array.prototype.push.call(w.events, e); };
+    const t = await w.send({ text: 'obom' });
+    await until(() => phones.every((x) => x.held.length === 1));
+    phones[0].held[0].res.writeHead(204); phones[0].held[0].res.end();
+    const told = await until(() => copies.find((e) => e.type === 'state' && e.state.items.find((i) => i.id === t.id)?.targets.map((x) => x.status).sort().join() === 'done,waiting'));
+    assert.equal(told.state.items.find((i) => i.id === t.id).status, 'sending');
+    phones[1].held[0].res.writeHead(204); phones[1].held[0].res.end();
+    assert.equal((await settled(w, t.id)).status, 'done');
+    // A file both accept; while its bytes go, the app quits: by the time stop() is done each device heard /cancel.
+    const f = await w.send({ files: [sendFile('velky.bin', crypto.randomBytes(300_000))] });
+    await until(() => phones.every((x) => x.held.length === 2));
+    for (const [n, x] of phones.entries()) { x.held[1].res.writeHead(200, { 'Content-Type': 'application/json' }); x.held[1].res.end(JSON.stringify({ sessionId: `S${n}`, files: { [Object.keys(x.held[1].body.files)[0]]: 'tok' } })); }
+    await until(() => phones.every((x) => x.held.some((h) => h.upload)) && item(w, f.id).targets.every((x) => x.status === 'sending'));
+    await w.stop();
+    assert.deepEqual(phones.map((x) => x.hits.filter((h) => h.includes('/cancel'))), [['/api/localsend/v2/cancel?sessionId=S0'], ['/api/localsend/v2/cancel?sessionId=S1']]);
+    for (const x of phones) await new Promise((r) => { x.srv.close(r); x.srv.closeAllConnections(); });
   });
 
   await check('a device that takes the connection but never finishes TLS is unreachable within seconds, not minutes', async () => {
