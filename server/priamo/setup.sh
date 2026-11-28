@@ -54,6 +54,8 @@ CONF=/etc/yggdrasil/yggdrasil.conf
 sudo test -s "$CONF" || sudo sh -c "umask 077; yggdrasil -genconf > $CONF"
 peers=$(printf '%s\n' $PEERS | jq -R . | jq -sc .)
 # The file holds the node's private key, which is its address: a new file is written only when it kept the key.
+sudo grep -q PrivateKey "$CONF" || { echo "setup.sh: $CONF nemá PrivateKey, nič nemením" >&2; exit 1; }
+trap 'rm -f "$DIR/yggdrasil.conf.old" "$DIR/yggdrasil.conf.new"' EXIT
 umask 077
 sudo yggdrasil -useconffile "$CONF" -normaliseconf -json > "$DIR/yggdrasil.conf.old"
 jq --argjson peers "$peers" '.Peers = $peers | .Listen = [] | .MulticastInterfaces = [] | .IfName = "ygg0"
@@ -64,7 +66,6 @@ key=$(jq -r .PrivateKey "$DIR/yggdrasil.conf.old")
   { echo "setup.sh: nový yggdrasil.conf by stratil kľúč uzla, nechávam starý" >&2; exit 1; }
 # The service runs as the user yggdrasil.
 sudo install -m 640 -o root -g yggdrasil "$DIR/yggdrasil.conf.new" "$CONF"
-rm -f "$DIR/yggdrasil.conf.old" "$DIR/yggdrasil.conf.new"
 sudo systemctl enable -q yggdrasil
 sudo systemctl restart yggdrasil
 ADDR=$(sudo yggdrasil -useconffile "$CONF" -address)
