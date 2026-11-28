@@ -616,7 +616,7 @@ async function flushOut() {
         break;
       }
       // Again as the same bubble (a forward's note follows it), sending what was kept (a reply keeps its relation).
-      failLocal(r, it.txn, err, () => sendAgain(r, 'm.room.message', shown.content, async () => it.content));
+      failLocal(r, it.txn, err, () => sendAgain(r, 'm.room.message', shown.content, async () => it.content, it.txn));
     }
     saveOutbox(outbox().filter((x) => x.txn !== it.txn));
   }
@@ -2674,8 +2674,10 @@ async function sendChat(r, given = null) {
   // Read now: the people the names stand for are this chat's, whatever comes later.
   const said = textMessage(r, text, draft.search(/\S|$/), given ? given.key ?? null : r.id);
   const parts = [...files.map((file) => ({ file })), ...(text ? [{ text }] : [])];
-  for (const part of parts) {
-    part.txn = `ep${Date.now()}${Math.random().toString(36).slice(2, 8)}`;
+  const sig = JSON.stringify({ text, reply: reply?.['m.in_reply_to']?.event_id || null });
+  const again = given ? null : retryOf(r.id, sig, files);
+  for (const [i, part] of parts.entries()) {
+    part.txn = again?.txns[i] || txnId();
     const image = part.file?.type.startsWith('image/');
     const shown = !part.file ? said
       : image ? { msgtype: 'm.image', body: part.file.name, info: await imageSize(part.file), local: localUrl(part.file) }
@@ -2724,6 +2726,7 @@ async function sendChat(r, given = null) {
           if (text) setDraft(r.id, now.trim() ? `${draft.trimEnd()}\n${now}` : draft);
           if (files.length) S.attach.set(r.id, [...files, ...(S.attach.get(r.id) || [])]);
           if (replyWas && !S.replyTo) S.replyTo = replyWas;
+          if (!now.trim()) boxRetry.set(r.id, { sig, files, txns: parts.map((p) => p.txn), at: Date.now() });
         }
         if (!err?.held && isNetErr(err)) { goOffline(); alert(T('Teraz to nejde, skús to znova, keď bude sieť.')); }
         else if (!err?.held) alert(T`Odpoveď neodišla (${err?.data?.error || err?.message || T('server ju odmietol')}). Ostala v poli aj so súbormi.`);
@@ -2740,7 +2743,7 @@ async function sendChat(r, given = null) {
         const shown = r.pending.get(p.txn)?.content;
         const rel = carries(p) ? { 'm.relates_to': reply } : {};
         failLocal(r, p.txn, err, () => sendAgain(r, 'm.room.message', shown,
-          async () => ({ ...(p.file ? await fileContent(p.file) : said), ...rel })));
+          async () => ({ ...(p.file ? await fileContent(p.file) : said), ...rel }), p.txn));
       }
       const shown = wait && r.pending.get(wait.txn);
       if (wait && outbox().some((x) => x.txn === wait.txn) && shown) { shown.waiting = true; r.version++; }
@@ -2753,6 +2756,18 @@ async function sendChat(r, given = null) {
 }
 
 const txnId = () => `ep${Date.now()}${Math.random().toString(36).slice(2, 8)}`;
+
+// A message that did not go comes back into its box (a chat's text with its files and reply, an EduPage reply or
+// message). Sent again unchanged within RETRY_MS its parts keep their transaction ids, so one the server took after
+// all, with only its answer lost, is given back by the homeserver instead of going out (and to the network) twice.
+const RETRY_MS = 15 * 60e3;
+const boxRetry = new Map(); // box key -> { sig, files, txns, uploaded?, at }
+function retryOf(key, sig, files) {
+  const was = boxRetry.get(key);
+  boxRetry.delete(key);
+  return was && was.sig === sig && Date.now() - was.at < RETRY_MS
+    && was.files.length === files.length && was.files.every((f, i) => f === files[i]) ? was : null;
+}
 
 /** Right before a message with a reply goes: throws (`held`, not a network error) and says why when the reply may
  *  not go any more (heldReply asks the homeserver). */
@@ -2773,10 +2788,11 @@ function failLocal(r, txn, err, retry) {
   render();
 }
 
-/** Sends a message again as a new one, under a new transaction id; `build` gives its content (an upload for a
- *  file, so a failed upload can be tried again too). A failure leaves it in the chat to try once more. */
-async function sendAgain(r, type, shown, build) {
-  const txn = txnId();
+/** Sends a message again; `build` gives its content (an upload for a file, so a failed upload can be tried again
+ *  too). „Znova odoslať“ of a bubble from this window passes its own `txn`: if the first try reached the server and
+ *  only its answer was lost, the homeserver gives back that event instead of a second message. A new copy (a
+ *  forward, a message the bridge refused) gets a new one. A failure leaves it in the chat to try once more. */
+async function sendAgain(r, type, shown, build, txn = txnId()) {
   r.pending.set(txn, { event_id: txn, type, pending: true, sender: S.userId, origin_server_ts: Date.now(), content: shown });
   r.version++;
   render();
@@ -2794,7 +2810,7 @@ async function sendAgain(r, type, shown, build) {
       queueOut(r, txn, content);
       return render();
     }
-    failLocal(r, txn, err, () => sendAgain(r, type, shown, build));
+    failLocal(r, txn, err, () => sendAgain(r, type, shown, build, txn));
   }
 }
 
@@ -2872,7 +2888,7 @@ async function sendGif(r, g) {
   } catch (err) {
     // Held: the text being written still answers the same message, so Enter on it asks again.
     if (err?.held && replyWas && !S.replyTo) { S.replyTo = replyWas; render(); }
-    failLocal(r, txn, err, () => sendAgain(r, 'm.room.message', shown, build));
+    failLocal(r, txn, err, () => sendAgain(r, 'm.room.message', shown, build, txn));
   }
 }
 
@@ -5315,23 +5331,28 @@ setInterval(() => {
 
 // ------------------------------------------------------------------ actions
 
+const echoOf = (txn) => [...S.events.values()].find((e) => e.unsigned?.transaction_id === txn);
+
 async function sendReply(rootId) {
   const text = (S.drafts.get(rootId) || '').trim();
   const files = S.attach.get(rootId) || [];
   if (!text && !files.length) return;
-  const txn = `ep${Date.now()}${Math.random().toString(36).slice(2, 8)}`;
   // Without text EduPage still gets the files; the message then says what they are.
   const content = { msgtype: 'm.text', body: text || files.map((f) => f.name).join(', '), 'm.relates_to': { 'm.in_reply_to': { event_id: rootId } } };
   if (S.account[EDU_REPLIES]?.[rootId] === 'all') content[REPLY_TO_KEY] = S.eduTo.get(rootId) === 'all' ? 'all' : 'one';
   S.eduTo.delete(rootId); // everyone is chosen again for each reply, never carried over to the next one
+  const sig = JSON.stringify(content);
+  const again = retryOf(rootId, sig, files);
+  const txn = again?.txns[0] || txnId();
   S.pending.set(txn, { event_id: txn, pending: true, sender: S.userId, origin_server_ts: Date.now(), content: { ...content, [EDU_FILES]: files.map((f) => ({ name: f.name })) } });
   deleteDraft(rootId);
   S.attach.delete(rootId);
   render();
   try {
-    if (files.length) content[EDU_FILES] = await eduUpload(files);
+    if (files.length) content[EDU_FILES] = again?.uploaded || await eduUpload(files);
     await call('PUT', `/rooms/${q(S.roomId)}/send/m.room.message/${txn}`, content);
   } catch {
+    if (!S.pending.has(txn) || echoOf(txn)) return render(); // its echo came: the server has it, only the answer was lost
     S.pending.delete(txn);
     // The reply comes back into the box with its files and choice, unless a new one was started meanwhile.
     const fresh = !(S.drafts.get(rootId) || '').trim() && !(S.attach.get(rootId) || []).length;
@@ -5339,6 +5360,7 @@ async function sendReply(rootId) {
       setDraft(rootId, text);
       if (files.length) S.attach.set(rootId, files);
       if (content[REPLY_TO_KEY] === 'all') S.eduTo.set(rootId, 'all');
+      boxRetry.set(rootId, { sig, files, txns: [txn], uploaded: content[EDU_FILES], at: Date.now() });
     }
     alert(fresh ? T('Odpoveď sa neodoslala. Skús to znova.') : T`Odpoveď sa neodoslala: ${text || files.map((f) => f.name).join(', ')}`);
     render();
@@ -5839,6 +5861,9 @@ function eduParts(ev) {
   return { text: body.slice(0, m.index).trim(), files };
 }
 
+/** What a screen reader says for a picture, video or sticker button: its kind, then its name when it has one. */
+const mediaLabel = (kind, name) => (name ? `${kind}: ${name}` : kind);
+
 /** Files of an EduPage message or homework: pictures show whole width, a tap opens them in the viewer. */
 function eduFiles(ev) {
   const { files } = eduParts(ev);
@@ -5852,7 +5877,7 @@ function eduFiles(ev) {
       }
       if (EDU_PICTURE.test(f.name)) {
         if (!f.state) eduAttFetch(f.src);
-        return h('span', { class: 'mimg', title: f.name }, h('span', { class: 'mwait' }));
+        return h('span', { class: 'mimg', title: f.name, role: 'img', 'aria-label': mediaLabel(T('Obrázok'), f.name) }, h('span', { class: 'mwait' }));
       }
       return h('button', {
         class: 'mfile', disabled: f.state === 'loading',
@@ -5863,7 +5888,7 @@ function eduFiles(ev) {
     const picture = pictures.find((p) => p.event_id === `${ev.event_id}#${i}`);
     if (!picture) return h('button', { class: 'mfile', onclick: () => download(f.url, f.name) }, icon('file'), f.name || T('Súbor'));
     return h('button', {
-      class: 'mimg', title: f.name || '', style: f.w && f.h ? { aspectRatio: `${f.w} / ${f.h}` } : {},
+      class: 'mimg', title: f.name || '', 'aria-label': mediaLabel(T('Obrázok'), f.name), style: f.w && f.h ? { aspectRatio: `${f.w} / ${f.h}` } : {},
       onclick: () => openOverlay('image', { edu: ev.event_id, event: picture.event_id, zoom: 1, x: 0, y: 0 }),
     }, mediaInPlace(f.url, 0, (url) => h('img', { src: url, alt: f.name || '' }), () => h('span', { class: 'mwait' })));
   }));
@@ -6610,28 +6635,29 @@ function bubbleBody(r, m, ev) {
     reelContent.set(ev.event_id, c['com.beeper.unresolved_media']);
     return [h('button', { class: 'mimg video', style: size(c.info), 'data-reel': state ? null : ev.event_id,
       onclick: ev.pending ? null : (e) => { e.stopPropagation(); if (state !== 'busy') fetchReel(ev.event_id); } },
-    mediaInPlace(c.url, 480, (url) => h('img', { src: url, alt: '' }), () => h('span', { class: 'mwait' })),
+    mediaInPlace(c.url, 480, (url) => h('img', { src: url, alt: T('Video') }), () => h('span', { class: 'mwait' })),
     h('span', { class: 'play' }, icon('play', 48)),
     h('span', { class: 'reelstate' }, state === 'failed' ? T('Video sa nestiahlo · skúsiť znova') : T('Sťahujem video…'))), caption, shared];
   }
   if (ev.type === 'm.sticker' || c.msgtype === 'm.image') {
     // A thumbnail of a GIF stands still: GIFs show whole.
     const picture = (url) => h('img', { src: url, alt: c.body || '' });
-    return [h('button', { class: 'mimg', style: size(c.info, ev.type === 'm.sticker' ? 180 : 320), onclick: view },
+    return [h('button', { class: 'mimg', style: size(c.info, ev.type === 'm.sticker' ? 180 : 320), onclick: view,
+      'aria-label': mediaLabel(ev.type === 'm.sticker' ? T('Nálepka') : T('Obrázok'), c.body) },
       c.local ? picture(c.local) : mediaInPlace(c.url, c.info?.mimetype === 'image/gif' ? 0 : 480, picture, () => h('span', { class: 'mwait' }))),
     carouselStrip(r, ev, c), caption, shared];
   }
   if (c.msgtype === 'm.video' && (c.info?.['fi.mau.gif'] || c.info?.['fi.mau.loop'])) {
     const url = media(c.url);
     const thumb = media(c.info?.thumbnail_url, 480);
-    return [h('button', { class: 'mimg gifv', style: size(c.info), onclick: view },
+    return [h('button', { class: 'mimg gifv', style: size(c.info), onclick: view, 'aria-label': mediaLabel('GIF', c.body === 'GIF' ? '' : c.body) },
       url ? gifVideo(ev.event_id, url) : thumb ? h('img', { src: thumb, alt: '' }) : null), carouselStrip(r, ev, c), caption, shared];
   }
   if (c.msgtype === 'm.video') {
     const thumb = media(c.info?.thumbnail_url, 480);
     // WhatsApp sends videos without a thumbnail: one up to 25 MB is fetched and shows its own early frame.
     const still = !c.info?.thumbnail_url && (c.info?.size || 0) <= 25e6 ? media(c.url) : '';
-    return [h('button', { class: 'mimg video', style: size(c.info), onclick: view },
+    return [h('button', { class: 'mimg video', style: size(c.info), onclick: view, 'aria-label': mediaLabel(T('Video'), c.body) },
       thumb ? h('img', { src: thumb, alt: '' }) : still ? videoStill(ev.event_id, still) : null,
       h('span', { class: 'play' }, icon('play', 48))), carouselStrip(r, ev, c), caption, shared];
   }
@@ -6661,7 +6687,8 @@ function bubbleBody(r, m, ev) {
       const it = pictures.find((x) => x.file === f);
       if (!it) return h('button', { class: 'mfile', onclick: () => archiveDownload(f) }, icon('file'), `${f.name}${sizeNote(f.size)}`);
       const video = it.content.msgtype === 'm.video';
-      return h('button', { class: `mimg${video ? ' video' : ''}`, style: size(it.content.info), title: f.name, onclick: () => openViewer(r, it.event_id) },
+      return h('button', { class: `mimg${video ? ' video' : ''}`, style: size(it.content.info), title: f.name, onclick: () => openViewer(r, it.event_id),
+        'aria-label': mediaLabel(video ? T('Video') : T('Obrázok'), f.name) },
         mediaInPlace(it.content.url, f.mime === 'image/gif' ? 0 : 480, (url) => h('img', { src: url, alt: video ? '' : f.name }), () => h('span', { class: 'mwait' })),
         video ? h('span', { class: 'play' }, icon('play', 48)) : null);
     }),
@@ -7311,7 +7338,7 @@ async function sendVoice(r, recorded, ms, levels) {
   } catch (err) {
     // Held: the text being written still answers the same message, so Enter on it asks again.
     if (err?.held && replyWas && !S.replyTo) { S.replyTo = replyWas; render(); }
-    failLocal(r, txn, err, () => sendAgain(r, 'm.room.message', shown, build));
+    failLocal(r, txn, err, () => sendAgain(r, 'm.room.message', shown, build, txn));
   }
 }
 
@@ -10087,7 +10114,6 @@ async function sendEdu() {
   const text = (S.drafts.get(key) || '').trim();
   const files = S.attach.get(key) || [];
   if ((!text && !files.length) || !S.roomId || !n.to.length) return;
-  const txn = `ep${Date.now()}${Math.random().toString(36).slice(2, 8)}`;
   const content = { msgtype: 'm.text', body: text || files.map((f) => f.name).join(', '), [TO_KEY]: eduToLabel(n.to) };
   if (n.to.every((c) => c.id)) {
     content[RECIPIENTS_KEY] = n.to.map((c) => (c.withParents && c.parents ? c.parents : c.id));
@@ -10096,21 +10122,30 @@ async function sendEdu() {
     const ghost = n.to.length === 1 && n.to[0].kind === 'teacher' && S.eduSchool.recipients.find((r) => r.id === n.to[0].id)?.ghost;
     if (ghost) content[RECIPIENT_KEY] = ghost;
   } else content[RECIPIENT_KEY] = n.to[0].ghost;
+  const sig = JSON.stringify(content);
+  const again = retryOf(key, sig, files);
+  const txn = again?.txns[0] || txnId();
   S.pending.set(txn, { event_id: txn, pending: true, sender: S.userId, origin_server_ts: Date.now(), content: { ...content, [EDU_FILES]: files.map((f) => ({ name: f.name })) } });
   deleteDraft(key);
   S.attach.delete(key);
   render();
-  try {
-    if (files.length) content[EDU_FILES] = await eduUpload(files);
-    const { event_id: id } = await call('PUT', `/rooms/${q(S.roomId)}/send/m.room.message/${txn}`, content);
+  const sent = (id) => {
     Object.assign(n, { to: [], important: false, replies: 'all' });
     saveEduNew();
     S.justSent = id;
     select(id);
+  };
+  try {
+    if (files.length) content[EDU_FILES] = again?.uploaded || await eduUpload(files);
+    const { event_id: id } = await call('PUT', `/rooms/${q(S.roomId)}/send/m.room.message/${txn}`, content);
+    sent(id);
   } catch {
+    const echo = echoOf(txn);
+    if (echo) return sent(echo.event_id); // the server has it, only the answer was lost
     S.pending.delete(txn);
     setDraft(key, text);
     if (files.length) S.attach.set(key, files);
+    boxRetry.set(key, { sig, files, txns: [txn], uploaded: content[EDU_FILES], at: Date.now() });
     alert(T('Správa sa neodoslala. Skús to znova.'));
     render();
   }
