@@ -21,7 +21,9 @@ Gmail looks like any other bridge there:
   POST /_matrix/provision/v3/login/cancel/<process>
   POST /_matrix/provision/v3/logout/<login>
   POST /_matrix/provision/v3/send/<login>   a new mail: {"to", "cc", "subject", "text",
-                                             "files": [{"url": mxc, "name", "mimetype"}]}
+                                             "files": [{"url": mxc, "name", "mimetype"}], "reply"?}
+                                             reply: a thread's archive id (archive:gmail:<account>:<X-GM-THRID>);
+                                             the mail answers its newest mail (In-Reply-To, References)
   GET  /_matrix/provision/v3/codes?since=<seq>&wait=<s>   long poll: {"seq", "ttl", "codes": [...]}
   POST /_matrix/provision/v3/codes/<id>/dismiss       copied or closed, on every device
   POST /_matrix/provision/v3/codes/mode/<login>       {"mode": "popup" | "notify" | "off"}
@@ -33,6 +35,7 @@ Only the admin Matrix user may call it. Sending goes through Gmail's SMTP with t
 Gmail itself keeps the mail in Sent; nothing else here writes to a mailbox.
 """
 import base64
+import email.policy
 import hashlib
 import imaplib
 import importlib.util
@@ -52,6 +55,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from email.message import EmailMessage
+from email.parser import BytesParser
 from email.utils import formatdate, getaddresses, make_msgid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -314,7 +318,48 @@ def media_file(token: str, mxc: str) -> bytes:
     return data
 
 
-def build_mail(sender: str, body: dict, token: str) -> EmailMessage:
+def reply_headers(creds: dict, thread) -> dict:
+    """In-Reply-To and References for an answer in one of this account's threads, named by its archive id
+    (archive:gmail:<account hash>:<X-GM-THRID>, as import_mail.py makes it), from the thread's newest mail that is
+    not a draft. Read-only: All Mail is examined, headers peeked."""
+    m = re.fullmatch(r"(?:archive:)?gmail:([0-9a-f]{20}):(\d+)", thread if isinstance(thread, str) else "")
+    if not m:
+        raise ApiError(400, "SK.KARCHI.INVALID_INPUT", "Vlákno, na ktoré mail odpovedá, nemá platné id.")
+    if m[1] != hashlib.sha256(creds["email"].encode()).hexdigest()[:20]:
+        raise ApiError(400, "SK.KARCHI.INVALID_INPUT", "Toto vlákno patrí inému Gmail účtu: odpovedz z toho, na ktorý prišlo.")
+    try:
+        conn = watch_login(creds)
+    except codes.AuthFailed:
+        raise ApiError(401, "SK.KARCHI.BAD_CREDENTIALS", "Gmail neprijal prihlásenie. Pripoj účet znova v Nastaveniach.") from None
+    except (OSError, imaplib.IMAP4.error):
+        raise ApiError(504, "SK.KARCHI.UNREACHABLE", "Gmail neodpovedá, mail neodišiel. Skús to o chvíľu.") from None
+    try:
+        box = next((row[2] for row in (re.fullmatch(rb'\(([^)]*)\) (?:"(?:[^"\\]|\\.)*"|NIL) (.+)', x or b"") for x in conn.list()[1])
+                    if row and b"\\All" in row[1].split()), None)
+        if box is None or conn.select(box.decode("ascii"), readonly=True)[0] != "OK":
+            raise ApiError(502, "SK.KARCHI.UNREACHABLE", "Gmail neukázal Všetky správy, mail neodišiel.")
+        found = (conn.uid("search", None, "X-GM-THRID", m[2], "NOT", "DRAFT")[1] or [b""])[0] or b""
+        uids = found.split()
+        if not uids:
+            raise ApiError(404, "SK.KARCHI.NOT_FOUND", "Gmail toto vlákno už nemá (zmazané?). Napíš nový mail.")
+        rows = conn.uid("fetch", uids[-1], "(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID REFERENCES)])")[1]
+        raw = next((r[1] for r in rows if isinstance(r, tuple)), b"")
+    except (OSError, imaplib.IMAP4.error):
+        raise ApiError(504, "SK.KARCHI.UNREACHABLE", "Gmail neodpovedá, mail neodišiel. Skús to o chvíľu.") from None
+    finally:
+        try:
+            conn.logout()
+        except (imaplib.IMAP4.error, OSError):
+            pass
+    head = BytesParser(policy=email.policy.default).parsebytes(raw, headersonly=True)
+    mid = " ".join(str(head.get("Message-ID") or "").split())
+    if not re.fullmatch(r"<[^<>\s]+>", mid):
+        raise ApiError(404, "SK.KARCHI.NOT_FOUND", "Posledný mail vlákna nemá Message-ID, odpoveď by do vlákna nepatrila. Napíš nový mail.")
+    refs = [x for x in re.findall(r"<[^<>\s]+>", str(head.get("References") or "")) if x != mid]
+    return {"In-Reply-To": mid, "References": " ".join(refs + [mid])}
+
+
+def build_mail(sender: str, body: dict, token: str, reply: dict | None = None) -> EmailMessage:
     to, cc = addresses(body.get("to")), addresses(body.get("cc"))
     if not to:
         raise ApiError(400, "SK.KARCHI.INVALID_INPUT", "Napíš, komu mail ide.")
@@ -331,6 +376,8 @@ def build_mail(sender: str, body: dict, token: str) -> EmailMessage:
     msg["Subject"] = subject.strip()
     msg["Date"] = formatdate(localtime=True)
     msg["Message-ID"] = make_msgid(domain=sender.rsplit("@", 1)[1])
+    for name, value in (reply or {}).items():
+        msg[name] = value
     msg.set_content(text)
     total = 0
     for f in files:
@@ -718,7 +765,8 @@ def route(method: str, parts: list[str], body: dict, token: str = "") -> dict:
                 creds = dict(ACCOUNTS.creds.get(login_id) or {})
             if not creds:
                 raise ApiError(404, "SK.KARCHI.NO_LOGIN", "Tento účet tu už nie je.")
-            send_mail(creds, build_mail(creds["email"], body, token))
+            reply = reply_headers(creds, body["reply"]) if body.get("reply") else None
+            send_mail(creds, build_mail(creds["email"], body, token, reply))
             return {}
         case "GET", ["codes"]:
             # Long poll: answers when a code comes or goes (seq differs from since), at the latest after wait s.

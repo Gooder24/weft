@@ -25,7 +25,8 @@ Provisioning speaks the subset of the mautrix bridgev2 API that Weft's Accounts 
   POST /<outlook|teams>/_matrix/provision/v3/login/step/<process>/<step>/user_input
   POST /<outlook|teams>/_matrix/provision/v3/login/cancel/<process>
   POST /<outlook|teams>/_matrix/provision/v3/logout/<login>
-  POST /outlook/_matrix/provision/v3/send/<login>     a new mail, as Gmail's: {"to", "cc", "subject", "text", "files"}
+  POST /outlook/_matrix/provision/v3/send/<login>     a new mail, as Gmail's: {"to", "cc", "subject", "text", "files",
+                                                        "reply"?: a thread's archive id, answered through createReply}
   GET  /<outlook|teams>/_matrix/provision/v3/consent   what each login may do, what waits, the admin's link
   POST /<outlook|teams>/_matrix/provision/v3/features  {"changes": {id: on}} or {"off": [CHOICES ids]}: what Weft
                                                         leaves out (both products)
@@ -856,6 +857,31 @@ def upload_in_session(url: str, data: bytes) -> dict:
     return answer
 
 
+def reply_target(key: str, thread, subject: str) -> str:
+    """The Graph id of the newest mail (not a draft) of the account's conversation that Weft's archive id names
+    (archive:outlook:<account hash>:<conversation hash>, as mail_row makes it). The archive keeps only hashes, so the
+    conversation is found by a search for its subject's words."""
+    m = re.fullmatch(r"(?:archive:)?outlook:([0-9a-f]{20}):([0-9a-f]{24})", thread if isinstance(thread, str) else "")
+    if not m:
+        raise ApiError(400, "SK.KARCHI.INVALID_INPUT", "Vlákno, na ktoré mail odpovedá, nemá platné id.")
+    creds = ACCOUNTS.get("outlook", key) or {}
+    if m[1] != short(str(creds.get("email") or "").lower()):
+        raise ApiError(400, "SK.KARCHI.INVALID_INPUT", "Toto vlákno patrí inému Outlook účtu: odpovedz z toho, na ktorý prišlo.")
+    words = re.sub(r'["\\]', " ", re.sub(r"(?i)^\s*((re|aw|odp|fwd?|tr)\s*:\s*)+", "", subject or "")).strip()
+    if not words:
+        raise ApiError(404, "SK.KARCHI.NOT_FOUND", "Vlákno bez predmetu Outlook nenájde. Napíš nový mail.")
+    try:
+        found = ACCOUNTS.graph("outlook", key, "GET", "/me/messages?$search=" + q(f'"{words}"') + "&$select=id,conversationId,receivedDateTime,isDraft&$top=100")
+    except GraphError:
+        raise ApiError(502, "SK.KARCHI.UNREACHABLE", "Outlook vlákno nenašiel, mail neodišiel. Skús to o chvíľu.") from None
+    except Throttled:
+        raise ApiError(504, "SK.KARCHI.UNREACHABLE", "Outlook teraz neprijíma, mail neodišiel. Skús to o chvíľu.") from None
+    hits = [x for x in found.get("value") or [] if not x.get("isDraft") and short(str(x.get("conversationId") or ""), 24) == m[2]]
+    if not hits:
+        raise ApiError(404, "SK.KARCHI.NOT_FOUND", "Outlook toto vlákno už nemá (zmazané?). Napíš nový mail.")
+    return max(hits, key=lambda x: str(x.get("receivedDateTime") or ""))["id"]
+
+
 def send_mail(key: str, body: dict, token: str) -> None:
     to, cc = recipients(body.get("to")), recipients(body.get("cc"))
     if not to:
@@ -875,17 +901,21 @@ def send_mail(key: str, body: dict, token: str) -> None:
         blobs.append((name, str(f.get("mimetype") or "") or mimetypes.guess_type(name)[0] or "application/octet-stream", data))
     message = {"subject": subject.strip(), "body": {"contentType": "Text", "content": text},
                "toRecipients": to, "ccRecipients": cc}
+    answers = reply_target(key, body["reply"], subject) if body.get("reply") else None
     call = lambda *a, **kw: ACCOUNTS.graph("outlook", key, *a, **kw)
     attachment = lambda name, kind, data: {"@odata.type": "#microsoft.graph.fileAttachment", "name": name,
                                            "contentType": kind, "contentBytes": base64.b64encode(data).decode()}
     try:
-        if total < SMALL_ATTACH:
+        if total < SMALL_ATTACH and not answers:
             message["attachments"] = [attachment(*b) for b in blobs]
             call("POST", "/me/sendMail", {"message": message, "saveToSentItems": True})
             return
-        # Bigger files go into a draft, each in its own upload session; the draft is sent last.
-        draft = call("POST", "/me/messages", message)["id"]
+        # Bigger files go into a draft, each in its own upload session; the draft is sent last. An answer is a draft
+        # Outlook makes in its conversation (createReply: In-Reply-To, References), with Weft's text, people and subject.
+        draft = call("POST", f"/me/messages/{q(answers)}/createReply", {})["id"] if answers else call("POST", "/me/messages", message)["id"]
         try:
+            if answers:
+                call("PATCH", f"/me/messages/{q(draft)}", message)
             for name, kind, data in blobs:
                 if len(data) < SMALL_ATTACH:
                     call("POST", f"/me/messages/{q(draft)}/attachments", attachment(name, kind, data))
