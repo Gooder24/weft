@@ -100,6 +100,9 @@ log_colors = false
 [global.tls]
 certs = "$DIR/cert.pem"
 key = "$DIR/key.pem"
+# Plain HTTP too, for Weft's Matrix bridge on 127.0.0.1 (it trusts no self-signed certificate). On the Yggdrasil
+# address only contacts get through, and Yggdrasil encrypts the way to them; federation goes out over HTTPS.
+dual_protocol = true
 EOF
 mkdir -p "$HOME/.config/systemd/user"
 cat > "$HOME/.config/systemd/user/$UNIT.service" <<EOF
