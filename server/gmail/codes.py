@@ -67,7 +67,7 @@ LABELED = re.compile(r"(?m)^(?P<label>[^\d\n]{1,40})\n[ \t]*(?P<code>[A-Z0-9]{5,
 # The label has to name a code itself ("Login Code", "Přihlašovací kód"), not only talk about verifying something,
 # and say it signs in or verifies: "Shipping code", "Kód predmetu" or "WiFi kód" over a word in capitals are no codes.
 # A code of letters only is believed only under a sign-in label, as Steam's ("Login Code"); "Security PIN" over "HTTPS" is none.
-LABEL_LOGIN = re.compile(r"\b(?:log[ -]?in|sign[ -]?in|prihlas\w*|přihlaš\w*)\b", re.I)
+LABEL_LOGIN = re.compile(r"\b(?:log[ -]?in|sign[ -]?in|steam guard|prihlas\w*|přihlaš\w*)\b", re.I)
 LABEL_WORD = re.compile(r"\b(?:code|k[oó]d|pin|otp|passcode)\b", re.I)
 LABEL_AUTH = re.compile(
     r"\b(?:log[ -]?in|sign[ -]?in|verif\w*|security|one[- ]time|2fa|otp|passcode|guard|authenticat\w*|confirm\w*"
