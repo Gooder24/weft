@@ -627,6 +627,7 @@ function createPeer(opts) {
     item.targets = item.targets.filter((t) => t.status === 'done').concat(targets.map((d) => ({ ...who(d), status: 'connecting' })));
     item.status = 'sending';
     item.got = 0;
+    item.total = (item.text != null ? Buffer.byteLength(item.text) : item.files.reduce((n, f) => n + f.size, 0)) * targets.length;
     emit('state');
     go(item, targets);
     return true;

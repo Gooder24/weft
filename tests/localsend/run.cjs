@@ -612,6 +612,7 @@ const settled = (p, id) => until(() => { const it = item(p, id); return it && ![
     assert.equal((await settled(b, r.id)).status, 'partial');
     const e2 = await peer('e3', { port });
     assert.equal(b.retry(r.id), true);
+    assert.equal(item(b, r.id).total, Buffer.byteLength('čiastočne')); // its bar fills for the one device it goes to
     const out = await settled(b, r.id);
     assert.equal(out.status, 'done');
     assert.deepEqual(out.targets.map((t) => t.status), ['done', 'done']);
