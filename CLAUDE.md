@@ -67,11 +67,14 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   from anywhere with the same certificate (one without a certificate moves only over the tailnet). „Aj v miestnej sieti“ is on unless Karchi turns it off (Karchi,
   2026-11-27): it listens on every interface with multicast, and files and text from outside the tailnet wait for
   Prijať in the corner (Enter only after it was a second in sight); off, it listens only on the Tailscale address. Arrivals
-  go to Downloads/Weft and show in the corner window like codes (Enter opens or copies). A file goes by the path
+  go to Downloads/Weft and show in the corner window like codes (Enter opens or copies). A send waits for the device's
+  answer as long as LocalSend's own sender does (its Accept; a text it shows at once until Close), only reaching it is
+  bounded (5 s); Zrušiť or Delete stops it. A file goes by the path
   preload takes from the File itself (`webUtils`), so the page cannot name one. Our own protocol through asus comes
   later into the same board: `docs/navrhy/2026-11-nastenka/`. Checks: `tests/localsend/run.cjs`, `tests/localsend/cli.sh`
   (the official LocalSend CLI both ways, in its own network namespace),
-  `SPRAVY_SELFTEST=board` (`desktop/selftest-board.js`, Electron under Xvfb), `overenie/nastenka/run.sh` (UI, on asus).
+  `SPRAVY_SELFTEST=board` (`desktop/selftest-board.js`, Electron under Xvfb), `overenie/nastenka/run.sh` (UI, on asus),
+  `overenie/nastenka-app/` (the real LocalSend 1.19 desktop app against the board, two network namespaces, by hand).
 - Server side lives only on asus in `~/matrix-spike/`: Tuwunel homeserver, bridges (mautrix-meta for
   Messenger and Instagram, legacy mautrix-discord, mautrix-whatsapp, own EduPage bridge), Caddy, systemd user
   units `matrix-spike-*` (`XDG_RUNTIME_DIR=/run/user/1000 systemctl --user ...`).

@@ -31,7 +31,10 @@ const CERT_FP = /^[0-9a-f]{64}$/i; // a fingerprint that is a certificate's SHA-
 const fpKey = (fp) => (CERT_FP.test(String(fp || '')) ? String(fp).toUpperCase() : String(fp || ''));
 const IDLE_MS = 5 * 60_000; // a receive session nobody writes to ends
 const ONLINE_MS = 3 * 60_000; // a device seen this recently counts as there
-const PREPARE_MS = 120_000; // the other side may wait for its own Accept
+// Reaching a device (TCP and TLS's handshake) takes at most this; its answer to a send then waits as long as its user
+// does (Accept, or Close on a text it shows at once), as LocalSend's own sender waits. Delete stops the wait.
+const CONNECT_MS = 5_000;
+const KEEPALIVE_MS = 15_000; // a device gone while its answer is awaited is noticed by the kernel's keepalive
 
 /** Tailscale's addresses: 100.64.0.0/10 and fd7a:115c:a1e0::/48. */
 const tailnetIp = (ip) => /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d+\.\d+$/.test(ip) || /^fd7a:115c:a1e0:/i.test(ip);
@@ -133,15 +136,16 @@ const sameFp = (a, b) => String(a || '').toUpperCase() === String(b || '').toUpp
 /** One HTTP(S) request to a LocalSend device: `json` or a file `stream` of `length` bytes. HTTPS shows `tls` (the
  *  board's certificate) and accepts the device's self-signed one, as LocalSend does; with `expect` (a fingerprint) it
  *  sends nothing unless the certificate is that one. `proven` in the result is the certificate's fingerprint.
- *  Resolves { status, data, proven }. */
-function request(dev, method, pathq, { json, stream, length, timeout = 10_000, tls, expect, onBytes } = {}) {
+ *  `timeout` is how long the connection may stay silent (0: no limit); `connect` bounds reaching the device, after which
+ *  keepalive watches it; `signal` aborts; `onSent` hears that the whole request went out. Resolves { status, data, proven }. */
+function request(dev, method, pathq, { json, stream, length, timeout = 10_000, connect, signal, onSent, tls, expect, onBytes } = {}) {
   return new Promise((resolve, reject) => {
     const lib = dev.protocol === 'https' ? https : http;
     const body = json === undefined ? null : Buffer.from(JSON.stringify(json));
     const headers = body ? { 'Content-Type': 'application/json', 'Content-Length': body.length }
       : stream ? { 'Content-Type': 'application/octet-stream', 'Content-Length': length } : { 'Content-Length': 0 };
     const secure = dev.protocol === 'https' ? { rejectUnauthorized: false, cert: tls?.cert, key: tls?.key, agent: false } : {};
-    const req = lib.request({ host: dev.ip, port: dev.port, method, path: pathq, headers, timeout, ...secure }, (res) => {
+    const req = lib.request({ host: dev.ip, port: dev.port, method, path: pathq, headers, timeout, signal, ...secure }, (res) => {
       const chunks = [];
       const proven = provenBy(res.socket);
       res.on('data', (c) => { if (chunks.length < 256) chunks.push(c); });
@@ -155,6 +159,15 @@ function request(dev, method, pathq, { json, stream, length, timeout = 10_000, t
     });
     req.on('timeout', () => req.destroy(Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' })));
     req.on('error', (err) => { stream?.destroy(); reject(err); });
+    if (connect) {
+      const t = setTimeout(() => req.destroy(Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' })), connect);
+      req.once('close', () => clearTimeout(t));
+      req.once('socket', (sock) => {
+        const up = () => { clearTimeout(t); sock.setKeepAlive(true, KEEPALIVE_MS); };
+        if (dev.protocol === 'https') sock.once('secureConnect', up); else if (sock.connecting) sock.once('connect', up); else up();
+      });
+    }
+    if (onSent) req.once('finish', onSent);
     // A file that is gone or unreadable fails the request, also before the handshake lets it flow.
     stream?.on('error', (err) => req.destroy(err));
     const go = () => {
@@ -225,6 +238,7 @@ function createPeer(opts) {
   let applied = 0; // the scan whose answer is in use: it finishes what that answer needs (listen, multicast, probes)
   let session = null; // the one transfer being received
   const jobs = new Map(); // files being received (and their requests), which stop() cuts off and waits for
+  const running = new Map(); // item id → AbortController of its send, which Delete and stop() abort
   let asking = null; // { id, resolve, ... } files from outside the tailnet waiting for Prijať
   let saveTimer = null;
   let stateTimer = null;
@@ -512,16 +526,18 @@ function createPeer(opts) {
 
   // ---------------------------------------------------------------- sending
 
-  /** Sends files ({ path, name, size, type }) or a text to one device; resolves its status. */
-  async function sendOne(dev, payload, onBytes) {
+  /** Sends files ({ path, name, size, type }) or a text to one device; resolves its status. `stage` hears „waiting“
+   *  once the device has the request (it asks its user, or shows the text) and „sending“ when files flow. */
+  async function sendOne(dev, payload, onBytes, { signal, stage = () => {} } = {}) {
     const files = payload.text != null
       ? [{ id: newId(), fileName: `${newId()}.txt`, size: Buffer.byteLength(payload.text), fileType: 'text/plain', sha256: null, preview: payload.text }]
       : payload.files.map((f) => ({ id: newId(), fileName: f.name, size: f.size, fileType: f.type || 'application/octet-stream', sha256: null, preview: null, path: f.path }));
     const meta = Object.fromEntries(files.map(({ path: _p, ...f }) => [f.id, f]));
     let r;
     try {
-      r = await call(dev, 'POST', `${API}/prepare-upload`, { json: { info: info(), files: meta }, timeout: PREPARE_MS });
+      r = await call(dev, 'POST', `${API}/prepare-upload`, { json: { info: info(), files: meta }, timeout: 0, connect: CONNECT_MS, signal, onSent: () => stage('waiting') });
     } catch (err) {
+      if (signal?.aborted) return { status: 'stopped' };
       // Someone else answers at its address: nothing was sent to them.
       if (err.code === 'ECERT') return { status: 'failed', note: 'another certificate' };
       return { status: 'offline', note: err.code || err.message };
@@ -534,6 +550,7 @@ function createPeer(opts) {
     const { sessionId, files: tokens } = r.data;
     // A file that failed ends the session there too, so the device is not left „busy“ until it gives up.
     const cancel = () => call(dev, 'POST', `${API}/cancel?sessionId=${encodeURIComponent(sessionId)}`, { timeout: 3000 }).catch(() => {});
+    stage('sending');
     for (const f of files) {
       const token = tokens[f.id];
       if (!token) continue; // the receiver took only some
@@ -541,10 +558,10 @@ function createPeer(opts) {
       const stream = f.path ? fs.createReadStream(f.path) : Readable.from([Buffer.from(payload.text)]);
       let up;
       try {
-        up = await call(dev, 'POST', `${API}/upload?${q}`, { stream, length: f.size, timeout: 60_000, onBytes });
+        up = await call(dev, 'POST', `${API}/upload?${q}`, { stream, length: f.size, timeout: 60_000, signal, onBytes });
       } catch (err) {
         await cancel();
-        return { status: 'failed', note: err.code || err.message };
+        return signal?.aborted ? { status: 'stopped' } : { status: 'failed', note: err.code || err.message };
       }
       if (up.status !== 200 && up.status !== 204) { await cancel(); return { status: 'failed', note: `HTTP ${up.status}` }; }
     }
@@ -568,12 +585,18 @@ function createPeer(opts) {
 
   async function run(item, targets) {
     const payload = item.text != null ? { text: item.text } : { files: item.files };
+    const ctl = new AbortController();
+    running.set(item.id, ctl);
     await Promise.all(targets.map(async (dev) => {
-      const res = await sendOne(dev, payload, (n) => { item.got += n; emitSoon(); });
       // By the device, not the position: a retry sends only to some of the item's targets.
-      Object.assign(item.targets.find((t) => fpKey(t.fingerprint) === dev.fingerprint) || {}, res);
-      if (res.status !== 'offline') { dev.seen = Date.now(); }
+      const target = () => item.targets.find((t) => fpKey(t.fingerprint) === dev.fingerprint) || {};
+      const stage = (status) => { if (!ctl.signal.aborted && target().status !== status) { target().status = status; emit('state'); } };
+      const res = await sendOne(dev, payload, (n) => { item.got += n; emitSoon(); }, { signal: ctl.signal, stage });
+      Object.assign(target(), res);
+      if (res.status !== 'offline' && res.status !== 'stopped') { dev.seen = Date.now(); }
     }));
+    running.delete(item.id);
+    if (stopped || !st.items.includes(item)) return; // deleted while it went, or the app quits (it starts „stopped“)
     const states = item.targets.map((t) => t.status);
     item.status = states.every((s) => s === 'done') ? 'done' : states.some((s) => s === 'done') ? 'partial'
       : STATUS_ORDER.find((s) => states.includes(s)) || 'failed';
@@ -801,9 +824,11 @@ function createPeer(opts) {
     emit('state');
   }
 
+  /** Deletes an item from the board; one still going out (or waiting for the device's answer) is stopped with it. */
   function remove(id) {
     const at = st.items.findIndex((x) => x.id === id);
-    if (at < 0 || st.items[at].status === 'sending' || st.items[at].status === 'receiving') return null;
+    if (at < 0 || st.items[at].status === 'receiving') return null;
+    running.get(id)?.abort();
     const [gone] = st.items.splice(at, 1);
     save();
     emit('state');
@@ -831,6 +856,7 @@ function createPeer(opts) {
     multicast(false);
     if (session) endSession('stopped');
     if (asking) asking.resolve(false);
+    for (const c of running.values()) c.abort();
     for (const r of jobs.values()) r.destroy();
     await Promise.all([...jobs.keys()]); // cut off, they only clean up or name a file that arrived whole
     clearTimeout(saveTimer);

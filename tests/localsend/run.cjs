@@ -296,6 +296,79 @@ const settled = (p, id) => until(() => { const it = item(p, id); return it && ![
     other.close();
   });
 
+  await check('a device that asks its user waits on the device as long as it takes, then gets it; Delete and quitting stop the wait', async () => {
+    const held = []; // prepare-upload requests not answered yet: the device's user has not decided (or closed the text)
+    const closed = new Set();
+    const srv = https.createServer({ ...selfSigned('slow'), requestCert: true, rejectUnauthorized: false }, (req, res) => {
+      const chunks = [];
+      req.on('data', (c) => chunks.push(c));
+      req.on('end', () => {
+        const u = new URL(req.url, 'https://x');
+        if (u.pathname === `${API}/register`) { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ alias: 'Pomalý', version: '2.1', deviceModel: 'iPhone', deviceType: 'mobile', fingerprint: 'x', download: false })); }
+        if (u.pathname === `${API}/prepare-upload`) { const one = { body: JSON.parse(Buffer.concat(chunks)), res }; held.push(one); req.socket.once('close', () => closed.add(one)); return; }
+        if (u.pathname === `${API}/upload`) { res.writeHead(200); return res.end(); }
+        res.writeHead(404); res.end();
+      });
+    });
+    await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+    const s = await peer('slow', { peers: [{ ip: '127.0.0.1', online: true }], probePort: srv.address().port });
+    await s.scan();
+    // A text: the device shows it at once and answers once it is closed there.
+    const t = await s.send({ text: 'ahoj' });
+    await until(() => held.length === 1 && item(s, t.id).targets[0].status === 'waiting');
+    assert.equal(item(s, t.id).status, 'sending');
+    held[0].res.writeHead(204); held[0].res.end();
+    assert.equal((await settled(s, t.id)).status, 'done');
+    // Files: they wait for Accept, then flow.
+    const f = await s.send({ files: [sendFile('a.bin', Buffer.from('abc'))] });
+    await until(() => held.length === 2 && item(s, f.id).targets[0].status === 'waiting');
+    held[1].res.writeHead(200, { 'Content-Type': 'application/json' });
+    held[1].res.end(JSON.stringify({ sessionId: 'S', files: { [Object.keys(held[1].body.files)[0]]: 'tok' } }));
+    assert.equal((await settled(s, f.id)).status, 'done');
+    // Delete while it waits: the item goes and the device's request is dropped; the page hears no outcome of it.
+    const g = await s.send({ text: 'zabudnuté' });
+    await until(() => held.length === 3 && item(s, g.id).targets[0].status === 'waiting');
+    const from = s.events.length;
+    assert.ok(s.remove(g.id));
+    assert.equal(item(s, g.id), undefined);
+    await until(() => closed.has(held[2]));
+    const h2 = await s.send({ text: 'ďalší' }); // its outcome comes after the deleted one's would have
+    await until(() => held.length === 4);
+    held[3].res.writeHead(204); held[3].res.end();
+    await settled(s, h2.id);
+    assert.deepEqual(s.events.slice(from).filter((e) => e.type === 'sent').map((e) => e.item.id), [h2.id]);
+    // Quitting the app drops a wait too.
+    await s.send({ text: 'pri zatvorení' });
+    await until(() => held.length === 5);
+    await s.stop();
+    await until(() => closed.has(held[4]));
+    await new Promise((r) => { srv.close(r); srv.closeAllConnections(); });
+  });
+
+  await check('a device that takes the connection but never finishes TLS is unreachable within seconds, not minutes', async () => {
+    const net = require('node:net');
+    const fast = https.createServer({ ...selfSigned('mute'), requestCert: true, rejectUnauthorized: false }, (req, res) => {
+      req.resume();
+      req.on('end', () => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ alias: 'Tichý', version: '2.1', deviceModel: 'x', deviceType: 'mobile', fingerprint: 'x', download: false })); });
+    });
+    await new Promise((r) => fast.listen(0, '127.0.0.1', r));
+    const port = fast.address().port;
+    const m = await peer('mute', { peers: [{ ip: '127.0.0.1', online: true }], probePort: port });
+    await m.scan();
+    await new Promise((r) => { fast.close(r); fast.closeAllConnections(); });
+    const socks = [];
+    const mute = net.createServer((c) => socks.push(c)); // takes the connection, never answers the handshake
+    await new Promise((r) => mute.listen(port, '127.0.0.1', r));
+    const started = Date.now();
+    const x = await m.send({ text: 'haló' });
+    const out = await until(() => { const it = item(m, x.id); return it.status !== 'sending' && it; }, 9000);
+    assert.equal(out.status, 'offline');
+    assert.ok(Date.now() - started < 8000, `${Date.now() - started} ms`);
+    await m.stop();
+    for (const c of socks) c.destroy();
+    mute.close();
+  });
+
   await check('a sender showing a certificate must claim its fingerprint', async () => {
     const tls = selfSigned('liar');
     const body = { info: { alias: 'liar', fingerprint: a.info().fingerprint }, files: { f: { id: 'f', fileName: 'x.txt', size: 1, fileType: 'x' } } };

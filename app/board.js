@@ -13,14 +13,16 @@ const LINK = /^https?:\/\/\S+$/;
 /** What a send or arrival came to, in words. */
 export function statusText(it) {
   const pct = it.total ? Math.min(99, Math.floor((it.got / it.total) * 100)) : 0;
-  if (it.status === 'sending') return T`posiela sa ${pct} %`;
+  const targets = it.targets || [];
+  // A device that has it asks its user (files) or shows it until closed (text); then it answers.
+  if (it.status === 'sending' && (!targets.length || targets.some((t) => t.status === 'sending'))) return T`posiela sa ${pct} %`;
   if (it.status === 'receiving') return T`prijíma sa ${pct} %`;
   if (it.dir === 'in') return { partial: T('prišla len časť'), stopped: T('prerušené'), cancelled: T('zrušené odosielateľom') }[it.status] || '';
   const one = (s) => ({
     done: T('doručené'), busy: T('zariadenie práve prijíma niečo iné'), declined: T('odmietnuté'), pin: T('zariadenie chce PIN: vypni ho v LocalSende'),
     offline: T('zariadenie nie je dostupné'), failed: T('nepodarilo sa'), stopped: T('prerušené'), sending: T('posiela sa'),
+    waiting: it.text != null ? T('zobrazené na zariadení') : T('čaká, kým to na zariadení prijmeš'),
   }[s] || s);
-  const targets = it.targets || [];
   if (targets.length > 1 && new Set(targets.map((t) => t.status)).size > 1) return targets.map((t) => `${t.alias}: ${one(t.status)}`).join(' · ');
   return one(targets[0]?.status || it.status);
 }
@@ -104,8 +106,9 @@ export function createBoard({ h, render, isOpen, open }) {
   }
   const primaryLabel = (it) => (it.text != null && (it.dir === 'in' || it.status === 'done') ? (b.copied === it.id ? T('Skopírované') : T('Kopírovať'))
     : it.dir === 'out' && it.status !== 'done' ? T('Skúsiť znova') : whole(it).length === 1 ? T('Otvoriť') : T('Priečinok'));
+  /** Delete: off the board; what still goes out (or waits for the device) is stopped. */
   function remove(it) {
-    if (!it || BUSY.has(it.status)) return;
+    if (!it || it.status === 'receiving') return;
     const list = items();
     const at = list.indexOf(it);
     b.sel = (list[at + 1] || list[at - 1])?.id || null;
@@ -139,6 +142,7 @@ export function createBoard({ h, render, isOpen, open }) {
     const dirLabel = it.dir === 'in' ? T`z ${it.device?.alias || '?'}` : T`do ${(it.targets || []).map((t) => t.alias).join(', ')}`;
     const status = statusText(it);
     const busy = BUSY.has(it.status);
+    const flowing = it.status === 'receiving' || (it.status === 'sending' && (it.targets || []).some((t) => t.status === 'sending'));
     const bad = it.dir === 'out' ? !['done', 'sending'].includes(it.status) : ['partial', 'stopped', 'cancelled'].includes(it.status);
     return h('div', {
       class: `board-item${b.sel === it.id ? ' sel' : ''}`, 'data-key': it.id, role: 'option', 'aria-selected': String(b.sel === it.id),
@@ -156,11 +160,12 @@ export function createBoard({ h, render, isOpen, open }) {
           h('small', {}, ` ${size(f.size)}`))),
         it.files.length > 6 ? h('li', {}, h('small', {}, T`a ďalších ${it.files.length - 6}`)) : null),
       h('small', { class: bad ? 'err' : '' }, [dirLabel, time(it.at), status].filter(Boolean).join(' · ')),
-      busy ? h('progress', { max: it.total || 1, value: it.got || 0 }) : null),
+      flowing ? h('progress', { max: it.total || 1, value: it.got || 0 }) : null),
     h('div', { class: 'board-acts' },
       busy || (it.text == null && !whole(it).length) ? null : h('button', { class: 'ghost', type: 'button', onclick: () => primary(it) }, primaryLabel(it)),
       it.files && it.dir === 'in' && !busy && whole(it).length === 1 ? h('button', { class: 'ghost', type: 'button', onclick: () => api.call('show', it.id, whole(it)[0]) }, T('Priečinok')) : null,
-      busy ? null : h('button', { class: 'ghost', type: 'button', title: T('Zmazať z nástenky (súbor na disku ostane)'), 'aria-label': T('Zmazať z nástenky'), onclick: () => remove(it) }, icon('trash'))));
+      it.status === 'sending' ? h('button', { class: 'ghost', type: 'button', title: T('Prestať posielať a zmazať z nástenky'), onclick: () => remove(it) }, icon('close'), T('Zrušiť'))
+        : busy ? null : h('button', { class: 'ghost', type: 'button', title: T('Zmazať z nástenky (súbor na disku ostane)'), 'aria-label': T('Zmazať z nástenky'), onclick: () => remove(it) }, icon('trash'))));
   }
 
   function view() {
