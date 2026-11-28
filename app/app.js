@@ -12034,7 +12034,18 @@ const feed = createFeed({
   schedule: (item) => { closeFeed(); if (!calNew()) return; cal.edit.title = item.title; cal.edit.notes = item.url; render(); document.querySelector('.home-calendar')?.scrollIntoView({ block: 'start' }); },
 });
 
-const board = createBoard({ h, render, isOpen: () => S.view === 'main' && S.panel === 'board', open: () => { if (S.panel !== 'board') toggleBoard(); } });
+/** The board's send to a contact through Priamo: each file, then the text, as Karchi's own messages in their Priamo chat. */
+async function boardToChat(id, { text, files }) {
+  for (const file of files) await call('PUT', `/rooms/${q(id)}/send/m.room.message/${txnId()}`, await fileContent(file));
+  if (text) await call('PUT', `/rooms/${q(id)}/send/m.room.message/${txnId()}`, { msgtype: 'm.text', body: text });
+}
+const board = createBoard({
+  h, render, isOpen: () => S.view === 'main' && S.panel === 'board', open: () => { if (S.panel !== 'board') toggleBoard(); },
+  // Contacts are the people with a Priamo chat: the board sends to them only when picked.
+  contacts: () => [...S.rooms.values()].filter((r) => r.app === 'priamo' && liveChat(r) && dmPartner(r))
+    .map((r) => ({ room: r.id, name: roomTitle(r) })).sort((a, b) => a.name.localeCompare(b.name, LOCALE)),
+  toChat: boardToChat, keep: () => (S.userId ? `ep_board_priamo:${S.userId}` : ''),
+});
 
 /** Ctrl+B: the board opens with the cursor in its text box (on a touch screen without, not to pop the keyboard). */
 function toggleBoard() {

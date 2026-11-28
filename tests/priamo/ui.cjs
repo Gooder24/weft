@@ -254,6 +254,12 @@ logging:
     await page.evaluateOnNewDocument((t, u) => {
       if (navigator.serviceWorker) navigator.serviceWorker.register = () => Promise.reject(new Error('test'));
       localStorage.setItem('ep_token', t); localStorage.setItem('ep_user', u); localStorage.setItem('ep_show_all', '1');
+      // The desktop shell's board with no LocalSend device: what the board sends, it sends only to contacts.
+      window.__shellSends = 0;
+      window.desktop = { board: {
+        on() {}, send: async () => { window.__shellSends++; return { error: 'no-device' }; },
+        call: async (m) => (m === 'state' ? { me: { listening: true, tailnet: true, lan: false, port: 53317, dir: '/tmp/Weft' }, items: [], devices: [] } : null),
+      } };
     }, karchi.token, karchi.id);
     await page.setRequestInterception(true);
     page.on('request', async (r) => {
@@ -308,6 +314,32 @@ logging:
     check('a message from Weft goes through Priamo', !!viaPriamo);
     await pause(2000); // a copy through Matrix would be there by now
     check('and not through Matrix', (await fromHim(bea, beaMx, karchiThere.id)) === before);
+
+    // The board (Ctrl+B): Bea as a contact, by click only; a text and a file go into her Priamo chat.
+    await page.evaluate(() => { document.activeElement?.blur(); });
+    await page.keyboard.down('Control'); await page.keyboard.press('b'); await page.keyboard.up('Control');
+    const chip = await until(() => page.$(`.board [data-key="priamo:${pPortal}"]`), 15);
+    check('the board lists Bea as a contact through Priamo, not picked', !!chip && (await page.evaluate((el) => el.getAttribute('aria-pressed'), chip)) === 'false');
+    await chip.click();
+    await page.focus('[data-root="__boardText"]');
+    await page.keyboard.type('Z nástenky cez Priamo');
+    await page.keyboard.press('Enter');
+    await page.evaluate(() => {
+      const dt = new DataTransfer();
+      dt.items.add(new File(['obsah súboru z nástenky'], 'nastenka.txt', { type: 'text/plain' }));
+      document.querySelector('.board').dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true }));
+    });
+    const boardText = await until(async () => (await bodies(beaPriamo, pRoom)).includes('Z nástenky cez Priamo'), 30);
+    check('the board\'s text comes into Bea\'s Priamo chat', !!boardText);
+    const boardFile = await until(async () => (await bodies(beaPriamo, pRoom)).includes('nastenka.txt'), 30);
+    check('the board\'s file comes into Bea\'s Priamo chat', !!boardFile);
+    const rows = await until(() => page.evaluate(() => {
+      const t = [...document.querySelectorAll('.board-item')].map((e) => e.innerText);
+      return t.length >= 2 && t.every((x) => x.includes('odišlo cez Priamo')) ? t : null;
+    }), 20);
+    check('both stay on the board as sent through Priamo', !!rows, JSON.stringify(rows));
+    check('nothing went to the shell (no device was picked)', (await page.evaluate(() => window.__shellSends)) === 0);
+    await page.keyboard.down('Control'); await page.keyboard.press('b'); await page.keyboard.up('Control');
 
     // The Priamo server down: the account is not connected, and Weft writes the usual way.
     priamoHs.proc.kill('SIGTERM');

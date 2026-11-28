@@ -2,6 +2,8 @@
 // app, without picking one (the default devices get it), and what they send stays here until it is deleted. The shell
 // speaks LocalSend (desktop/localsend.js, desktop/main.js) and saves arrivals in Downloads/Weft; this file is the
 // view, its keys and the corner window an arrival shows. In a browser there is no board (window.desktop is missing).
+// Other people get it through Weft Priamo (docs/navrhy/2026-11-priamo/): a contact with a Priamo chat is a target too,
+// never by default, and the item goes into that chat as Karchi's messages (`toChat`), to come to the contact's Weft.
 import { T, LOCALE } from './i18n.js';
 import { icon } from './icons.js';
 
@@ -28,10 +30,21 @@ export function statusText(it) {
   return one(targets[0]?.status || it.status);
 }
 
-export function createBoard({ h, render, isOpen, open }) {
+export function createBoard({ h, render, isOpen, open, contacts = () => [], toChat = null, keep = () => '' }) {
   const api = window.desktop?.board;
-  const b = { st: null, sel: null, text: '', pop: null, copied: null, note: '', notes: new Map() };
-  const items = () => b.st?.items || [];
+  const b = { st: null, sel: null, text: '', pop: null, copied: null, note: '', notes: new Map(), people: new Set(), out: null };
+  // What went to contacts: kept in this window's storage per account (newest 200), next to the shell's own items.
+  const sent = () => {
+    if (b.out?.key === keep()) return b.out.list;
+    let list = [];
+    try { list = JSON.parse(localStorage.getItem(keep()) || '[]'); } catch { /* none kept */ }
+    b.out = { key: keep(), list };
+    return list;
+  };
+  const saveSent = (list) => { b.out = { key: keep(), list: list.slice(0, 200) }; if (keep()) localStorage.setItem(keep(), JSON.stringify(b.out.list)); };
+  const items = () => [...(b.st?.items || []), ...sent()].sort((x, y) => y.at - x.at);
+  // Contacts picked for the next items; picking is by click only, and a contact whose chat is gone drops out.
+  const people = () => contacts().filter((c) => b.people.has(c.room));
   const devices = () => b.st?.devices || [];
   const targets = () => devices().filter((d) => d.default);
   const find = (id) => items().find((x) => x.id === id);
@@ -66,10 +79,32 @@ export function createBoard({ h, render, isOpen, open }) {
     api.call('state').then((st) => { b.st ||= st; render(); }).catch(() => {});
   }
 
-  /** Text, or files from a drop, the file picker or Ctrl+V, to the default devices. */
+  /** Text, or files, to the contacts picked: each file, then the text, into each one's Priamo chat. */
+  async function toPeople({ files, text }, to, again = null) {
+    const list = sent();
+    const it = again || { id: `priamo-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, priamo: true, dir: 'out', at: Date.now(),
+      ...(text != null ? { text } : { files: [...files].map((f) => ({ name: f.name, size: f.size })) }), targets: to.map((c) => ({ alias: c.name, room: c.room })) };
+    const go = it.targets.filter((t) => !again || t.status === 'failed');
+    for (const t of go) t.status = 'sending';
+    it.status = 'sending';
+    if (!again) list.unshift(it);
+    saveSent(list);
+    render();
+    await Promise.all(go.map(async (t) => {
+      try { await toChat(t.room, { text: text ?? null, files: files ? [...files] : [] }); t.status = 'done'; } catch (err) { t.status = 'failed'; t.error = err.message; }
+    }));
+    it.status = it.targets.every((t) => t.status === 'done') ? 'done' : 'failed';
+    saveSent(sent());
+    render();
+  }
+
+  /** Text, or files from a drop, the file picker or Ctrl+V, to the default devices and the contacts picked. */
   async function send({ files, text, fromBox }) {
-    if (!targets().length) { b.note = T('Najprv vyber zariadenie, kam to pôjde.'); return render(); }
+    const to = people();
+    if (!targets().length && !to.length) { b.note = T('Najprv vyber zariadenie, kam to pôjde.'); return render(); }
     b.note = '';
+    if (to.length) { toPeople({ files, text }, to); if (fromBox) b.text = ''; }
+    if (!targets().length) return render();
     try {
       const r = await api.send({ files: files ? [...files] : [], text });
       if (r?.error === 'no-device') b.note = T('Najprv vyber zariadenie, kam to pôjde.');
@@ -98,6 +133,12 @@ export function createBoard({ h, render, isOpen, open }) {
   /** Enter on an item: copy a text, open a file (several: their folder), send again what did not go. */
   function primary(it) {
     if (!it || BUSY.has(it.status)) return;
+    if (it.priamo) {
+      if (it.text != null && it.status === 'failed') return toPeople({ text: it.text }, [], it);
+      if (it.text != null) return copy(it);
+      if (it.status === 'failed') { b.note = T('Súbor pošli kontaktu znova: potiahni ho sem.'); render(); }
+      return;
+    }
     if (it.text != null && it.dir === 'in') return copy(it);
     if (it.dir === 'out' && !['done'].includes(it.status)) return api.call('retry', it.id).then((ok) => { if (!ok) { b.note = T('Znova to poslať nejde: súbor už nie je na disku alebo zariadenie bolo zabudnuté.'); render(); } });
     if (it.text != null) return copy(it);
@@ -105,7 +146,8 @@ export function createBoard({ h, render, isOpen, open }) {
     if (can.length === 1) return api.call('open', it.id, can[0]);
     if (can.length) return api.call('show', it.id, can[0]);
   }
-  const primaryLabel = (it) => (it.text != null && (it.dir === 'in' || it.status === 'done') ? (b.copied === it.id ? T('Skopírované') : T('Kopírovať'))
+  const primaryLabel = (it) => (it.priamo ? (it.text != null && it.status === 'failed' ? T('Skúsiť znova') : b.copied === it.id ? T('Skopírované') : T('Kopírovať'))
+    : it.text != null && (it.dir === 'in' || it.status === 'done') ? (b.copied === it.id ? T('Skopírované') : T('Kopírovať'))
     : it.dir === 'out' && it.status !== 'done' ? T('Skúsiť znova') : whole(it).length === 1 ? T('Otvoriť') : T('Priečinok'));
   /** Delete: off the board; what still goes out (or waits for the device) is stopped. */
   function remove(it) {
@@ -113,6 +155,7 @@ export function createBoard({ h, render, isOpen, open }) {
     const list = items();
     const at = list.indexOf(it);
     b.sel = (list[at + 1] || list[at - 1])?.id || null;
+    if (it.priamo) { saveSent(sent().filter((x) => x.id !== it.id)); return render(); }
     api.call('remove', it.id);
   }
 
@@ -139,7 +182,17 @@ export function createBoard({ h, render, isOpen, open }) {
     }, d.default ? icon('check') : null, h('span', {}, d.alias), h('small', {}, d.online ? '' : T('mimo')));
   }
 
+  function contactChip(c) {
+    const on = b.people.has(c.room);
+    return h('button', {
+      class: `chip board-dev${on ? ' on' : ''}`, type: 'button', 'aria-pressed': String(on), 'data-key': `priamo:${c.room}`,
+      title: on ? T('Pôjde aj tomuto kontaktu cez Priamo. Klik: už nie.') : T('Klik: poslať aj tomuto kontaktu cez Priamo, do vášho chatu.'),
+      onclick: () => { if (on) b.people.delete(c.room); else b.people.add(c.room); render(); },
+    }, icon(on ? 'check' : 'user'), h('span', {}, c.name));
+  }
+
   function itemRow(it) {
+    if (it.priamo) return priamoRow(it);
     const dirLabel = it.dir === 'in' ? T`z ${it.device?.alias || '?'}` : T`do ${(it.targets || []).map((t) => t.alias).join(', ')}`;
     const status = statusText(it);
     const busy = BUSY.has(it.status);
@@ -169,10 +222,34 @@ export function createBoard({ h, render, isOpen, open }) {
         : busy ? null : h('button', { class: 'ghost', type: 'button', title: T('Zmazať z nástenky (súbor na disku ostane)'), 'aria-label': T('Zmazať z nástenky'), onclick: () => remove(it) }, icon('trash'))));
   }
 
+  /** An item that went to contacts through Priamo: what it was, to whom, and whether their chats took it. */
+  function priamoRow(it) {
+    const one = (s) => ({ done: T('odišlo cez Priamo'), failed: T('neodišlo'), sending: T('posiela sa') }[s] || s);
+    const status = it.targets.length > 1 && new Set(it.targets.map((t) => t.status)).size > 1
+      ? it.targets.map((t) => `${t.alias}: ${one(t.status)}`).join(' · ') : one(it.status);
+    const why = it.targets.find((t) => t.error)?.error;
+    return h('div', {
+      class: `board-item${b.sel === it.id ? ' sel' : ''}`, 'data-key': it.id, role: 'option', 'aria-selected': String(b.sel === it.id),
+      onclick: (e) => { if (!e.target.closest('button, a')) { b.sel = it.id; render(); } },
+      ondblclick: (e) => { if (!e.target.closest('button, a')) primary(it); },
+    },
+    icon('arrow-up'),
+    h('div', { class: 'board-what' },
+      it.text != null ? h('p', { class: 'board-text' }, it.text)
+        : h('ul', { class: 'board-files' }, it.files.slice(0, 6).map((f) => h('li', {}, h('span', {}, f.name), h('small', {}, ` ${size(f.size)}`))),
+          it.files.length > 6 ? h('li', {}, h('small', {}, T`a ďalších ${it.files.length - 6}`)) : null),
+      h('small', { class: it.status === 'failed' ? 'err' : '', title: why || null },
+        [T`do ${it.targets.map((t) => t.alias).join(', ')} cez Priamo`, time(it.at), status].join(' · '))),
+    h('div', { class: 'board-acts' },
+      it.status === 'sending' || it.text == null ? null : h('button', { class: 'ghost', type: 'button', onclick: () => primary(it) }, primaryLabel(it)),
+      it.status === 'sending' ? null : h('button', { class: 'ghost', type: 'button', title: T('Zmazať z nástenky (v chate správa ostane)'), 'aria-label': T('Zmazať z nástenky'), onclick: () => remove(it) }, icon('trash'))));
+  }
+
   function view() {
     if (!api) return h('div', { class: 'board' }, h('h2', {}, T('Nástenka')), h('p', {}, T('Nástenka posiela cez LocalSend, a to vie len desktopová appka Weft.')));
     const shown = devices().filter((d) => d.default || d.online);
-    const to = targets();
+    const to = [...targets(), ...people()];
+    const mates = toChat ? contacts() : [];
     return h('div', { class: 'board', ondragover: (e) => e.preventDefault(), ondrop: dropped },
       h('h2', {}, T('Nástenka')),
       h('p', { class: 'board-status' }, statusLine()),
@@ -192,6 +269,7 @@ export function createBoard({ h, render, isOpen, open }) {
           shown.map(deviceChip),
           shown.length ? null : h('small', {}, T('Zatiaľ žiadne zariadenie. Zapni LocalSend v mobile alebo na inom počítači (cez Tailscale, alebo v tej istej sieti s „Aj v miestnej sieti“) a daj Hľadať.')),
           h('button', { class: 'ghost', type: 'button', onclick: () => api.call('scan') }, icon('search'), T('Hľadať'))),
+        mates.length ? h('div', { class: 'board-to' }, h('span', { class: 'board-label' }, T('Kontaktom:')), mates.map(contactChip)) : null,
         h('div', { class: 'board-row' },
           h('label', { class: 'board-lan', title: T('Nájde LocalSend aj v sieti, kde nie je Tailscale (doma, v škole). Súbory od zariadení mimo Tailscale čakajú na Prijať.') },
             h('input', { type: 'checkbox', checked: !!b.st?.me?.lan, onchange: (e) => api.call('lan', e.currentTarget.checked) }), T('Aj v miestnej sieti')),
