@@ -33,6 +33,9 @@ Chat networks (bridges) are not part of it yet, so for now it gives you an empty
 The first screen picks the language (Slovenčina or English) and creates the first account. Everything listens on
 that machine only. `sudo /opt/weft/src/install.sh --remove` takes it away and keeps the data in `/var/lib/weft`.
 
+Only Linux has been used so far; [Weft on each operating system](docs/platforms.md) lists what each system has
+and what still has to be tried there.
+
 ## What is different
 
 - **Reading windows.** Messages wait until you open a reading window (1 to 8 a day, 5 to 30 minutes each, set by
