@@ -70,7 +70,17 @@ def store_attachments(db, message, raw):
             (message, position, str(path.relative_to(ROOT / 'archive/media')), kind, mime, len(payload), uri))
 
 
+def is_draft(meta):
+    """A mail still being written (Gmail's Drafts, also every autosaved version in All Mail): never history."""
+    labels = re.search(rb'X-GM-LABELS \(([^)]*)\)', meta)
+    return bool(labels and re.search(rb'(^|\s)"?\\\\?Draft"?(\s|$)', labels[1])) or bool(re.search(rb'FLAGS \([^)]*\\Draft', meta))
+
+
 def store_message(db, account, validity, uid, meta, raw):
+    if is_draft(meta):  # read again once sent: Gmail gives the sent mail a new UID
+        db.execute('INSERT OR IGNORE INTO gmail_media_import VALUES (?,?,?)', (account, validity, int(uid)))
+        db.execute('INSERT OR IGNORE INTO gmail_import VALUES (?,?,?)', (account, validity, int(uid)))
+        return None
     ident = re.search(rb'X-GM-MSGID (\d+)', meta)
     thread = re.search(rb'X-GM-THRID (\d+)', meta)
     if not ident or not thread: raise ValueError('Gmail identity missing')
@@ -96,7 +106,7 @@ def import_attachments(conn, db, account, validity, limit=20):
     pending = [uid for uid in reversed(uids) if uid not in done]
     print(json.dumps({'account_id': hashlib.sha256(account.encode()).hexdigest()[:8], 'attachment_messages_pending': len(pending)}), flush=True)
     for uid in pending[:limit]:
-        rows = cleanup.ok(conn.uid('fetch', uid, '(UID X-GM-MSGID X-GM-THRID INTERNALDATE BODY.PEEK[])'))
+        rows = cleanup.ok(conn.uid('fetch', uid, '(UID X-GM-MSGID X-GM-THRID X-GM-LABELS FLAGS INTERNALDATE BODY.PEEK[])'))
         found = False
         for row in rows:
             if not isinstance(row, tuple): continue
@@ -104,7 +114,9 @@ def import_attachments(conn, db, account, validity, limit=20):
             if not ident: raise ValueError('Gmail identity missing')
             message = 'gmail:' + hashlib.sha256(account.encode()).hexdigest()[:20] + ':' + ident[1].decode()
             with db:
-                if not db.execute('SELECT 1 FROM messages WHERE id=?', (message,)).fetchone():
+                if is_draft(row[0]):
+                    pass
+                elif not db.execute('SELECT 1 FROM messages WHERE id=?', (message,)).fetchone():
                     store_message(db, account, validity, uid, *row)
                 else:
                     store_attachments(db, message, row[1])
@@ -126,7 +138,7 @@ def collect(creds, db):
         remaining = [uid for uid in reversed(uids) if uid not in saved]
         print(json.dumps({'account_id': hashlib.sha256(account.encode()).hexdigest()[:8], 'total': len(uids), 'remaining': len(remaining)}), flush=True)
         for uid in remaining[:100]:
-            rows = cleanup.ok(conn.uid('fetch', uid, '(UID X-GM-MSGID X-GM-THRID INTERNALDATE BODY.PEEK[])'))
+            rows = cleanup.ok(conn.uid('fetch', uid, '(UID X-GM-MSGID X-GM-THRID X-GM-LABELS FLAGS INTERNALDATE BODY.PEEK[])'))
             for row in rows:
                 if not isinstance(row, tuple): continue
                 with db:
