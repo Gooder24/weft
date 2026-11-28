@@ -1782,13 +1782,22 @@ function typingIn(r) {
   const cut = roomCut(r);
   return r.typing.filter((sender) => !isHeld({ origin_server_ts: Date.now(), sender }, cut, talkOf(r)));
 }
-/** "píše…" under a chat's last message; in a group with names. */
+/** "píše…" for the status line's left half; in a group with names. */
 function typingLine(parts, partner) {
   const who = parts.flatMap((x) => typingIn(x).map((id) => [x, id]));
   if (!who.length) return null;
   const names = who.map(([x, id]) => firstName(memberName(x, id)));
-  return h('div', { class: 'typing', 'data-key': '__typing', role: 'status' },
-    partner ? T('píše…') : names.length === 1 ? T`${names[0]} píše…` : T`${names.slice(0, -1).join(', ')} a ${names.at(-1)} píšu…`);
+  return partner ? T('píše…') : names.length === 1 ? T`${names[0]} píše…` : T`${names.slice(0, -1).join(', ')} a ${names.at(-1)} píšu…`;
+}
+/** One line of a fixed height between the messages and the message box, outside the scrolled list, so nothing in it
+ *  ever moves a message: left who is typing, right what the other side sees of Karchi (his typing) or else one word
+ *  for his newest message's mark (`word`: sendWords). Always there, empty too. */
+function chatStatus(parts, partner, word) {
+  const theirs = typingLine(parts, partner);
+  const mine = typingMine(parts);
+  return h('div', { class: 'cstatus', 'data-key': '__cstatus' },
+    h('span', { class: 'theirs', role: 'status' }, theirs),
+    h('span', { class: 'own', role: 'status', title: mine ? null : word?.[1] || null }, mine || word?.[0] || null));
 }
 
 /** The eye beside the search: opens one of today's windows, shows while it runs, rests once all were used. */
@@ -2623,26 +2632,23 @@ async function typingAsk(out) {
   } catch { /* no answer: the line stays away */ }
 }
 // The one thing in Weft that moves on its own (Karchi, 2026-11-25: „musí vidno že sa hýbu“): the dots of his own
-// typing bubble, one lifted at a time in steps, set on the element about 3× a second only while the network shows it.
+// typing pill in the status line, one lifted at a time in steps, set on the element about 3× a second only while the network shows it.
 let dotsStep = 0, dotsTimer = 0;
 function dotsRun(on) {
   if (!on || dotsTimer) { if (!on) { clearInterval(dotsTimer); dotsTimer = 0; } return; }
   dotsTimer = setInterval(() => {
     dotsStep = (dotsStep + 1) % 3;
-    for (const el of document.querySelectorAll('.tbubble')) el.dataset.step = String(dotsStep);
+    for (const el of document.querySelectorAll('.tpill')) el.dataset.step = String(dotsStep);
   }, 350);
 }
-/** Under the last message, on Karchi's side, what the other side sees: his own bubble with the desktop's three pixel
- *  dots hopping, and in words where it shows. A refusal is said in words only. */
+/** The status line's right half while a network shows Karchi typing: his own bubble shrunk to the line with the
+ *  desktop's three pixel dots hopping, and where it shows. A refusal is said in words only. */
 function typingMine(parts) {
   const out = typingOut;
   if (!out?.shown || S.offline || !parts.some((x) => x.id === out.room)) return null;
-  if (out.shown === 'failed') {
-    return h('div', { class: 'typing mine', 'data-key': '__typingMine', role: 'status', title: out.error || null }, T`${appOf(out.app)?.name || out.app} „píše…“ neprijal`);
-  }
+  if (out.shown === 'failed') return h('span', { class: 'w', title: out.error || null }, T`${appOf(out.app)?.name || out.app} „píše…“ neprijal`);
   const where = { messenger: T('Na Messengeri vidno, že píšeš'), instagram: T('Na Instagrame vidno, že píšeš'), whatsapp: T('Na WhatsAppe vidno, že píšeš') }[out.app] || T('Vidno, že píšeš');
-  return h('div', { class: 'typing mine dots', 'data-key': '__typingMine', role: 'status' },
-    h('span', { class: 'tbubble', 'data-step': String(dotsStep), 'aria-hidden': 'true' }, typingDots()), h('small', {}, where));
+  return [h('span', { class: 'w' }, where), h('span', { class: 'tpill', 'data-step': String(dotsStep), 'aria-hidden': 'true' }, typingDots(24))];
 }
 function typingStop() {
   clearTimeout(typingIdle);
@@ -8232,7 +8238,7 @@ function bubbleView(r, m, ev, grouped, group, sug = null, read = null) {
       e.currentTarget.append(msgActs(r, m, ev, mine));
     } : null,
   },
-    mine ? (fail ? null : sendMark(r, ev, read)) : grouped ? h('div', { class: 'mav' }) : r.archiveOnly ? avatar(member?.avatar, memberName(r, ev.sender), 28, 'mav') : h('button', {
+    mine ? null : grouped ? h('div', { class: 'mav' }) : r.archiveOnly ? avatar(member?.avatar, memberName(r, ev.sender), 28, 'mav') : h('button', {
       class: 'mavbtn', title: T`Profil: ${memberName(r, ev.sender)}`,
       onclick: (e) => openPersonCard(e, r, ev.sender),
     }, avatar(member?.avatar, memberName(r, ev.sender), 28, 'mav')),
@@ -8242,7 +8248,8 @@ function bubbleView(r, m, ev, grouped, group, sug = null, read = null) {
         quoted ? [h('b', {}, memberName(r, quoted.sender)), h('span', {}, messageSummary(m, quoted))] : h('span', {}, T('Odpoveď na správu'))) : null,
       bubbleBody(r, m, ev),
       inDiscordThread(r, ev.event_id) ? h('small', { class: 'mthread' }, T('vo vlákne · odpovedať sa dá len v appke Discord')) : null,
-      h('span', { class: 'mtime' }, m.edits.has(ev.event_id) && !m.edits.get(ev.event_id).content?.['com.beeper.dont_render_edited'] && !gone && !POLL_START.includes(ev.type) && !pollIn(ev, ev.content) ? T('upravené · ') : '', fail ? (fail.sure ? T('neodoslané') : T('možno neodoslané')) : ev.waiting ? T('čaká na sieť') : ev.pending ? 'odosielam' : timeLabel(ev.origin_server_ts))),
+      // His own message keeps its mark's place left of the time even while empty, so no mark ever resizes a bubble.
+      h('span', { class: 'mtime' }, mine ? (fail ? h('span', { class: 'mstate' }) : sendMark(r, ev, read)) : null, h('span', { class: 'mwhen' }, m.edits.has(ev.event_id) && !m.edits.get(ev.event_id).content?.['com.beeper.dont_render_edited'] && !gone && !POLL_START.includes(ev.type) && !pollIn(ev, ev.content) ? T('upravené · ') : '', fail ? (fail.sure ? T('neodoslané') : T('možno neodoslané')) : ev.waiting ? T('čaká na sieť') : ev.pending ? 'odosielam' : timeLabel(ev.origin_server_ts)))),
     acts && (hoverMsg === ev.event_id || S.actsFor === ev.event_id || S.pick?.event === ev.event_id) ? msgActs(r, m, ev, mine) : null),
   sug && !cal.absent ? calSuggestion(r, ev, sug) : null,
   fail ? h('div', { class: 'lateracts failacts' },
@@ -8308,22 +8315,23 @@ function sendWords(r, state) {
   if (!STATUS_APPS.has(r.app)) return [T('Odoslané'), T('Je na serveri Weftu')];
   return [T('Odoslané'), tells && dmPartner(r) ? T`${net} ju prijal, doručenie zatiaľ nehlási` : T`${net} ju prijal, doručenie nehlási`];
 }
-/** Beside each of Karchi's messages: the face of whoever read up to exactly it (and wrote nothing since), nothing when
- *  someone read further (their face is lower), else the icon of how far it got. `read` from readMarks. */
+/** Left of the time in each of Karchi's bubbles: the face of whoever read up to exactly it (and wrote nothing since;
+ *  its title says when), nothing when someone read further (their face is lower), else the 12 px icon of how far it
+ *  got. `read` from readMarks. */
 function sendMark(r, ev, read) {
   const here = read?.at.get(ev.event_id);
   if (here?.length) {
     const ids = here.map(([id]) => id);
     const label = seenText(r, here, here.length === 1 && dmPartner(r) ? dmPartner(r) : null, Infinity);
     return h('span', { class: 'mstate seen', title: label, 'aria-label': label },
-      ids.slice(0, 3).map((id) => avatar(r.members.get(id)?.avatar, memberName(r, id), 24, 'reader-av')),
+      ids.slice(0, 3).map((id) => avatar(r.members.get(id)?.avatar, memberName(r, id), 14, 'reader-av')),
       ids.length > 3 ? h('span', { class: 'reader-more' }, `+${ids.length - 3}`) : null);
   }
   if (read && (read.pos.get(ev.event_id) ?? Infinity) <= (read.far.get(r.id) ?? -1)) return h('span', { class: 'mstate' });
   const state = sendState(r, ev);
   if (!state) return h('span', { class: 'mstate' });
   const [, why] = sendWords(r, state);
-  return h('span', { class: `mstate ${state}`, title: why, 'aria-label': why }, icon(SEND_ICONS[state]));
+  return h('span', { class: `mstate ${state}`, title: why, 'aria-label': why }, icon(SEND_ICONS[state], 12)); // ui-ignore: the mark sits in an 11 px text line
 }
 const markSig = (r, ev, read) => `${sendState(r, ev)}|${(read?.at.get(ev.event_id) || []).map(([id, ts]) => `${id}@${ts}`).join()}|${(read?.pos.get(ev.event_id) ?? Infinity) <= (read?.far.get(r.id) ?? -1)}`;
 /** Where each person of a chat's rooms stopped reading Karchi's messages: `at` own event id -> [[mxid, ts]] of the
@@ -9190,12 +9198,9 @@ function chatView(r, e = null) {
   const mineLast = msgs.findLast((ev) => ev.sender === S.userId);
   const mineRoom = mineLast && t.roomOf(mineLast);
   const atEnd = !!mineLast && mineLast === msgs.at(-1); // after someone's answer the footer would say what the answer says
-  const seen = atEnd ? seenOf(mineRoom, mineLast) : [];
-  const state = atEnd && !seen.length && !mineLast.failed && !roomModel(mineRoom).failed.has(mineLast.event_id) ? sendState(mineRoom, mineLast) : null;
-  if (seen.length) items.push(h('div', { class: 'seen' }, seenView(mineRoom, seen, dmPartner(mineRoom))));
-  else if (state) items.push(h('div', { class: 'seen', title: sendWords(mineRoom, state)[1] }, sendWords(mineRoom, state)[0]));
-  items.push(typingLine(t.parts, partner));
-  items.push(typingMine(t.parts));
+  // Seen needs no word: the face is in the bubble.
+  const state = atEnd && !seenOf(mineRoom, mineLast).length && !mineLast.failed && !roomModel(mineRoom).failed.has(mineLast.event_id) ? sendState(mineRoom, mineLast) : null;
+  const status = chatStatus(t.parts, partner, state && sendWords(mineRoom, state));
   for (const x of t.parts) items.push(...laterBubbles(x, roomModel(x)));
   items.push(...relayBar(t.parts));
   pruneGifs(r);
@@ -9239,6 +9244,7 @@ function chatView(r, e = null) {
       h('div', { class: 'tonew', 'data-key': '__tonew' }, h('button', { type: 'button', title: T('Na najnovšie správy (Ctrl+↓)'), 'aria-label': T('Na najnovšie správy'), hidden: !S.chatAway, onclick: chatToNew }, icon('arrow-down'), h('kbd', {}, 'Ctrl+↓')))),
     rail,
     forwardBar(t.parts),
+    status,
     r.archiveOnly ? archiveCompose(r) : phoneChat(r) ? [phoneNote(r, m), chatCompose(r, m)] : isConnector(r) ? connectorCompose(r) : chatCompose(r, m, merged ? t : null));
 }
 

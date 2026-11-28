@@ -208,14 +208,16 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
 - Karchi's typing goes out like Beeper's (`typingNote` in app.js, Settings → Správy → Písanie, account data
   `sk.karchi.typing`): Messenger, Instagram, WhatsApp and Discord show „píše…“ (the Discord appservice needs
   `receive_ephemeral: true` for it). A 15 s pause ends it. Once the network took it, his side of the chat shows what they see: his
-  own bubble with hopping pixel dots (Weft's only running motion) and „Na Instagrame vidno, že píšeš“ (a refusal is said in words): `server/typing/seen.py` (asus `~/matrix-spike/typing/`, unit `matrix-spike-typing`,
+  own bubble as a pill with hopping pixel dots (Weft's only running motion) and „Na Instagrame vidno, že píšeš“ in the status line over the message box (a refusal is said in words): `server/typing/seen.py` (asus `~/matrix-spike/typing/`, unit `matrix-spike-typing`,
   127.0.0.1:29334 behind Caddy's `/_typing/`) follows the bridgev2 bridges' journal for „Sent typing event“; legacy
   Discord logs no success, so it shows nothing. Checks: `overenie/typing-out/run.sh`, `overenie/typing-seen/`
   (`service_test.py`, `run.sh`).
-- How far Karchi's message got (`sendState`/`sendMark` in app.js), beside each of his bubbles: paper plane = on its way
+- How far Karchi's message got (`sendState`/`sendMark` in app.js), left of the time in each of his bubbles (12 px): paper plane = on its way
   to Weft's server, plane in a circle = on it but the network has not taken it, ✓ = the network took it, ✓ in a circle
   = delivered to the person's device, then the face of whoever read up to it (Messenger-like: only at the newest message
-  each person read), and one word under the newest. Only what something says: the bridges' `com.beeper.message_send_status`
+  each person read; its title says when), and one word for the newest in the status line between the messages and
+  the message box (`chatStatus`: who is typing left, his own typing or that word right, none for seen; a line of fixed
+  height outside the scrolled list, so nothing there moves a message). Only what something says: the bridges' `com.beeper.message_send_status`
   from the room's own bridge bot (mautrix `message_status_events: true` on asus since 2026-11-27, also the guests'
   bridges; Teams, Matrix and EduPage send SUCCESS themselves), `delivered_to_users` only from WhatsApp and Messenger's
   encrypted chats and only one-to-one, read receipts. Weft's messages from before `SEND_STATUS_SINCE` have no mark.

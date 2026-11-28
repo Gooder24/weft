@@ -16,13 +16,14 @@ if none fits, add the new piece here in the same change. `tools/ui-check` checks
 - Type: `--fs` (11 px) for everything, `--fs-2` for titles, `--lh` for wrapped lines. Radii: `--radius` controls,
   `--radius-s` small things inside them, `--radius-l` what floats. Borders `--bw`.
 - No shadows (a ring `0 0 0 <width>` or `inset` is an outline), no animation that keeps running. The one exception
-  (Karchi, 2026-11-25) is the dots of his own typing bubble: one dot lifted at a time, in steps about 3× a second,
+  (Karchi, 2026-11-25) is the dots of his own typing pill: one dot lifted at a time, in steps about 3× a second,
   only while a network shows his „píše…“.
 
 ## Icons (`app/icons.js`)
 
 - `icon(name)` gives an `<svg>` of pixelarticons, the glyphs of KarchiOS's icon font: filled cells on the 24 grid,
-  `fill: currentColor`, crisp. Only 24 px; `icon(name, 48)` where something is big (play over a video).
+  `fill: currentColor`, crisp. Only 24 px; `icon(name, 48)` where something is big (play over a video), and
+  `icon(name, 12)` only for the send mark in a bubble's time line (one cell is one pixel, crisp too).
 - An icon takes its text's colour; colour it with `color:` on the svg or its parent, never with stroke or fill.
 - Icon + one word. An icon alone only where its meaning is settled (search, close, back, play, send) and it has a
   `title` naming the action with its shortcut.
@@ -47,8 +48,8 @@ if none fits, add the new piece here in the same change. `tools/ui-check` checks
 | Chip | `.pchip` | A removable or toggled tag |
 | Note in a chat | `.cnote`, `.rnote` | A muted line that explains a state; a button inside it is `.primary` or `.linkbtn` |
 | Suggestion in a chat | `.cnote.calsug > .linkbtn + span + button.calsugoff` | A muted line under a message offering one action (icon + words, what it found) and ✕ to wave it off |
-| State under messages | `.msgs .seen`, `.msgs .typing`; row: `.prev em.typingmark` | A muted line under the last message: who saw it (right), who is typing (left, „píše…“); in an inbox row „píše…“ in `--link` stands for the preview |
-| Own typing as they see it | `.msgs .typing.mine.dots > .tbubble[data-step] > svg` + `small` | Right under the last message while a network shows Karchi's „píše…“: his own `--accent` bubble with `typingDots()` (the `more-horizontal` dots apart, 48 px, middle rows), one lifted and filled at a time, and under it „Na Instagrame vidno, že píšeš“; a refusal is a muted `.typing.mine` line |
+| Send mark | `.msg.mine .mtime > .mstate` + `.mwhen`; row: `.prev em.typingmark` | Left of the time in his own bubble, a slot kept while empty: the 12 px icon of how far it got or the 14 px face of whoever read up to it (its title says when); in an inbox row „píše…“ in `--link` stands for the preview |
+| Status line | `.cstatus > .theirs` + `.own` (`.w`, `.tpill[data-step] > svg`) | One muted line of `--lh` between the messages and the message box, always there: left who is typing („píše…“), right his own typing as the network shows it (his `--accent` pill with `typingDots(24)`, one dot lifted and filled at a time, and „Na Instagrame vidno, že píšeš“; a refusal in words) or else one word for his newest message's mark (none for seen: the face says it). It never moves a message |
 | Overlay | `.veil` (+ `.clear`, `.dark`, `.search`) | What floats over the app; Esc and a click outside close it |
 | Shortcut | `kbd` | Right-aligned, muted; the same text as in Ctrl+/ |
 

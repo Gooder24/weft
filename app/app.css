@@ -429,7 +429,7 @@ kbd { margin-left: auto; font-family: inherit; font-size: var(--fs); color: var(
 .attach { flex: none; width: 38px; height: 38px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: var(--radius); background: var(--card); cursor: pointer; }
 .attach svg { color: var(--muted); }
 .more { border: 0; background: none; font-size: 20px; color: var(--muted); cursor: pointer; padding: 0 4px; }
-.msgs { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 8px 16px 12px; display: flex; flex-direction: column; }
+.msgs { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 8px 16px 3px; display: flex; flex-direction: column; }
 .cstart { text-align: center; color: var(--muted); font-size: var(--fs); padding: 8px 0; min-height: 30px; }
 /* The start of a chat: who it is with, under the floating header. */
 .cintro { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 28px 0 18px; text-align: center; }
@@ -496,9 +496,15 @@ kbd { margin-left: auto; font-family: inherit; font-size: var(--fs); color: var(
 .mcall { display: flex; align-items: center; gap: 6px; }
 .mcall.missed { color: var(--error); }
 .mtime { display: block; text-align: right; font-size: var(--fs); opacity: .6; margin-top: 1px; }
-/* Beside Karchi's own message: how far it got (sendMark), or the face of whoever read up to it. */
-.mstate { flex: none; min-width: 24px; min-height: 24px; display: inline-flex; align-items: flex-end; justify-content: center; gap: 2px; color: var(--muted); }
-.mstate.seen { align-items: center; }
+/* Left of the time in Karchi's own bubble: how far it got (sendMark, a 12 px icon), or the 14 px face of whoever read
+   up to it. Its place is kept while empty, so a mark that comes never resizes a bubble (in a group a second and third
+   face may widen a short one). */
+.msg.mine .mtime { display: flex; justify-content: flex-end; align-items: center; gap: 4px; height: var(--lh); opacity: 1; }
+.msg.mine .mwhen { opacity: .6; }
+.mstate { flex: none; display: inline-flex; align-items: center; justify-content: flex-end; min-width: 14px; height: 14px; }
+.mstate .reader-av { width: 14px; height: 14px; font-size: 9px; }
+.mstate .reader-av + .reader-av { margin-left: -4px; outline: 1px solid var(--accent); }
+.mstate .reader-more { padding: 0 0 0 2px; }
 .mthread { display: block; font-size: var(--fs); color: var(--link); margin-top: 1px; }
 .bubble.sticker { padding: 0; background: none; }
 .bubble.sticker .mimg { background: none; border-radius: 0; }
@@ -586,18 +592,20 @@ kbd { margin-left: auto; font-family: inherit; font-size: var(--fs); color: var(
 .msg.mine .reacts { align-self: flex-end; margin: 2px 0 0; }
 .react { font: inherit; font-size: 13px; color: inherit; cursor: pointer; padding: 1px 7px; border-radius: var(--radius); background: var(--soft); border: 1px solid var(--line); font-size: 13px; }
 .react.me { border-color: var(--accent); background: var(--accent); color: var(--accent-text); }
-.seen { align-self: flex-end; margin-top: 3px; font-size: var(--fs); color: var(--muted); }
-.typing { align-self: flex-start; margin-top: 3px; font-size: var(--fs); color: var(--muted); }
-.typing.mine { align-self: flex-end; }
-.typing.mine.dots { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; margin-top: 6px; }
-/* His own bubble. The dots at twice the grid stay crisp; it shows only their middle rows, one line of a message tall.
-   The lifted dot (data-step, set by dotsRun in app.js) jumps two grid cells and fills: steps, never a glide. */
-.tbubble { display: flex; align-items: center; height: 26px; padding: 0 8px; overflow: hidden; border-radius: var(--radius-l); background: var(--accent); color: var(--accent-text); }
-.tbubble svg { display: block; flex: none; width: 48px; height: 48px; }
-.tbubble .core { display: none; }
-.tbubble[data-step="0"] .d0, .tbubble[data-step="1"] .d1, .tbubble[data-step="2"] .d2 { transform: translateY(-2px); }
-.tbubble[data-step="0"] .d0 .core, .tbubble[data-step="1"] .d1 .core, .tbubble[data-step="2"] .d2 .core { display: inline; }
-.ccompose { flex: none; padding: 8px 16px 12px; border-top: 0; }
+/* One line between the messages and the message box (chatStatus): left who is typing, right what they see of Karchi
+   or one word for his newest message. Outside the scrolled list and always this tall, so it never moves a message. */
+.cstatus { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 12px; height: var(--lh); margin: 0 16px; padding: 0 2px; font-size: var(--fs); color: var(--muted); }
+.cstatus > span { display: inline-flex; align-items: center; gap: 4px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cstatus .own { margin-left: auto; flex: 0 1000 auto; }
+.cstatus .w { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* His own typing as they see it: his accent bubble shrunk to the line, the dots at 1 px cells. The lifted dot
+   (data-step, set by dotsRun in app.js) jumps one grid pixel and fills: steps, never a glide. */
+.tpill { flex: none; display: inline-flex; align-items: center; height: 14px; padding: 0 4px; overflow: hidden; border-radius: 7px; background: var(--accent); color: var(--accent-text); }
+.tpill svg { display: block; flex: none; width: 24px; height: 24px; }
+.tpill .core { display: none; }
+.tpill[data-step="0"] .d0, .tpill[data-step="1"] .d1, .tpill[data-step="2"] .d2 { transform: translateY(-2px); }
+.tpill[data-step="0"] .d0 .core, .tpill[data-step="1"] .d1 .core, .tpill[data-step="2"] .d2 .core { display: inline; }
+.ccompose { flex: none; padding: 3px 16px 12px; border-top: 0; }
 .ccompose textarea { width: 100%; box-sizing: border-box; min-height: 36px; max-height: 200px; background: var(--card); font: inherit; font-size: var(--fs); line-height: var(--lh); padding: 8px 12px; border: var(--bw) solid var(--line); border-radius: var(--radius-l); resize: none; overflow-y: hidden; color: var(--text); outline: none; }
 .ccompose textarea:focus { border-color: var(--line-strong); }
 /* One rounded field holds "+", the text and the send button, as in Beeper. */
@@ -764,6 +772,7 @@ a.rnote.rlink { color: var(--link); text-decoration: none; }
   .shell:not(.has-sel) .detail.chat { display: none; }
   .mrow { max-width: 88%; }
   .chead, .msgs, .ccompose { padding-left: 10px; padding-right: 10px; }
+  .cstatus { margin: 0 10px; }
   .cmd { max-width: none; max-height: none; height: 100%; border-radius: 0; }
   .cmd .pclose { display: block; top: 12px; }
   .cmdinput { padding-right: 48px; }
