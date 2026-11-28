@@ -608,6 +608,7 @@ async function flushOut() {
       // It went out in that earlier window already and its echo is here: the same transaction id gave the same event.
       settleChat(r, it.txn, res, it.content);
     } catch (err) {
+      if (!r.pending.has(it.txn)) { saveOutbox(outbox().filter((x) => x.txn !== it.txn)); continue; } // its copy came first
       if (isNetErr(err)) {
         shown.waiting = true;
         r.version++;
@@ -2736,7 +2737,7 @@ async function sendChat(r, given = null) {
           if (text) setDraft(r.id, now.trim() ? `${draft.trimEnd()}\n${now}` : draft);
           if (files.length) S.attach.set(r.id, [...files, ...(S.attach.get(r.id) || [])]);
           if (replyWas && !S.replyTo) S.replyTo = replyWas;
-          if (!now.trim()) keepRetry(r.id, { sig, box: draft, files, txns: parts.map((p) => p.txn) });
+          if (!now.trim()) keepRetry(r.id, { sig, box: boxNow(r.id), files, txns: parts.map((p) => p.txn) });
         }
         if (!err?.held && isNetErr(err)) { goOffline(); alert(T('Teraz to nejde, skús to znova, keď bude sieť.')); }
         else if (!err?.held) alert(T`Odpoveď neodišla (${err?.data?.error || err?.message || T('server ju odmietol')}). Ostala v poli aj so súbormi.`);
@@ -2772,8 +2773,8 @@ const txnId = () => `ep${Date.now()}${Math.random().toString(36).slice(2, 8)}`;
 // all, with only its answer lost, is given back by the homeserver instead of going out (and to the network) twice.
 // Kept with the drafts (localStorage `ep_retry:<user>`), so a reload before the server's copy shows keeps the ids too;
 // files cannot outlive a reload, so only a message without files is kept there. The server's copy of any of its
-// parts ends it: that message went, so a box still holding it unchanged is emptied, and the same text typed later is
-// a new one.
+// last part ends it: that message went, so a box still holding it unchanged (`boxNow`) is emptied, and the same text
+// typed later is a new one. An earlier part's copy only says that part went: sent again, it is given back too.
 const RETRY_MS = 15 * 60e3;
 let boxRetry = null; // box key -> { sig, files, txns, uploaded?, at }
 let boxRetryUser = null;
@@ -2794,6 +2795,9 @@ function saveRetries() {
     .map(([key, { sig, box, txns, at }]) => [key, { sig, box, txns, at }]));
   try { localStorage.setItem(`ep_retry:${S.userId}`, JSON.stringify(kept)); } catch {}
 }
+/** What a box holds besides its files, all that makes it this very message: text, reply, Všetkým, recipients. */
+const boxNow = (key) => JSON.stringify({ text: (S.drafts.get(key) || '').trim(), reply: S.replyTo?.room === key ? S.replyTo.event : null,
+  all: S.eduTo.get(key) || null, to: key === EDU_NEW ? eduChoice(eduNew()) : null });
 function keepRetry(key, it) {
   retries().set(key, { ...it, at: Date.now() });
   saveRetries();
@@ -2811,10 +2815,10 @@ function retryEchoed(txn) {
   if (!kept.size) return;
   let gone = false;
   for (const [key, it] of kept) {
-    if (!it.txns.includes(txn)) continue;
+    if (it.txns.at(-1) !== txn) continue;
     gone = kept.delete(key);
     const files = S.attach.get(key) || [];
-    if ((S.drafts.get(key) || '').trim() !== (it.box || '').trim() || files.length !== it.files.length || files.some((f, i) => f !== it.files[i])) continue;
+    if (boxNow(key) !== it.box || files.length !== it.files.length || files.some((f, i) => f !== it.files[i])) continue;
     deleteDraft(key);
     S.attach.delete(key);
     S.eduTo.delete(key);
@@ -2858,6 +2862,7 @@ async function sendAgain(r, type, shown, build, txn = txnId()) {
     const res = await call('PUT', `/rooms/${q(r.id)}/send/${type}/${txn}`, content);
     settleChat(r, txn, res, content);
   } catch (err) {
+    if (!r.pending.has(txn)) return render(); // its copy came first: it went, only its answer was lost
     if (isNetErr(err)) goOffline();
     // Built but no network: it waits and goes out by itself, as a typed text does.
     if (isNetErr(err) && content && type === 'm.room.message') {
@@ -5415,7 +5420,7 @@ async function sendReply(rootId) {
       setDraft(rootId, text);
       if (files.length) S.attach.set(rootId, files);
       if (content[REPLY_TO_KEY] === 'all') S.eduTo.set(rootId, 'all');
-      keepRetry(rootId, { sig, box: text, files, txns: [txn], uploaded: content[EDU_FILES] });
+      keepRetry(rootId, { sig, box: boxNow(rootId), files, txns: [txn], uploaded: content[EDU_FILES] });
     }
     alert(fresh ? T('Odpoveď sa neodoslala. Skús to znova.') : T`Odpoveď sa neodoslala: ${text || files.map((f) => f.name).join(', ')}`);
     render();
@@ -10164,6 +10169,9 @@ const eduNote = (key) => (S.eduNote === `big:${key}`
 /** A person's name for a new EduPage message: from their messages, else from the school's teacher list. */
 const eduName = (mxid) => S.names.get(mxid) || S.eduPeople.get(mxid) || mxid;
 
+/** Whom a new EduPage message goes to and how, as Karchi chose it (kept across a reload, unlike the school's data). */
+const eduChoice = (n) => ({ to: n.to.map((c) => [c.id || null, c.ghost || null, !!(c.withParents && c.parents)]), important: n.important, replies: n.replies });
+
 async function sendEdu() {
   const key = EDU_NEW;
   const n = eduNew();
@@ -10179,7 +10187,7 @@ async function sendEdu() {
     if (ghost) content[RECIPIENT_KEY] = ghost;
   } else content[RECIPIENT_KEY] = n.to[0].ghost;
   // The same message is the same choices: what the school's data adds may not be loaded again after a reload.
-  const sig = JSON.stringify({ text, to: n.to.map((c) => [c.id || null, c.ghost || null, !!(c.withParents && c.parents)]), important: n.important, replies: n.replies });
+  const sig = JSON.stringify({ text, ...eduChoice(n) });
   const again = retryOf(key, sig, files);
   const txn = again?.txns[0] || txnId();
   S.pending.set(txn, { event_id: txn, pending: true, sender: S.userId, origin_server_ts: Date.now(), content: { ...content, [EDU_FILES]: files.map((f) => ({ name: f.name })) } });
@@ -10202,7 +10210,7 @@ async function sendEdu() {
     S.pending.delete(txn);
     setDraft(key, text);
     if (files.length) S.attach.set(key, files);
-    keepRetry(key, { sig, box: text, files, txns: [txn], uploaded: content[EDU_FILES] });
+    keepRetry(key, { sig, box: boxNow(key), files, txns: [txn], uploaded: content[EDU_FILES] });
     alert(T('Správa sa neodoslala. Skús to znova.'));
     render();
   }
