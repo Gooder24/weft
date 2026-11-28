@@ -14,7 +14,9 @@ grep -q 'run.sh' "$brief" || echo "verify-on-asus: brief nespomína výstup run.
 run=$(uname -n | cut -d- -f1)-$(date +%Y%m%d-%H%M%S)-$$
 rm -f "$verdict"
 ssh asus 'mkdir -p ~/weft-verify && find ~/weft-verify -mindepth 1 -maxdepth 1 -mtime +0 -exec rm -rf {} +'
-tar -c --exclude=node_modules --exclude='overenie/20*' . | ssh asus "mkdir ~/weft-verify/$run && tar -x -C ~/weft-verify/$run"
+# Other threads write to .git meanwhile: tar's 1 ("file changed as we read it") still copied everything else.
+{ tar -c --warning=no-file-changed --warning=no-file-removed --exclude=node_modules --exclude='overenie/20*' . || [ $? -eq 1 ]; } |
+  ssh asus "mkdir ~/weft-verify/$run && tar -x -C ~/weft-verify/$run"
 ssh asus "cat > ~/weft-verify/$run/.verifier-brief.md" < "$brief"
 echo "verify-on-asus: overovateľ beží na asuse v ~/weft-verify/$run (jednotka weft-verify-$run)" >&2
 # A user unit, not a child of this ssh: a dropped connection does not kill the verifier. Capped so it cannot hurt
