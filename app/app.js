@@ -8249,7 +8249,7 @@ function bubbleView(r, m, ev, grouped, group, sug = null, read = null) {
       bubbleBody(r, m, ev),
       inDiscordThread(r, ev.event_id) ? h('small', { class: 'mthread' }, T('vo vlákne · odpovedať sa dá len v appke Discord')) : null,
       // His own message keeps its mark's place left of the time even while empty, so no mark ever resizes a bubble.
-      h('span', { class: 'mtime' }, mine ? (fail ? h('span', { class: 'mstate' }) : sendMark(r, ev, read)) : null, h('span', { class: 'mwhen' }, m.edits.has(ev.event_id) && !m.edits.get(ev.event_id).content?.['com.beeper.dont_render_edited'] && !gone && !POLL_START.includes(ev.type) && !pollIn(ev, ev.content) ? T('upravené · ') : '', fail ? (fail.sure ? T('neodoslané') : T('možno neodoslané')) : ev.waiting ? T('čaká na sieť') : ev.pending ? 'odosielam' : timeLabel(ev.origin_server_ts)))),
+      h('span', { class: `mtime${mine && group ? ' wide' : ''}` }, mine ? (fail ? h('span', { class: 'mstate' }) : sendMark(r, ev, read)) : null, h('span', { class: 'mwhen' }, m.edits.has(ev.event_id) && !m.edits.get(ev.event_id).content?.['com.beeper.dont_render_edited'] && !gone && !POLL_START.includes(ev.type) && !pollIn(ev, ev.content) ? T('upravené · ') : '', fail ? (fail.sure ? T('neodoslané') : T('možno neodoslané')) : ev.waiting ? T('čaká na sieť') : ev.pending ? 'odosielam' : timeLabel(ev.origin_server_ts)))),
     acts && (hoverMsg === ev.event_id || S.actsFor === ev.event_id || S.pick?.event === ev.event_id) ? msgActs(r, m, ev, mine) : null),
   sug && !cal.absent ? calSuggestion(r, ev, sug) : null,
   fail ? h('div', { class: 'lateracts failacts' },
@@ -8324,8 +8324,9 @@ function sendMark(r, ev, read) {
     const ids = here.map(([id]) => id);
     const label = seenText(r, here, here.length === 1 && dmPartner(r) ? dmPartner(r) : null, Infinity);
     return h('span', { class: 'mstate seen', title: label, 'aria-label': label },
-      ids.slice(0, 3).map((id) => avatar(r.members.get(id)?.avatar, memberName(r, id), 14, 'reader-av')),
-      ids.length > 3 ? h('span', { class: 'reader-more' }, `+${ids.length - 3}`) : null);
+      // At most three faces, or two and the rest counted: they fit the slot a group keeps, so none widens a bubble.
+      (ids.length > 3 ? ids.slice(0, 2) : ids).map((id) => avatar(r.members.get(id)?.avatar, memberName(r, id), 14, 'reader-av')),
+      ids.length > 3 ? h('span', { class: 'reader-more' }, `+${ids.length - 2}`) : null);
   }
   if (read && (read.pos.get(ev.event_id) ?? Infinity) <= (read.far.get(r.id) ?? -1)) return h('span', { class: 'mstate' });
   const state = sendState(r, ev);

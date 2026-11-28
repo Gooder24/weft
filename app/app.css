@@ -497,14 +497,15 @@ kbd { margin-left: auto; font-family: inherit; font-size: var(--fs); color: var(
 .mcall.missed { color: var(--error); }
 .mtime { display: block; text-align: right; font-size: var(--fs); opacity: .6; margin-top: 1px; }
 /* Left of the time in Karchi's own bubble: how far it got (sendMark, a 12 px icon), or the 14 px face of whoever read
-   up to it. Its place is kept while empty, so a mark that comes never resizes a bubble (in a group a second and third
-   face may widen a short one). */
+   up to it. Its place is kept while empty (in a group as wide as three faces or two and „+N“), so a mark that comes
+   never resizes a bubble. */
 .msg.mine .mtime { display: flex; justify-content: flex-end; align-items: center; gap: 4px; height: var(--lh); opacity: 1; }
 .msg.mine .mwhen { opacity: .6; }
 .mstate { flex: none; display: inline-flex; align-items: center; justify-content: flex-end; min-width: 14px; height: 14px; }
 .mstate .reader-av { width: 14px; height: 14px; font-size: 9px; }
 .mstate .reader-av + .reader-av { margin-left: -4px; outline: 1px solid var(--accent); }
 .mstate .reader-more { padding: 0 0 0 2px; }
+.mtime.wide .mstate { min-width: 46px; }
 .mthread { display: block; font-size: var(--fs); color: var(--link); margin-top: 1px; }
 .bubble.sticker { padding: 0; background: none; }
 .bubble.sticker .mimg { background: none; border-radius: 0; }
@@ -595,8 +596,10 @@ kbd { margin-left: auto; font-family: inherit; font-size: var(--fs); color: var(
 /* One line between the messages and the message box (chatStatus): left who is typing, right what they see of Karchi
    or one word for his newest message. Outside the scrolled list and always this tall, so it never moves a message. */
 .cstatus { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 12px; height: var(--lh); margin: 0 16px; padding: 0 2px; font-size: var(--fs); color: var(--muted); }
-.cstatus > span { display: inline-flex; align-items: center; gap: 4px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.cstatus .own { margin-left: auto; flex: 0 1000 auto; }
+.cstatus > span { min-width: 0; white-space: nowrap; overflow: hidden; }
+/* Theirs takes what is left after his own (at most 70 %), so many names typing never push out what they see of him. */
+.cstatus .theirs { flex: 1 1 0; text-overflow: ellipsis; }
+.cstatus .own { flex: 0 1 auto; max-width: 70%; display: inline-flex; align-items: center; justify-content: flex-end; gap: 4px; }
 .cstatus .w { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 /* His own typing as they see it: his accent bubble shrunk to the line, the dots at 1 px cells. The lifted dot
    (data-step, set by dotsRun in app.js) jumps one grid pixel and fills: steps, never a glide. */
