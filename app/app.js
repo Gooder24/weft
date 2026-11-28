@@ -120,6 +120,7 @@ const DC_ANNOUNCEMENTS = 5; // a Discord announcement channel's type (the bridge
 const DC_DM = 1;
 const OTHER_COLOR = '#9e9e9e';
 
+const RETRY_MS = 15 * 60e3; // how long a message that came back into its box keeps its transaction ids (keepRetry)
 const S = {
   token: localStorage.getItem('ep_token'),
   userId: localStorage.getItem('ep_user'),
@@ -139,7 +140,7 @@ const S = {
   surface: feedFromLocation() ? 'feed' : 'calendar',
   drafts: storedDrafts(localStorage.getItem('ep_user')), // room or thread root id -> unsent text
   attach: new Map(), // room id -> [File] picked with "+", pasted or dropped; sent with the next message
-  eduTo: new Map(), // thread root id -> 'all' when Karchi chose to answer everyone; its author alone otherwise
+  eduTo: storedEduTo(localStorage.getItem('ep_user'), storedDrafts(localStorage.getItem('ep_user'))), // thread root id -> 'all' when Karchi chose to answer everyone; its author alone otherwise
   eduNote: null, // EduPage thread or new message where a file could not be taken: it gets a short note
   eduPeople: new Map(), // teachers from the EduPage bridge, mxid -> name, for new messages
   eduSchool: { role: '', recipients: [] }, // whom a new EduPage message can go to (bridge GET /contacts)
@@ -200,6 +201,17 @@ function loadDrafts(user) {
   S.drafts = storedDrafts(user);
   picked.clear();
   for (const [key, list] of storedPicks(user)) if (list.length && S.drafts.has(key)) picked.set(key, list);
+  S.eduTo = storedEduTo(user, S.drafts);
+}
+/** A reply that came back into its box after a failed send keeps its „Všetkým“ (kept with its retry, keepRetry). */
+function storedEduTo(user, drafts) {
+  const to = new Map();
+  try {
+    for (const [key, it] of Object.entries(JSON.parse(localStorage.getItem(`ep_retry:${user}`) || '{}'))) {
+      if (Date.now() - it.at < RETRY_MS && JSON.parse(it.box || '{}').all === 'all' && drafts.has(key)) to.set(key, 'all');
+    }
+  } catch {}
+  return to;
 }
 function setDraft(key, text) { shiftPicks(key, S.drafts.get(key) || '', text); S.drafts.set(key, text); persistDrafts(); }
 function deleteDraft(key) { picked.delete(key); S.drafts.delete(key); persistDrafts(); }
@@ -553,6 +565,11 @@ function hydrate(snap) {
 const readJson = (key, empty) => { try { return JSON.parse(localStorage.getItem(key)) || empty; } catch { return empty; } };
 const outbox = () => readJson('ep_outbox', []);
 const saveOutbox = (list) => localStorage.setItem('ep_outbox', JSON.stringify(list));
+/** The server's copy of a queued text came: it went, so it never goes (or waits) again. */
+function leftOutbox(txn) {
+  const list = outbox();
+  if (list.some((x) => x.txn === txn)) saveOutbox(list.filter((x) => x.txn !== txn));
+}
 const waitingEvent = (it) => ({ event_id: it.txn, type: 'm.room.message', pending: true, waiting: true, sender: S.userId, origin_server_ts: it.at, content: it.content });
 
 /** The send response is enough to settle the local bubble, even before sync echoes it. */
@@ -581,6 +598,7 @@ async function flushOut() {
   if (flushing) return;
   flushing = true;
   for (const it of outbox()) {
+    if (!outbox().some((x) => x.txn === it.txn)) continue; // its copy came meanwhile (leftOutbox)
     const r = roomOf(it.room);
     if (!r.pending.has(it.txn)) r.pending.set(it.txn, waitingEvent(it)); // written in an earlier window
     const shown = r.pending.get(it.txn);
@@ -1457,7 +1475,7 @@ function roomEvent(r, ev, old = false) {
   if (ev.type === SEND_STATUS) return sendStatusIn(r, ev);
   if (!['m.room.message', 'm.sticker', 'm.reaction', 'm.room.redaction', ...POLL_TYPES].includes(ev.type)) return;
   const txn = ev.unsigned?.transaction_id;
-  if (txn) { r.pending.delete(txn); r.events.delete(txn); retryEchoed(txn); }
+  if (txn) { r.pending.delete(txn); r.events.delete(txn); retryEchoed(txn); leftOutbox(txn); }
   r.events.set(ev.event_id, ev);
 }
 
@@ -2682,6 +2700,7 @@ async function sendChat(r, given = null) {
   const said = textMessage(r, text, draft.search(/\S|$/), given ? given.key ?? null : r.id);
   const parts = [...files.map((file) => ({ file })), ...(text ? [{ text }] : [])];
   const sig = JSON.stringify({ text, reply: reply?.['m.in_reply_to']?.event_id || null });
+  const box = boxNow(r.id); // the box as this message left it: only that is emptied by its copy
   const again = given ? null : retryOf(r.id, sig, files);
   for (const [i, part] of parts.entries()) {
     part.txn = again?.txns[i] || txnId();
@@ -2737,7 +2756,7 @@ async function sendChat(r, given = null) {
           if (text) setDraft(r.id, now.trim() ? `${draft.trimEnd()}\n${now}` : draft);
           if (files.length) S.attach.set(r.id, [...files, ...(S.attach.get(r.id) || [])]);
           if (replyWas && !S.replyTo) S.replyTo = replyWas;
-          if (!now.trim()) keepRetry(r.id, { sig, box: boxNow(r.id), files, txns: parts.map((p) => p.txn) });
+          if (!now.trim()) keepRetry(r.id, { sig, box, files, txns: parts.map((p) => p.txn) });
         }
         if (!err?.held && isNetErr(err)) { goOffline(); alert(T('Teraz to nejde, skús to znova, keď bude sieť.')); }
         else if (!err?.held) alert(T`Odpoveď neodišla (${err?.data?.error || err?.message || T('server ju odmietol')}). Ostala v poli aj so súbormi.`);
@@ -2775,7 +2794,6 @@ const txnId = () => `ep${Date.now()}${Math.random().toString(36).slice(2, 8)}`;
 // files cannot outlive a reload, so only a message without files is kept there. The server's copy of any of its
 // last part ends it: that message went, so a box still holding it unchanged (`boxNow`) is emptied, and the same text
 // typed later is a new one. An earlier part's copy only says that part went: sent again, it is given back too.
-const RETRY_MS = 15 * 60e3;
 let boxRetry = null; // box key -> { sig, files, txns, uploaded?, at }
 let boxRetryUser = null;
 function retries() {
@@ -5402,6 +5420,7 @@ async function sendReply(rootId) {
   // Without text EduPage still gets the files; the message then says what they are.
   const content = { msgtype: 'm.text', body: text || files.map((f) => f.name).join(', '), 'm.relates_to': { 'm.in_reply_to': { event_id: rootId } } };
   if (S.account[EDU_REPLIES]?.[rootId] === 'all') content[REPLY_TO_KEY] = S.eduTo.get(rootId) === 'all' ? 'all' : 'one';
+  const box = boxNow(rootId); // the box as this reply left it: only that is emptied by its copy
   S.eduTo.delete(rootId); // everyone is chosen again for each reply, never carried over to the next one
   const sig = JSON.stringify(content);
   const again = retryOf(rootId, sig, files);
@@ -5422,7 +5441,7 @@ async function sendReply(rootId) {
       setDraft(rootId, text);
       if (files.length) S.attach.set(rootId, files);
       if (content[REPLY_TO_KEY] === 'all') S.eduTo.set(rootId, 'all');
-      keepRetry(rootId, { sig, box: boxNow(rootId), files, txns: [txn], uploaded: content[EDU_FILES] });
+      keepRetry(rootId, { sig, box, files, txns: [txn], uploaded: content[EDU_FILES] });
     }
     alert(fresh ? T('Odpoveď sa neodoslala. Skús to znova.') : T`Odpoveď sa neodoslala: ${text || files.map((f) => f.name).join(', ')}`);
     render();
@@ -10192,6 +10211,7 @@ async function sendEdu() {
   } else content[RECIPIENT_KEY] = n.to[0].ghost;
   // The same message is the same choices: what the school's data adds may not be loaded again after a reload.
   const sig = JSON.stringify({ text, ...eduChoice(n) });
+  const box = boxNow(key); // the box as this message left it: recipients added meanwhile keep it from being emptied
   const again = retryOf(key, sig, files);
   const txn = again?.txns[0] || txnId();
   S.pending.set(txn, { event_id: txn, pending: true, sender: S.userId, origin_server_ts: Date.now(), content: { ...content, [EDU_FILES]: files.map((f) => ({ name: f.name })) } });
@@ -10214,7 +10234,7 @@ async function sendEdu() {
     S.pending.delete(txn);
     setDraft(key, text);
     if (files.length) S.attach.set(key, files);
-    keepRetry(key, { sig, box: boxNow(key), files, txns: [txn], uploaded: content[EDU_FILES] });
+    keepRetry(key, { sig, box, files, txns: [txn], uploaded: content[EDU_FILES] });
     alert(T('Správa sa neodoslala. Skús to znova.'));
     render();
   }
