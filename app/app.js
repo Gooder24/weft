@@ -1260,7 +1260,8 @@ function applySync(data, first = false) {
 function refreshArchiveChats(force = false) {
   loadDiscord(force);
   if (S.archiveLoading) return S.archiveLoading;
-  if (!force && Date.now() - (S.archiveAt || 0) < 5 * 60e3) return Promise.resolve();
+  // Maily shows new mail (asus takes Outlook's every 30 s); elsewhere the old chats change seldom. 304 when unchanged.
+  if (!force && Date.now() - (S.archiveAt || 0) < (S.box === 'mail' ? 30e3 : 5 * 60e3)) return Promise.resolve();
   S.archiveLoading = readArchiveChats().finally(() => { S.archiveLoading = null; });
   return S.archiveLoading;
 }
@@ -6185,6 +6186,7 @@ const BOXES = [
 const inBox = (box) => BOXES.find(([id]) => id === box)?.[2] || BOXES[0][2];
 function setBox(box) {
   S.box = box;
+  if (box === 'mail') refreshArchiveChats(true);
   S.menu = false;
   render();
 }
