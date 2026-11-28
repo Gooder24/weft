@@ -3,7 +3,8 @@
 Ako môžu dvaja ľudia, ktorí majú každý svoj Weft doma, písať priamo svojim serverom. Netreba na to verejnú IP,
 doménu ani certifikát, a cudzí server ich nevidí. Napísal ho agent 27. 11. 2026 podľa labu z 25. a 26. 11.
 
-Stav: krok 1 (úpravy Tuwunelu a firewall len pre kontakty) je postavený a overený v labe. Ďalšie kroky čakajú.
+Stav: krok 1 (úpravy Tuwunelu a firewall len pre kontakty) je postavený a overený v labe. Krok 2 beží od 28. 11. 2026
+na asuse a delli, ktorý je prvý kontakt. Ďalšie kroky čakajú.
 
 ## Krátko
 
@@ -75,11 +76,40 @@ Päť sekúnd z času po návrate je čakanie `startup_hello` pred prvou transak
 Tuwunel porovnáva zoznam povolených mien s hostom mena servera, teda bez portu. Kontakt je preto celá adresa, nie
 adresa a port.
 
+## Krok 2: Priamo na asuse a delli
+
+`server/priamo/setup.sh <priečinok> <jednotka>` postaví Priamo na stroji. Potrebuje sudo bez hesla. Spúšťa sa znova
+po každej zmene kontaktov.
+
+- **Firewall** je systémová jednotka `weft-priamo-firewall` (`/etc/weft-priamo/priamo.nft`). Yggdrasil ju má v
+  `Requires=`, takže bez nej `ygg0` nevznikne. Inak by na Yggdrasile odpovedalo všetko, čo na stroji počúva na `::`,
+  napríklad SSH.
+- **Yggdrasil** je balík z Debianu. Volá len von na dva verejné peery: `ygg-ke.8px.sk` (Košice) a `37.205.14.171`
+  (Praha, s kľúčom). Nemá listener ani multicast a o sebe nič nehlási (`NodeInfoPrivacy`).
+- **Tuwunel** je `tuwunel-priamo` ako používateľská jednotka. Počúva len na adrese Yggdrasilu a na 127.0.0.1, port
+  8448. Meno servera je `[adresa]`.
+
+| Stroj | Priečinok | Jednotka |
+|---|---|---|
+| asus | `~/matrix-spike/priamo` | `matrix-spike-priamo` |
+| dell | `~/priamo` | `weft-priamo` |
+
+Kontakty sú v `priamo.json` v priečinku. Dell nemá Bun, preto sa jeho `priamo.nft` a `allowlist.toml` vyrábajú na
+asuse (`bun priamo.ts render`) a kopírujú tam. Adresy uzlov sú len na strojoch, nie v gite. Účet `overenie` na oboch
+serveroch slúži na kontroly. Jeho heslo je v `overenie.pw` v priečinku.
+
+Kontrola naživo z 28. 11. 2026:
+
+- Správa ide medzi asusom a dellom cez verejné peery za 0,5 s oboma smermi.
+- Dell bol 2 minúty vypnutý. Správu, ktorú asus poslal počas výpadku, dostal 6,4 s po štarte.
+- Cudzí uzol stál vo vlastnom sieťovom mennom priestore na asuse a pripojil sa cez pražský peer. Cestu k obom
+  strojom našiel a na `ygg0` asusu od neho prišlo 18 paketov. Port 8448 ani SSH (22) sa mu neotvoril ani na asuse,
+  ani na delli.
+
 ## Ďalšie kroky
 
 | # | Krok | Kontrola |
 |---|---|---|
-| 2 | Priamo na asuse: druhý Tuwunel ako vlastná jednotka (`matrix-spike-priamo`), Yggdrasil s 1–2 peermi, firewall z `priamo.json`. Živý homeserver Weftu sa nemení. | z iného stroja cez Yggdrasil: kontakt sa spojí, cudzí uzol nie |
 | 3 | Weft: druhý účet na Priamo a sieť „Priamo“ v zlúčenom chate. Keď ju má aj druhá strana, Weft pošle cez ňu. | dva Wefty proti dvom falošným homeserverom: správa ide cez Priamo, bez neho cez bežnú cestu |
 | 4 | Šifrovanie vo Wefte (`@matrix-org/matrix-sdk-crypto-wasm`). Pomôže aj ostatným chatom, nielen Priamo. | správa na disku servera nie je čitateľná (scenár 5 labu) |
 | 5 | Nástenka kontaktom: z tej istej nástenky ([návrh](../2026-11-nastenka/README.md)) poslať súbor alebo text kontaktu cez Priamo | položka z nástenky príde do Weftu kontaktu |
@@ -101,11 +131,10 @@ server Priamo (krok 5). Veľký súbor tak ide z domu priamo k nemu, cez šifrov
 - Výnimka pre 200::/7 je bezpečná len s pravidlom, že 200::/7 neodíde iným rozhraním. Ak Yggdrasil spadne, jeho
   trasa zmizne a bez pravidla by išla premávka cez bežnú sieť.
 
-## Rozhodnutia pre Karchiho
+## Rozhodnutia
 
-1. Peer pre krok 2: verejné peery Yggdrasilu (zadarmo a hneď, vidia IP adresu asusu) alebo vlastný VPS (platí sa,
-   IP adresu vidí len on). Odporúčanie: začať s dvoma verejnými peermi a VPS pridať, keď Priamo používa viac ľudí.
-2. Kto je prvý kontakt: bez druhého človeka s Priamo sa krok 3 dá overiť len proti falošnému serveru.
+1. Peer: verejné peery Yggdrasilu (Karchi, 28. 11. 2026). VPS sa pridá, keď Priamo používa viac ľudí.
+2. Prvý kontakt je dell (Karchi, 28. 11. 2026). Druhý človek s Priamo príde, keď bude krok 3.
 
 ## Zdroje
 
