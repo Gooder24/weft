@@ -57,6 +57,13 @@ do tej istej nástenky.
   na TLS Electronu), self-test shellu `SPRAVY_SELFTEST=board` (`desktop/selftest-board.js`, skutočný preload a
   súbory), UI s falošným shellom `overenie/nastenka/run.sh`.
 
+## Kontaktom cez Priamo (postavené 28. 11. 2026)
+
+Iným ľuďom nástenka posiela cez [Weft Priamo](../2026-11-priamo/README.md): riadok „Kontaktom:“ ukáže ľudí, s
+ktorými má Karchi chat Priamo. Nikto nie je predvolený, klik ho pridá. Text a súbory idú do jeho chatu Priamo ako
+Karchiho správy, šifrované cez Yggdrasil, a prídu do Weftu kontaktu ako správa v chate. Na nástenke ostanú v
+úložisku okna (posledných 200) so stavom „odišlo cez Priamo“. Kontrola: `tests/priamo/ui.cjs`.
+
 ## Krok 2: náš protokol cez asus (neskôr)
 
 LocalSend nestačí, keď druhé zariadenie nie je zapnuté, nemá appku LocalSend, alebo nie je v tej istej sieti ani

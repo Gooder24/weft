@@ -3,8 +3,9 @@
 Ako môžu dvaja ľudia, ktorí majú každý svoj Weft doma, písať priamo svojim serverom. Netreba na to verejnú IP,
 doménu ani certifikát, a cudzí server ich nevidí. Napísal ho agent 27. 11. 2026 podľa labu z 25. a 26. 11.
 
-Stav: krok 1 (úpravy Tuwunelu a firewall len pre kontakty) je postavený a overený v labe. Krok 2 beží od 28. 11. 2026
-na asuse a delli, ktorý je prvý kontakt. Ďalšie kroky čakajú.
+Stav (28. 11. 2026): kroky 1 až 5 sú postavené. Priamo beží na asuse a delli, ktorý je prvý kontakt, a vo Wefte je
+to sieť „Priamo“ so šifrovanými chatmi, do ktorej posiela aj nástenka. Text pre krok 6 (návrh do špecifikácie Matrixu)
+je v [msc.md](msc.md); do Matrixu ešte neodišiel.
 
 ## Krátko
 
@@ -87,7 +88,9 @@ po každej zmene kontaktov.
 - **Yggdrasil** je balík z Debianu. Volá len von na dva verejné peery: `ygg-ke.8px.sk` (Košice) a `37.205.14.171`
   (Praha, s kľúčom). Nemá listener ani multicast a o sebe nič nehlási (`NodeInfoPrivacy`).
 - **Tuwunel** je `tuwunel-priamo` ako používateľská jednotka. Počúva len na adrese Yggdrasilu a na 127.0.0.1, port
-  8448. Meno servera je `[adresa]`.
+  8448, cez HTTPS aj obyčajné HTTP (`dual_protocol`), aby sa naň mohol prihlásiť most Weftu na 127.0.0.1. Cez
+  Yggdrasil sa k nemu dostanú len kontakty a cestu šifruje Yggdrasil; federácia ide von vždy cez HTTPS. Meno
+  servera je `[adresa]`.
 
 | Stroj | Priečinok | Jednotka |
 |---|---|---|
@@ -106,14 +109,54 @@ Kontrola naživo z 28. 11. 2026:
   strojom našiel a na `ygg0` asusu od neho prišlo 18 paketov. Port 8448 ani SSH (22) sa mu neotvoril ani na asuse,
   ani na delli.
 
-## Ďalšie kroky
+Po štarte stroja sa najprv načíta firewall a až potom sa začne štartovať Yggdrasil. Overené 28. 11. na delli
+zastavením oboch jednotiek a štartom samotného Yggdrasilu (skutočný reštart stroja ešte nebol).
 
-| # | Krok | Kontrola |
-|---|---|---|
-| 3 | Weft: druhý účet na Priamo a sieť „Priamo“ v zlúčenom chate. Keď ju má aj druhá strana, Weft pošle cez ňu. | dva Wefty proti dvom falošným homeserverom: správa ide cez Priamo, bez neho cez bežnú cestu |
-| 4 | Šifrovanie vo Wefte (`@matrix-org/matrix-sdk-crypto-wasm`). Pomôže aj ostatným chatom, nielen Priamo. | správa na disku servera nie je čitateľná (scenár 5 labu) |
-| 5 | Nástenka kontaktom: z tej istej nástenky ([návrh](../2026-11-nastenka/README.md)) poslať súbor alebo text kontaktu cez Priamo | položka z nástenky príde do Weftu kontaktu |
-| 6 | Návrh do špecifikácie Matrixu (MSC): mená v 200::/7 overené sieťou namiesto certifikátu | text návrhu a odkaz na lab |
+## Krok 3: Priamo vo Wefte
+
+- **Účet:** Weft sa na server Priamo prihlási tým istým mostom ako na matrix.org
+  ([matrix-matrix](https://github.com/Gooder24/matrix-matrix)), ako druhý účet. Most má v configu
+  `accept_invites_on: ["http://127.0.0.1:8448"]`: na tomto serveri prijme každú pozvánku, lebo tam sa dostanú len
+  kontakty. Na iných serveroch pozvánky neprijíma ako doteraz. Účet na asuse je `karchi`, heslo je v
+  `~/matrix-spike/priamo/karchi.pw`.
+- **Sieť:** chat toho účtu má v `m.bridge` prihlásenie (`fi.mau.receiver`) s menom servera v 200::/7, a Weft ho preto
+  ukazuje ako sieť „Priamo“ (`isPriamo` v `app/app.js`), nie Matrix.
+- **Zlúčený chat:** Priamo sa zlučuje s ostatnými sieťami toho človeka (odteraz aj Matrix). Zlúčený chat píše cez
+  Priamo, kým Karchi nevyberie inú sieť a kým je účet Priamo pripojený. Inak píše ako doteraz, cez sieť, z ktorej
+  človek písal naposledy.
+- **Nový chat:** Ctrl+N s adresou `@meno:[adresa]` otvorí chat cez účet Priamo, iná adresa ide cez ten druhý.
+- **Kontrola:** `tests/priamo/ui.cjs` (tri dočasné Tuwunely: Weft, „matrix.org“ a Priamo s menom `[201:db8::1]`).
+  Pozvánka na Priamo sa prijme, na druhom serveri nie, chaty sa zlúčia podľa mena a správa ide cez Priamo, hoci
+  človek písal naposledy z Matrixu. Keď server Priamo spadne, ide cez Matrix.
+
+Most predtým hlásil „pripojené“ aj vtedy, keď druhý server nebežal, lebo mautrix skúšal sync znova potichu. Od
+28. 11. to hlási ako výpadok.
+
+## Krok 4: šifrovanie
+
+Chaty cez Priamo šifruje zariadenie mosta (Olm/Megolm cez goolm), takže servery Priamo na oboch stranách majú len
+zašifrované správy. Pôvodný plán bol šifrovanie priamo vo Wefte (`matrix-sdk-crypto-wasm`). Nahradil ho most, lebo
+správy všetkých ostatných sietí aj tak prichádzajú cez mosty na Karchiho vlastný homeserver nezašifrované, a pre
+Priamo stačí, že ho nečíta server.
+
+Kontrola naživo z 28. 11. 2026 (`overenie/priamo7/check.ts`): `overenie` na delli so šifrujúcou appkou založil
+šifrovaný chat s Karchiho účtom Priamo. Most prijal pozvánku za 1,2 s a správa bola vo Wefte 2,6 s od štartu, v
+chate siete Priamo. Odpoveď z Weftu prišla do dellu za 0,9 s a appka ju rozšifrovala. Na serveri Priamo asusu aj
+dellu boli z chatu len udalosti `m.room.encrypted` (dve, žiadna čitateľná), a text nebol v databáze ani jedného z
+nich, zatiaľ čo v databáze hlavného homeservera asusu bol.
+
+## Krok 5: nástenka kontaktom
+
+Na nástenke ([návrh](../2026-11-nastenka/README.md)) pribudol riadok „Kontaktom:“ s ľuďmi, s ktorými má Karchi chat
+Priamo. Nikto z nich nie je predvolený: klik ho pridá, ďalší klik uberie. Text a súbory idú do jeho chatu Priamo
+ako Karchiho správy, takže prídu do Weftu kontaktu cez Yggdrasil a šifrované. Na nástenke ostanú (v úložisku okna,
+posledných 200) so stavom „odišlo cez Priamo“ alebo „neodišlo“. Kontrola: `tests/priamo/ui.cjs` s falošným shellom.
+
+## Krok 6: návrh do špecifikácie Matrixu
+
+[msc.md](msc.md): server s menom v sieti, ktorá overuje adresu kľúčom (Yggdrasil 200::/7), smie vynechať kontrolu
+certifikátu, nie však delegovanie ani cestu mimo tejto siete. Podáva sa ako pull request do
+`matrix-org/matrix-spec-proposals`, čo je verejný príspevok do cudzieho projektu.
 
 ## Spojenie s nástenkou
 
@@ -127,14 +170,16 @@ server Priamo (krok 5). Veľký súbor tak ide z domu priamo k nemu, cez šifrov
 - Yggdrasil nie je anonymný: peer vidí IP adresu. Na verejných peeroch ju vidí aj ich prevádzkovateľ.
 - Na verejnom Yggdrasile môže každý uzol skúsiť adresu servera. Firewall z `priamo.json` je preto povinný, nie
   doplnok.
-- Kým nebude šifrovanie (krok 4), server Priamo ukladá správy čitateľne, rovnako ako živý homeserver Weftu.
+- Šifruje most, takže Karchiho vlastný homeserver má správy z Priamo čitateľne, rovnako ako správy všetkých
+  ostatných sietí. Šifrované sú na serveroch Priamo a na ceste medzi nimi.
 - Výnimka pre 200::/7 je bezpečná len s pravidlom, že 200::/7 neodíde iným rozhraním. Ak Yggdrasil spadne, jeho
   trasa zmizne a bez pravidla by išla premávka cez bežnú sieť.
 
 ## Rozhodnutia
 
 1. Peer: verejné peery Yggdrasilu (Karchi, 28. 11. 2026). VPS sa pridá, keď Priamo používa viac ľudí.
-2. Prvý kontakt je dell (Karchi, 28. 11. 2026). Druhý človek s Priamo príde, keď bude krok 3.
+2. Prvý kontakt je dell (Karchi, 28. 11. 2026). Druhý človek s Priamo príde, keď ho Karchi pozve.
+3. Šifrovanie robí most namiesto Weftu (agent, 28. 11. 2026, keď Karchi povedal „všetko implementuj“).
 
 ## Zdroje
 

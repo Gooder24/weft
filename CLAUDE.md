@@ -69,7 +69,9 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   Prijať in the corner (Enter only after it was a second in sight); off, it listens only on the Tailscale address. Arrivals
   go to Downloads/Weft and show in the corner window like codes (Enter opens or copies). A send waits for the device's
   answer as long as LocalSend's own sender does (its Accept; a text it shows at once until Close), only reaching it is
-  bounded (5 s); Zrušiť or Delete stops it. A file goes by the path
+  bounded (5 s); Zrušiť or Delete stops it. People with a Priamo chat are targets too („Kontaktom:“, never by default, a
+  click picks one): text and files go into that chat as Karchi's messages and stay on the board in the window's
+  localStorage `ep_board_priamo:<user>` (newest 200). A file goes by the path
   preload takes from the File itself (`webUtils`), so the page cannot name one. Our own protocol through asus comes
   later into the same board: `docs/navrhy/2026-11-nastenka/`. Checks: `tests/localsend/run.cjs`, `tests/localsend/cli.sh`
   (the official LocalSend CLI both ways, in its own network namespace),
@@ -129,7 +131,8 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   `matrix-spike-matrix`, the same appservice `appservices/matrix.yaml` (bot `matrixbot`, ghosts `@matrix_<escaped id>`),
   127.0.0.1:29333 behind Caddy's `/_bridges/matrix/`. One account on another homeserver (matrix.org, beeper.com),
   signed in by password or an access token, gets its own encrypted device „Weft“; text, files, replies, edits,
-  reactions, receipts and typing both ways, no backfill, no invitations accepted, rooms that are bridges there left out.
+  reactions, receipts and typing both ways, no backfill, no invitations accepted (except on `accept_invites_on`
+  servers: Priamo's), rooms that are bridges there left out; a second login there is Priamo (below).
   Its `m.bridge` protocol id is `github.com/Gooder24/matrix-matrix` (`NETWORKS`); Weft shows its English sign-in fields
   in Slovak (`fields` of the Matrix entry in `LINKS`). Ctrl+N starts a DM by `@name:server` and joins `#alias:server`
   (`POST /v3/join`). Sign-out ends the device there and deletes its keys and rooms. Weft's homeserver keeps federation
@@ -354,7 +357,15 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   dialling out to two public peers only, and tuwunel-priamo on the node's Yggdrasil address and 127.0.0.1:8448 (Weft's
   one service listening outside Tailscale and localhost, behind that firewall). asus `~/matrix-spike/priamo`, unit
   `matrix-spike-priamo`; dell, the first contact, `~/priamo`, unit `weft-priamo` (no Bun there: its files are
-  rendered on asus). Not in Weft yet. Checks: `bun run check` there, the local lab `overenie/prenos-lab/run.sh priamo`.
+  rendered on asus). The server answers plain HTTP too (`dual_protocol`) for the bridge on 127.0.0.1. In Weft it is the
+  network „Priamo“: the Matrix bridge's second login, Karchi's account `karchi` there (password in
+  `~/matrix-spike/priamo/karchi.pw`), whose invitations the bridge takes (`accept_invites_on` in
+  `matrix-go/config.yaml`); a chat whose `m.bridge` receiver is on a 200::/7 server is `priamo` (`isPriamo` in app.js),
+  merges like the other networks, and a merged chat writes through it while that account is connected and Karchi
+  picked no other network. The bridge's device encrypts it, so both Priamo servers hold ciphertext only. The board
+  sends to Priamo contacts too (below). Checks: `bun run check` there, the local lab `overenie/prenos-lab/run.sh
+  priamo`, `tests/priamo/ui.cjs` (three throwaway Tuwunels and the page), live `overenie/priamo7/check.ts` (dell's
+  `overenie` with an encrypting app). Draft MSC: `docs/navrhy/2026-11-priamo/msc.md`.
 - Rozoslať (beta, Settings → Správy, account data `sk.karchi.broadcast` `beta`; off shows it nowhere): one message
   to many people in four steps (Komu, Správa, Náhľad, Rozoslané; Ctrl+J or chat menu), each in their own chat with
   their own greeting (`{oslovenie}`, `{meno}`; corrected ones kept in `sk.karchi.people.names`, keys as in
