@@ -1260,8 +1260,8 @@ function applySync(data, first = false) {
 function refreshArchiveChats(force = false) {
   loadDiscord(force);
   if (S.archiveLoading) return S.archiveLoading;
-  // Maily shows new mail (asus takes Outlook's every 30 s); elsewhere the old chats change seldom. 304 when unchanged.
-  if (!force && Date.now() - (S.archiveAt || 0) < (S.box === 'mail' ? 30e3 : 5 * 60e3)) return Promise.resolve();
+  // Maily shows new mail (asus takes Outlook's every 30 s; under the sync's 30 s so no sync is skipped); elsewhere the old chats change seldom. 304 when unchanged.
+  if (!force && Date.now() - (S.archiveAt || 0) < (S.box === 'mail' ? 20e3 : 5 * 60e3)) return Promise.resolve();
   S.archiveLoading = readArchiveChats().finally(() => { S.archiveLoading = null; });
   return S.archiveLoading;
 }
@@ -11872,7 +11872,8 @@ function toolList() {
     ...BOXES.filter(([id]) => id !== S.box).map(([id, label]) => [T`Zobraziť: ${label}`, 'zobrazenie priecinok folder view', '', () => setBox(id)]),
     ...appsInUse(hidden).map((a) => [`${hidden.has(a.id) ? T('Ukázať') : T('Skryť')} ${a.name}`, 'siet filter aplikacia', '', () => toggleApp(a.id), true, !hidden.has(a.id)]),
     [e?.archived ? T('Vrátiť chat z archívu') : T('Archivovať chat'), 'archive archiv hotovo', 'Ctrl+E', () => toggleArchive(e), !!e],
-    [e?.unread ? T('Označiť ako prečítané') : T('Označiť ako neprečítané'), 'read unread precitane neprecitane', 'Ctrl+Shift+U', () => toggleRead(e), !!e && !(e.room?.archiveOnly && !e.unread)],
+    // An old chat or mail of the archive is never unread: no line for it.
+    ...(e?.room?.archiveOnly && !e.unread ? [] : [[e?.unread ? T('Označiť ako prečítané') : T('Označiť ako neprečítané'), 'read unread precitane neprecitane', 'Ctrl+Shift+U', () => toggleRead(e), !!e]]),
     [T('Pripomenúť chat neskôr'), 'remind snooze pripomienka', 'Ctrl+L', () => openRemind(e), !!e],
     [T('Odpovedať na poslednú správu'), 'reply odpoved', 'Ctrl+R', replyToLast, !!r],
     [T('Upraviť svoju poslednú správu'), 'edit opravit', null, () => { const [lr, ev] = r ? lastEditableIn(r) : []; if (ev) startEdit(lr, ev); render(); }, !!r],
