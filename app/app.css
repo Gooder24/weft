@@ -505,7 +505,7 @@ kbd { margin-left: auto; font-family: inherit; font-size: var(--fs); color: var(
 .mstate .reader-av { width: 14px; height: 14px; font-size: 9px; }
 .mstate .reader-av + .reader-av { margin-left: -4px; outline: 1px solid var(--accent); }
 .mstate .reader-more { padding: 0 0 0 2px; }
-.mtime.wide .mstate { min-width: 46px; }
+.mtime.wide .mstate { min-width: calc(26px + 3ch); } /* two faces and „+NN“ or „99+“, in the line's own font */
 .mthread { display: block; font-size: var(--fs); color: var(--link); margin-top: 1px; }
 .bubble.sticker { padding: 0; background: none; }
 .bubble.sticker .mimg { background: none; border-radius: 0; }
@@ -597,9 +597,11 @@ kbd { margin-left: auto; font-family: inherit; font-size: var(--fs); color: var(
    or one word for his newest message. Outside the scrolled list and always this tall, so it never moves a message. */
 .cstatus { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 12px; height: var(--lh); margin: 0 16px; padding: 0 2px; font-size: var(--fs); color: var(--muted); }
 .cstatus > span { min-width: 0; white-space: nowrap; overflow: hidden; }
-/* Theirs takes what is left after his own (at most 70 %), so many names typing never push out what they see of him. */
+/* Theirs takes what is left after his own (at most 70 % while someone types), so many names typing never push out
+   what they see of him. */
+.cstatus:has(> .theirs:not(:empty)) .own { max-width: 70%; }
 .cstatus .theirs { flex: 1 1 0; text-overflow: ellipsis; }
-.cstatus .own { flex: 0 1 auto; max-width: 70%; display: inline-flex; align-items: center; justify-content: flex-end; gap: 4px; }
+.cstatus .own { flex: 0 1 auto; display: inline-flex; align-items: center; justify-content: flex-end; gap: 4px; }
 .cstatus .w { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 /* His own typing as they see it: his accent bubble shrunk to the line, the dots at 1 px cells. The lifted dot
    (data-step, set by dotsRun in app.js) jumps one grid pixel and fills: steps, never a glide. */

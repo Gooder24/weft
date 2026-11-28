@@ -8326,7 +8326,7 @@ function sendMark(r, ev, read) {
     return h('span', { class: 'mstate seen', title: label, 'aria-label': label },
       // At most three faces, or two and the rest counted: they fit the slot a group keeps, so none widens a bubble.
       (ids.length > 3 ? ids.slice(0, 2) : ids).map((id) => avatar(r.members.get(id)?.avatar, memberName(r, id), 14, 'reader-av')),
-      ids.length > 3 ? h('span', { class: 'reader-more' }, `+${ids.length - 2}`) : null);
+      ids.length > 3 ? h('span', { class: 'reader-more' }, ids.length > 101 ? '99+' : `+${ids.length - 2}`) : null);
   }
   if (read && (read.pos.get(ev.event_id) ?? Infinity) <= (read.far.get(r.id) ?? -1)) return h('span', { class: 'mstate' });
   const state = sendState(r, ev);
