@@ -2719,6 +2719,10 @@ async function sendChat(r, given = null) {
       settleChat(r, part.txn, res, content);
       if (!part.file) saveOutbox(outbox().filter((x) => x.txn !== part.txn));
     } catch (err) {
+      if (!r.pending.has(part.txn)) { // its copy came first: it went, only its answer was lost
+        if (!part.file) saveOutbox(outbox().filter((x) => x.txn !== part.txn));
+        continue;
+      }
       // A reply whose first part (the one that carries it) did not go, because it may not, the network is down or
       // the server refused it, goes back whole: text, files and the reply itself. Nothing of it waits or can be sent
       // again without the reply, and Enter again asks again (Esc on the reply sends it as a plain message).
@@ -2732,7 +2736,7 @@ async function sendChat(r, given = null) {
           if (text) setDraft(r.id, now.trim() ? `${draft.trimEnd()}\n${now}` : draft);
           if (files.length) S.attach.set(r.id, [...files, ...(S.attach.get(r.id) || [])]);
           if (replyWas && !S.replyTo) S.replyTo = replyWas;
-          if (!now.trim()) keepRetry(r.id, { sig, files, txns: parts.map((p) => p.txn) });
+          if (!now.trim()) keepRetry(r.id, { sig, box: draft, files, txns: parts.map((p) => p.txn) });
         }
         if (!err?.held && isNetErr(err)) { goOffline(); alert(T('Teraz to nejde, skús to znova, keď bude sieť.')); }
         else if (!err?.held) alert(T`Odpoveď neodišla (${err?.data?.error || err?.message || T('server ju odmietol')}). Ostala v poli aj so súbormi.`);
@@ -2768,7 +2772,8 @@ const txnId = () => `ep${Date.now()}${Math.random().toString(36).slice(2, 8)}`;
 // all, with only its answer lost, is given back by the homeserver instead of going out (and to the network) twice.
 // Kept with the drafts (localStorage `ep_retry:<user>`), so a reload before the server's copy shows keeps the ids too;
 // files cannot outlive a reload, so only a message without files is kept there. The server's copy of any of its
-// parts ends it: that message went, and the same text typed later is a new one.
+// parts ends it: that message went, so a box still holding it unchanged is emptied, and the same text typed later is
+// a new one.
 const RETRY_MS = 15 * 60e3;
 let boxRetry = null; // box key -> { sig, files, txns, uploaded?, at }
 let boxRetryUser = null;
@@ -2786,7 +2791,7 @@ function retries() {
 }
 function saveRetries() {
   const kept = Object.fromEntries([...retries()].filter(([, it]) => !it.files.length && Date.now() - it.at < RETRY_MS)
-    .map(([key, { sig, txns, at }]) => [key, { sig, txns, at }]));
+    .map(([key, { sig, box, txns, at }]) => [key, { sig, box, txns, at }]));
   try { localStorage.setItem(`ep_retry:${S.userId}`, JSON.stringify(kept)); } catch {}
 }
 function keepRetry(key, it) {
@@ -2805,7 +2810,17 @@ function retryEchoed(txn) {
   const kept = retries();
   if (!kept.size) return;
   let gone = false;
-  for (const [key, it] of kept) if (it.txns.includes(txn)) gone = kept.delete(key);
+  for (const [key, it] of kept) {
+    if (!it.txns.includes(txn)) continue;
+    gone = kept.delete(key);
+    const files = S.attach.get(key) || [];
+    if ((S.drafts.get(key) || '').trim() !== (it.box || '').trim() || files.length !== it.files.length || files.some((f, i) => f !== it.files[i])) continue;
+    deleteDraft(key);
+    S.attach.delete(key);
+    S.eduTo.delete(key);
+    if (S.replyTo?.room === key) S.replyTo = null;
+    if (key === EDU_NEW) { Object.assign(eduNew(), { to: [], important: false, replies: 'all' }); saveEduNew(); }
+  }
   if (gone) saveRetries();
 }
 
@@ -5400,7 +5415,7 @@ async function sendReply(rootId) {
       setDraft(rootId, text);
       if (files.length) S.attach.set(rootId, files);
       if (content[REPLY_TO_KEY] === 'all') S.eduTo.set(rootId, 'all');
-      keepRetry(rootId, { sig, files, txns: [txn], uploaded: content[EDU_FILES] });
+      keepRetry(rootId, { sig, box: text, files, txns: [txn], uploaded: content[EDU_FILES] });
     }
     alert(fresh ? T('Odpoveď sa neodoslala. Skús to znova.') : T`Odpoveď sa neodoslala: ${text || files.map((f) => f.name).join(', ')}`);
     render();
@@ -10163,7 +10178,8 @@ async function sendEdu() {
     const ghost = n.to.length === 1 && n.to[0].kind === 'teacher' && S.eduSchool.recipients.find((r) => r.id === n.to[0].id)?.ghost;
     if (ghost) content[RECIPIENT_KEY] = ghost;
   } else content[RECIPIENT_KEY] = n.to[0].ghost;
-  const sig = JSON.stringify(content);
+  // The same message is the same choices: what the school's data adds may not be loaded again after a reload.
+  const sig = JSON.stringify({ text, to: n.to.map((c) => [c.id || null, c.ghost || null, !!(c.withParents && c.parents)]), important: n.important, replies: n.replies });
   const again = retryOf(key, sig, files);
   const txn = again?.txns[0] || txnId();
   S.pending.set(txn, { event_id: txn, pending: true, sender: S.userId, origin_server_ts: Date.now(), content: { ...content, [EDU_FILES]: files.map((f) => ({ name: f.name })) } });
@@ -10186,7 +10202,7 @@ async function sendEdu() {
     S.pending.delete(txn);
     setDraft(key, text);
     if (files.length) S.attach.set(key, files);
-    keepRetry(key, { sig, files, txns: [txn], uploaded: content[EDU_FILES] });
+    keepRetry(key, { sig, box: text, files, txns: [txn], uploaded: content[EDU_FILES] });
     alert(T('Správa sa neodoslala. Skús to znova.'));
     render();
   }
