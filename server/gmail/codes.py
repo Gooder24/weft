@@ -66,9 +66,11 @@ PICKUP = re.compile(
 LABELED = re.compile(r"(?m)^(?P<label>[^\d\n]{1,40})\n[ \t]*(?P<code>[A-Z0-9]{5,8})[ \t]*$")
 # The label has to name a code itself ("Login Code", "Přihlašovací kód"), not only talk about verifying something,
 # and say it signs in or verifies: "Shipping code", "Kód predmetu" or "WiFi kód" over a word in capitals are no codes.
+# A code of letters only is believed only under a sign-in label, as Steam's ("Login Code"); "Security PIN" over "HTTPS" is none.
+LABEL_LOGIN = re.compile(r"\b(?:log[ -]?in|sign[ -]?in|prihlas\w*|přihlaš\w*)\b", re.I)
 LABEL_WORD = re.compile(r"\b(?:code|k[oó]d|pin|otp|passcode)\b", re.I)
 LABEL_AUTH = re.compile(
-    r"\b(?:log[ -]?in|sign[ -]?in|access|verif\w*|security|one[- ]time|2fa|otp|passcode|guard|authenticat\w*|confirm\w*"
+    r"\b(?:log[ -]?in|sign[ -]?in|verif\w*|security|one[- ]time|2fa|otp|passcode|guard|authenticat\w*|confirm\w*"
     r"|prihlas\w*|přihlaš\w*|overov\w*|ověřov\w*|bezpečnost\w*|potvrdzov\w*|potvrzov\w*|jednoraz\w*|jednoráz\w*)\b", re.I)
 # A number right after these is a phone number to call, whatever the mail is about.
 PHONE = re.compile(r"\bcall\b|\bzavolaj\w*|\bvolajte\b|\bphone\b|\btelef\w*|\btel\b|\bhotline\b|\blink[au]\b|\bmobil\w*", re.I)
@@ -150,7 +152,7 @@ def find_code(subject: str, text: str) -> str | None:
         label, code = m.group("label").strip(" :\t"), m.group("code")
         if not LABEL_WORD.search(label) or not LABEL_AUTH.search(label) or len(label.split()) > 4 or NOT_OTP.search(label):
             continue
-        if not _plausible(code) and not re.fullmatch(r"[B-DF-HJ-NP-TV-Z]{5,8}", code):
+        if not _plausible(code) and not (LABEL_LOGIN.search(label) and re.fullmatch(r"[B-DF-HJ-NP-TV-Z]{5,8}", code)):
             continue
         if code.isdigit() or (best is not None and best[0] >= 4):
             continue  # digits are the candidates' own; a better one already won
