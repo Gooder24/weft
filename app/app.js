@@ -5373,6 +5373,7 @@ function toggleRead(e) {
     if (e.kind === 'room') for (const r of e.rooms || [e.room]) markRoomRead(r, true);
     else saveSeen({ ...S.account[SEEN], [e.key]: e.thread.last });
   } else {
+    if (e.room?.archiveOnly) return; // an old chat or mail of the archive is never unread (Maily would count it)
     // An open chat would read itself again at once: close it, as Beeper does.
     if (selKey() === e.key) select(null);
     setChatState(e.key, { unread: true });
@@ -10368,7 +10369,9 @@ function searchItems(list) {
       name: e.kind === 'thread' ? nameOf(e.thread.root.sender) : e.title,
       partnerName: partner ? networkName(e.room, partner[0]) : '', // a nicknamed person is found by their own name too
       // A merged person is found also by the name the inbox shows for them (the people map's, or one Karchi gave).
-      groupName: (() => { const g = e.kind === 'room' && groupOf(e.key); return g ? mergedTitle(g, g.rooms.map((id) => S.rooms.get(id)).filter(Boolean)) : ''; })(),
+      groupName: (() => { const g = e.kind === 'room' && groupOf(e.key); return g ? mergedTitle(g, g.rooms.map((id) => S.rooms.get(id)).filter(Boolean)) : ''; })()
+        // A mail thread's row is its subject: it is still found by the account it came to.
+        || (e.room?.archiveOnly && e.room.bridgeName && e.room.bridgeName !== e.title ? e.room.bridgeName : ''),
       members: e.kind === 'room' && !partner ? joinedPeople(e.room).map(([id]) => memberName(e.room, id)) : [],
       rows: e.kind === 'room' ? (previewOnly(e.room) ? [] : searchRows(roomModel(e.room)))
         : [e.thread.root, ...e.thread.replies].filter((ev) => !ev.pending).map((ev) => { const text = bodyOf(ev); return { ev, text, words: wordsOf(text), content: ev.content }; }),
@@ -11419,7 +11422,7 @@ function menuView(o) {
   const room = e.kind === 'room' ? e.room : null;
   return ctxMenu(o, [
     // What Karchi does with the chat in the inbox.
-    [item(icon(e.unread ? 'mail-open' : 'mail'), e.unread ? T('Označiť ako prečítané') : T('Označiť ako neprečítané'), 'Ctrl+Shift+U', () => toggleRead(e)),
+    [e.room?.archiveOnly && !e.unread ? null : item(icon(e.unread ? 'mail-open' : 'mail'), e.unread ? T('Označiť ako prečítané') : T('Označiť ako neprečítané'), 'Ctrl+Shift+U', () => toggleRead(e)),
       e.room?.archiveOnly ? null : item(icon('archive'), e.archived ? T('Vrátiť z archívu') : T('Archivovať'), 'Ctrl+E', () => toggleArchive(e))],
     // When it should come back and how loud.
     [item(icon('bell'), T('Pripomenúť…'), 'Ctrl+L', () => openRemind(e)),
@@ -11867,7 +11870,7 @@ function toolList() {
     ...BOXES.filter(([id]) => id !== S.box).map(([id, label]) => [T`Zobraziť: ${label}`, 'zobrazenie priecinok folder view', '', () => setBox(id)]),
     ...appsInUse(hidden).map((a) => [`${hidden.has(a.id) ? T('Ukázať') : T('Skryť')} ${a.name}`, 'siet filter aplikacia', '', () => toggleApp(a.id), true, !hidden.has(a.id)]),
     [e?.archived ? T('Vrátiť chat z archívu') : T('Archivovať chat'), 'archive archiv hotovo', 'Ctrl+E', () => toggleArchive(e), !!e],
-    [e?.unread ? T('Označiť ako prečítané') : T('Označiť ako neprečítané'), 'read unread precitane neprecitane', 'Ctrl+Shift+U', () => toggleRead(e), !!e],
+    [e?.unread ? T('Označiť ako prečítané') : T('Označiť ako neprečítané'), 'read unread precitane neprecitane', 'Ctrl+Shift+U', () => toggleRead(e), !!e && !(e.room?.archiveOnly && !e.unread)],
     [T('Pripomenúť chat neskôr'), 'remind snooze pripomienka', 'Ctrl+L', () => openRemind(e), !!e],
     [T('Odpovedať na poslednú správu'), 'reply odpoved', 'Ctrl+R', replyToLast, !!r],
     [T('Upraviť svoju poslednú správu'), 'edit opravit', null, () => { const [lr, ev] = r ? lastEditableIn(r) : []; if (ev) startEdit(lr, ev); render(); }, !!r],
