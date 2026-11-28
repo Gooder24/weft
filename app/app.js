@@ -5274,7 +5274,9 @@ function chatEntries(all, extra = null) {
       if (!x || x.nicks !== nicks || x.name !== r.bridgeName || x.e.app !== r.app) {
         const lastMsg = m.messages.at(-1);
         // Nobody writes into them and they are never unread.
-        x = { nicks, name: r.bridgeName, e: { key: r.id, kind: 'room', app: r.app, room: r, title: roomTitle(r), lastMsg, last: lastMsg?.origin_server_ts || 0, count: 0 } };
+        // A mail thread's row is its subject; the account it came to stays in the open thread's head.
+        const title = MAIL_APPS.includes(r.app) && r.bridgeName?.includes(' · ') ? r.bridgeName.slice(r.bridgeName.indexOf(' · ') + 3) || roomTitle(r) : roomTitle(r);
+        x = { nicks, name: r.bridgeName, e: { key: r.id, kind: 'room', app: r.app, room: r, title, lastMsg, last: lastMsg?.origin_server_ts || 0, count: 0 } };
         archiveEntries.set(m, x);
       }
       list.push({ ...x.e });
@@ -6157,6 +6159,8 @@ const BOXES = [
   ['archive', T('Archív'), (e) => e.done],
   ['reminders', T('Pripomienky'), (e) => e.remind > 0],
   ['low', T('Nízka priorita'), (e) => e.low && !e.archived],
+  // Every mail thread of Gmail and Outlook (the archive's, read-only), newest first; never in the inbox.
+  ['mail', T('Maily'), (e) => MAIL_APPS.includes(e.app) && !!e.room?.archiveOnly],
 ];
 const inBox = (box) => BOXES.find(([id]) => id === box)?.[2] || BOXES[0][2];
 function setBox(box) {
@@ -6166,10 +6170,10 @@ function setBox(box) {
 }
 
 /** The chats the list shows: one of the views, and in the inbox only unread ones unless Ctrl+Shift+S. */
-function visibleEntries(list = entries()) {
+function visibleEntries(list = entries(S.box === 'mail')) {
   const hidden = hiddenApps();
-  // Conversations that exist only in the archive (no bridge room) are in no list: Ctrl+K finds them.
-  const mine = list.filter((e) => !hidden.has(e.app) && !e.room?.archiveOnly);
+  // Conversations that exist only in the archive (no bridge room) are in no list but Maily: Ctrl+K finds them.
+  const mine = list.filter((e) => !hidden.has(e.app) && (!e.room?.archiveOnly || (S.box === 'mail' && MAIL_APPS.includes(e.app))));
   const pool = mine.filter(inBox(S.box));
   // As in Beeper, a chat leaves the unread list as soon as it is read, even while it stays open.
   const shown = S.showAll || S.box !== 'inbox' ? pool : pool.filter((e) => e.unread || !!entryDraft(e).trim() || entryStash(e).length > 0);
@@ -6539,7 +6543,7 @@ function findNewStart(open) {
 }
 
 function mainView() {
-  let list = entries();
+  let list = entries(S.box === 'mail');
   let open = list.find((e) => e.key === selKey()) || null;
   if (open?.kind !== 'room') S.newFor = null;
   // The new-messages line and the read marks wait for the first sync (the kept copy may be old).
@@ -6550,7 +6554,7 @@ function mainView() {
     setTimeout(() => clearOnOpen(open));
     // Reading it changes the list: the chat leaves Unread on this same render, not on the next sync.
     if (open.unread) {
-      list = entries();
+      list = entries(S.box === 'mail');
       open = list.find((e) => e.key === open.key) || open;
     }
   }

@@ -176,6 +176,7 @@ export default {
   "Archív": "Archive",
   "Pripomienky": "Reminders",
   "Nízka priorita": "Low priority",
+  "Maily": "Mail",
   "Pred aktualizáciou dokonči rozpísanú správu, odober prílohy a zavri otvorený editor alebo prihlásenie.": "Before updating, finish the message you are writing, remove attachments and close the open editor or sign-in.",
   "Aktualizovať Weft": "Update Weft",
   "Zobrazenie": "View",

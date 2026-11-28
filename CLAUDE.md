@@ -108,7 +108,8 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   One-time codes: the bridge watches each account's INBOX with IMAP IDLE (read-only, `server/gmail/codes.py`) and
   Weft shows a code in a small corner window within seconds (Enter copies, Esc closes; closing reaches every
   device); Settings → Účty → Gmail sets per account window / window and system notification / nothing. Codes
-  stay in the bridge's memory only. „Window and notification“ also reaches a closed Weft: an empty Web Push
+  stay in the bridge's memory only. Every mail thread of both (the archive's) is listed only in the view „Maily“ (the
+  inbox head's menu, `BOXES`), newest first, its subject as the row; check: `overenie/outlook-odkazy/link.cjs`. „Window and notification“ also reaches a closed Weft: an empty Web Push
   (`server/gmail/push.py`, own VAPID key) to each phone or browser that allowed notifications, shown by `app/sw.js`
   without the code; the desktop shell has no push and hears codes only while it is open (closing its window with
   Super+W or ✕ quits it, like Ctrl+Q; Karchi, 2026-11-23). Checks: `overenie/gmail-codes/` (`heuristic_test.py`, `bridge.sh`,
@@ -117,7 +118,7 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   127.0.0.1:29330 behind Caddy's `/_bridges/outlook/` and `/_bridges/teams/`). Any number of Microsoft accounts of
   each, signed in on Microsoft's page through Microsoft Graph Command Line Tools (no own app needed; an Entra app in
   `microsoft/state/microsoft-client.json` replaces it; he pastes the `http://localhost` address it redirects to). A work sign-in asks at once for the permissions of every Outlook and Teams feature Karchi left ticked (Settings → Účty → Outlook or Teams → „Čo smie Weft“, one choice for both, `POST /features`, `state/features.json`; mail and chats always; the bridge never uses what is off); where users may not consent, an admin grants all of it for the whole organization with one link (`weft ms-consent`, `GET /consent`, also in the refusal), and the next sign-in asks only for mail and chats. Outlook works like Gmail: all mail read-only into the
-  archive (`archive:outlook:…`, „Odpovedať mailom“), Nový mail and `weft mail` send through Graph (20 MB of files).
+  archive (`archive:outlook:…`, „Odpovedať mailom“; new mail every 30 s), Nový mail and `weft mail` send through Graph (20 MB of files).
   Teams one-to-one, group and meeting chats are real rooms through the appservice `appservices/teams.yaml`
   (ghosts `@teams_<Entra id>`, polled every 20 s): text, mentions, photos, files, replies, edits, deletions and
   reactions both ways, and Karchi's reading as Teams „videné“ (whole chat, only once he reached its newest message); an ended call or meeting comes as a call row („Call (3:12)“ marked `com.beeper.action_message`, `call_log`); Ctrl+N finds people of the school or work directory. Every chat Teams has gets a room once (its newest 20 messages, already read); older history is in the archive like Messenger's: the bridge's `GET /history` (the archive's bridge token) pages it as Weft scrolls, `archive.py history teams` reads all of it ahead, photos into `archive/media/teams/`, files as their Teams link. No team channels. Checks:
