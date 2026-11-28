@@ -278,6 +278,9 @@ logging:
       return (m.data.chunk || []).find((e) => e.content?.body === 'Odpoveď z Weftu' && e.sender === there.id);
     }, 30);
     check('a message from Weft arrives there as Karchi', !!arrived);
+    // The bridge's send status turns the plane into ✓ beside it (sendMark in app.js).
+    const tick = await until(() => page.evaluate(() => [...document.querySelectorAll('.msg.mine')].some((m) => m.textContent.includes('Odpoveď z Weftu') && m.querySelector('.mstate.sent, .mstate.delivered, .mstate.seen'))), 30);
+    check('the bridge\'s send status gives it ✓ in Weft', !!tick);
     const features = await page.evaluate((room) => [...(window.__weft.S.rooms.get(room)?.state?.keys() || [])].some((k) => k.startsWith('com.beeper.room_features')), joined);
     check('the chat carries the bridge\'s room features', features);
 

@@ -216,7 +216,8 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   from the room's own bridge bot (mautrix `message_status_events: true` on asus since 2026-11-27, also the guests'
   bridges; Teams, Matrix and EduPage send SUCCESS themselves), `delivered_to_users` only from WhatsApp and Messenger's
   encrypted chats and only one-to-one, read receipts. Weft's messages from before `SEND_STATUS_SINCE` have no mark.
-  Checks: `overenie/stav-spravy/ui.cjs`, `tests/edupage/reply_test.py`, `tests/matrix/run.py`, `overenie/microsoft/check.py`.
+  Checks: `overenie/stav-spravy/ui.cjs` (and `merged.cjs`, a merged chat), `tests/edupage/reply_test.py`,
+  `tests/matrix/go_ui.cjs`, `overenie/microsoft/check.py`.
 - Mentions (like Beeper): „@“ in a Messenger, Instagram, WhatsApp or Discord chat lists its people; a picked or fully
   typed „@Name“ goes out as a Matrix mention (`formatted_body` matrix.to link + `m.mentions`), which the mautrix
   bridges turn into the network's own. A picked name stays that person (two of the same name, text typed after it,
