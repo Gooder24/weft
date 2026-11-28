@@ -19,6 +19,8 @@ done
 grep -q 'iifname "ygg0" drop' "$DIR/priamo.nft" || { echo "setup.sh: priamo.nft nie je pre ygg0" >&2; exit 1; }
 
 # The firewall first: ygg0 must never be up without it, as every service listening on :: would answer there.
+# A file nft refuses never replaces the one the next boot loads.
+sudo nft -c -f "$DIR/priamo.nft"
 sudo install -D -m 644 "$DIR/priamo.nft" /etc/weft-priamo/priamo.nft
 sudo tee /etc/systemd/system/weft-priamo-firewall.service >/dev/null <<'EOF'
 [Unit]
@@ -51,11 +53,18 @@ command -v yggdrasil >/dev/null || sudo DEBIAN_FRONTEND=noninteractive apt-get i
 CONF=/etc/yggdrasil/yggdrasil.conf
 sudo test -s "$CONF" || sudo sh -c "umask 077; yggdrasil -genconf > $CONF"
 peers=$(printf '%s\n' $PEERS | jq -R . | jq -sc .)
-sudo yggdrasil -useconffile "$CONF" -normaliseconf -json |
-  jq --argjson peers "$peers" '.Peers = $peers | .Listen = [] | .MulticastInterfaces = [] | .IfName = "ygg0"
-    | .NodeInfoPrivacy = true | .NodeInfo = {}' | (umask 077 && cat > "$DIR/yggdrasil.conf.new")
-# The service runs as the user yggdrasil; the file holds the node's private key.
-sudo install -m 640 -o root -g yggdrasil "$DIR/yggdrasil.conf.new" "$CONF" && rm -f "$DIR/yggdrasil.conf.new"
+# The file holds the node's private key, which is its address: a new file is written only when it kept the key.
+umask 077
+sudo yggdrasil -useconffile "$CONF" -normaliseconf -json > "$DIR/yggdrasil.conf.old"
+jq --argjson peers "$peers" '.Peers = $peers | .Listen = [] | .MulticastInterfaces = [] | .IfName = "ygg0"
+  | .NodeInfoPrivacy = true | .NodeInfo = {}' "$DIR/yggdrasil.conf.old" > "$DIR/yggdrasil.conf.new"
+umask 022
+key=$(jq -r .PrivateKey "$DIR/yggdrasil.conf.old")
+[ ${#key} -ge 64 ] && [ "$(jq -r .PrivateKey "$DIR/yggdrasil.conf.new")" = "$key" ] ||
+  { echo "setup.sh: nový yggdrasil.conf by stratil kľúč uzla, nechávam starý" >&2; exit 1; }
+# The service runs as the user yggdrasil.
+sudo install -m 640 -o root -g yggdrasil "$DIR/yggdrasil.conf.new" "$CONF"
+rm -f "$DIR/yggdrasil.conf.old" "$DIR/yggdrasil.conf.new"
 sudo systemctl enable -q yggdrasil
 sudo systemctl restart yggdrasil
 ADDR=$(sudo yggdrasil -useconffile "$CONF" -address)

@@ -348,7 +348,7 @@ refuses it and scans for the names in `~/weft-private/`). `GOAL-*.md` plans stay
   another interface) and Tuwunel's allowlist from one contact list (a contact's server name is its address as
   Yggdrasil prints it; another spelling is refused). It runs since 2026-11-28, set up by `setup.sh <dir> <unit>`:
   the firewall as the system unit `weft-priamo-firewall` (yggdrasil.service requires it), Yggdrasil from Debian
-  dialling out to two public peers only, and tuwunel-priamo on the node's Yggdrasil address and 127.0.0.1:8448 (the
+  dialling out to two public peers only, and tuwunel-priamo on the node's Yggdrasil address and 127.0.0.1:8448 (Weft's
   one service listening outside Tailscale and localhost, behind that firewall). asus `~/matrix-spike/priamo`, unit
   `matrix-spike-priamo`; dell, the first contact, `~/priamo`, unit `weft-priamo` (no Bun there: its files are
   rendered on asus). Not in Weft yet. Checks: `bun run check` there, the local lab `overenie/prenos-lab/run.sh priamo`.

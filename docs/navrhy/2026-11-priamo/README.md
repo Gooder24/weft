@@ -82,8 +82,8 @@ adresa a port.
 po každej zmene kontaktov.
 
 - **Firewall** je systémová jednotka `weft-priamo-firewall` (`/etc/weft-priamo/priamo.nft`). Yggdrasil ju má v
-  `Requires=`, takže bez nej `ygg0` nevznikne. Inak by na Yggdrasile odpovedalo všetko, čo na stroji počúva na `::`,
-  napríklad SSH.
+  `Requires=`, takže bez nej `ygg0` nevznikne. Inak by na Yggdrasile odpovedalo všetko, čo na stroji počúva na `::`
+  (na asuse napríklad LLMNR na porte 5355).
 - **Yggdrasil** je balík z Debianu. Volá len von na dva verejné peery: `ygg-ke.8px.sk` (Košice) a `37.205.14.171`
   (Praha, s kľúčom). Nemá listener ani multicast a o sebe nič nehlási (`NodeInfoPrivacy`).
 - **Tuwunel** je `tuwunel-priamo` ako používateľská jednotka. Počúva len na adrese Yggdrasilu a na 127.0.0.1, port
@@ -101,7 +101,7 @@ serveroch slúži na kontroly. Jeho heslo je v `overenie.pw` v priečinku.
 Kontrola naživo z 28. 11. 2026:
 
 - Správa ide medzi asusom a dellom cez verejné peery za 0,5 s oboma smermi.
-- Dell bol 2 minúty vypnutý. Správu, ktorú asus poslal počas výpadku, dostal 6,4 s po štarte.
+- Priamo na delli bolo 2 minúty vypnuté. Správu, ktorú asus poslal počas výpadku, dostalo 6,4 s po štarte.
 - Cudzí uzol stál vo vlastnom sieťovom mennom priestore na asuse a pripojil sa cez pražský peer. Cestu k obom
   strojom našiel a na `ygg0` asusu od neho prišlo 18 paketov. Port 8448 ani SSH (22) sa mu neotvoril ani na asuse,
   ani na delli.
