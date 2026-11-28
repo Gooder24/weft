@@ -208,7 +208,8 @@ function storedEduTo(user, drafts) {
   const to = new Map();
   try {
     for (const [key, it] of Object.entries(JSON.parse(localStorage.getItem(`ep_retry:${user}`) || '{}'))) {
-      if (Date.now() - it.at < RETRY_MS && JSON.parse(it.box || '{}').all === 'all' && drafts.has(key)) to.set(key, 'all');
+      const all = 'all' in it ? it.all : JSON.parse(it.box || '{}').all; // `all`: chosen again since (keepEduTo)
+      if (Date.now() - it.at < RETRY_MS && all === 'all' && drafts.has(key)) to.set(key, 'all');
     }
   } catch {}
   return to;
@@ -2811,12 +2812,19 @@ function retries() {
 }
 function saveRetries() {
   const kept = Object.fromEntries([...retries()].filter(([, it]) => !it.files.length && Date.now() - it.at < RETRY_MS)
-    .map(([key, { sig, box, txns, at }]) => [key, { sig, box, txns, at }]));
+    .map(([key, { sig, box, all, txns, at }]) => [key, { sig, box, all, txns, at }]));
   try { localStorage.setItem(`ep_retry:${S.userId}`, JSON.stringify(kept)); } catch {}
 }
 /** What a box holds besides its files, all that makes it this very message: text, reply, Všetkým, recipients. */
 const boxNow = (key) => JSON.stringify({ text: (S.drafts.get(key) || '').trim(), reply: S.replyTo?.room === key ? S.replyTo.event : null,
   all: S.eduTo.get(key) || null, to: key === EDU_NEW ? eduChoice(eduNew()) : null });
+/** Karchi chose again whom a restored EduPage reply goes to: a reload brings that choice back (storedEduTo). */
+function keepEduTo(rootId) {
+  const it = retries().get(rootId);
+  if (!it) return;
+  it.all = S.eduTo.get(rootId) || null;
+  saveRetries();
+}
 function keepRetry(key, it) {
   retries().set(key, { ...it, at: Date.now() });
   saveRetries();
@@ -6049,6 +6057,7 @@ function eduReplyTo(rootId, root) {
   const all = S.eduTo.get(rootId) === 'all';
   const pick = (to) => (e) => {
     if (to === 'all') S.eduTo.set(rootId, 'all'); else S.eduTo.delete(rootId);
+    keepEduTo(rootId);
     render();
     e.currentTarget.closest('.compose')?.querySelector('textarea')?.focus();
   };
@@ -6057,6 +6066,7 @@ function eduReplyTo(rootId, root) {
     e.preventDefault();
     const next = all ? 'one' : 'all';
     if (next === 'all') S.eduTo.set(rootId, 'all'); else S.eduTo.delete(rootId);
+    keepEduTo(rootId);
     render();
     e.currentTarget.querySelector(`[data-to="${next}"]`)?.focus();
   };
@@ -10198,9 +10208,13 @@ const eduName = (mxid) => S.names.get(mxid) || S.eduPeople.get(mxid) || mxid;
 /** Whom a new EduPage message goes to and how, as Karchi chose it (kept across a reload, unlike the school's data). */
 const eduChoice = (n) => ({ to: n.to.map((c) => [c.id || null, c.ghost || null, !!(c.withParents && c.parents)]), important: n.important, replies: n.replies });
 
+let eduSchoolLoad = null;
 async function sendEdu() {
   const key = EDU_NEW;
   const n = eduNew();
+  // After a reload the school's data (Karchi's role, so a teacher's options) is not read yet: read it first. Two
+  // presses wait for the same read, and the first one takes the box.
+  if (n.to.length && n.to.every((c) => c.id) && !S.eduSchool.role) await (eduSchoolLoad ||= loadEduSchool().finally(() => { eduSchoolLoad = null; }));
   const text = (S.drafts.get(key) || '').trim();
   const files = S.attach.get(key) || [];
   if ((!text && !files.length) || !S.roomId || !n.to.length) return;
