@@ -35,6 +35,9 @@ const ONLINE_MS = 3 * 60_000; // a device seen this recently counts as there
 // does (Accept, or Close on a text it shows at once), as LocalSend's own sender waits. Delete stops the wait.
 const CONNECT_MS = 5_000;
 const KEEPALIVE_MS = 15_000; // a device gone while its answer is awaited is noticed by the kernel's keepalive
+const CANCEL_MS = 3_000; // telling a device a send ended takes at most this, also when it answers byte by byte
+/** How long quitting may wait for stop(): it ends within CANCEL_MS of being called, so the wait never cuts a /cancel. */
+const STOP_MS = CANCEL_MS + 1_000;
 
 /** Tailscale's addresses: 100.64.0.0/10 and fd7a:115c:a1e0::/48. */
 const tailnetIp = (ip) => /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d+\.\d+$/.test(ip) || /^fd7a:115c:a1e0:/i.test(ip);
@@ -210,7 +213,7 @@ function createPeer(opts) {
   for (const it of st.items) { // the app quit midway: the item and every device it had not finished with
     if (!['sending', 'receiving'].includes(it.status)) continue;
     it.status = 'stopped';
-    for (const t of it.targets || []) if (['sending', 'waiting'].includes(t.status)) t.status = 'stopped';
+    for (const t of it.targets || []) if (['connecting', 'sending', 'waiting'].includes(t.status)) t.status = 'stopped';
   }
   // State of an earlier version may hold one certificate under two spellings: one record (the HTTPS one, which pins
   // the certificate, else the newer), a default only if both were.
@@ -531,8 +534,8 @@ function createPeer(opts) {
 
   // ---------------------------------------------------------------- sending
 
-  /** Sends files ({ path, name, size, type }) or a text to one device; resolves its status. `stage` hears „waiting“
-   *  once the device has the request (it asks its user, or shows the text) and „sending“ when files flow. */
+  /** Sends files ({ path, name, size, type }) or a text to one device (its target „connecting“ until then); resolves its
+   *  status. `stage` hears „waiting“ once the device has the request (it asks its user, or shows the text) and „sending“ when files flow. */
   async function sendOne(dev, payload, onBytes, { signal, stage = () => {} } = {}) {
     const files = payload.text != null
       ? [{ id: newId(), fileName: `${newId()}.txt`, size: Buffer.byteLength(payload.text), fileType: 'text/plain', sha256: null, preview: payload.text }]
@@ -554,7 +557,7 @@ function createPeer(opts) {
     if (r.status !== 200 || !r.data?.sessionId || typeof r.data.files !== 'object') return { status: 'failed', note: `HTTP ${r.status}` };
     const { sessionId, files: tokens } = r.data;
     // A file that failed ends the session there too, so the device is not left „busy“ until it gives up.
-    const cancel = () => call(dev, 'POST', `${API}/cancel?sessionId=${encodeURIComponent(sessionId)}`, { timeout: 3000 }).catch(() => {});
+    const cancel = () => call(dev, 'POST', `${API}/cancel?sessionId=${encodeURIComponent(sessionId)}`, { timeout: CANCEL_MS, signal: AbortSignal.timeout(CANCEL_MS) }).catch(() => {});
     stage('sending');
     for (const f of files) {
       const token = tokens[f.id];
@@ -582,7 +585,7 @@ function createPeer(opts) {
     const item = addItem({ dir: 'out', device: who(targets[0]), text: text ?? undefined, status: 'sending', got: 0,
       total: (one ?? Buffer.byteLength(text)) * targets.length,
       files: files?.map((f) => ({ name: f.name, size: f.size, type: f.type, path: f.path })),
-      targets: targets.map((d) => ({ ...who(d), status: 'sending' })) });
+      targets: targets.map((d) => ({ ...who(d), status: 'connecting' })) });
     emit('state');
     go(item, targets);
     return { id: item.id };
@@ -621,7 +624,7 @@ function createPeer(opts) {
     const targets = item.targets.filter((t) => t.status !== 'done').map((t) => st.devices[fpKey(t.fingerprint)]).filter(Boolean);
     if (!targets.length) return false;
     if (item.files?.some((f) => !fs.existsSync(f.path))) return false;
-    item.targets = item.targets.filter((t) => t.status === 'done').concat(targets.map((d) => ({ ...who(d), status: 'sending' })));
+    item.targets = item.targets.filter((t) => t.status === 'done').concat(targets.map((d) => ({ ...who(d), status: 'connecting' })));
     item.status = 'sending';
     item.got = 0;
     emit('state');
@@ -883,4 +886,4 @@ function createPeer(opts) {
   return { start, stop, scan, send, retry, setLan, setDefault, forget, remove, respond, fileOf, state: snapshot, info, onMulticast, get port() { return port; } };
 }
 
-module.exports = { createPeer, tailnetIp, safeParts, derInt, PORT };
+module.exports = { createPeer, tailnetIp, safeParts, derInt, PORT, STOP_MS };

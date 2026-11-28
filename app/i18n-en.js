@@ -1533,6 +1533,7 @@ export default {
   "{} posiela súbory: {} ({})": "{} is sending files: {} ({})",
   "posiela sa {} %": "sending {} %",
   "posiela sa": "sending",
+  "pripája sa": "connecting",
   "zobrazené na zariadení": "shown on the device",
   "čaká, kým to na zariadení prijmeš": "waiting for you to accept it on the device",
   "Prestať posielať a zmazať z nástenky": "Stop sending and remove from the board",

@@ -10,7 +10,7 @@ const https = require('node:https');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const { createPeer, tailnetIp, safeParts, derInt } = require('../../desktop/localsend.js');
+const { createPeer, tailnetIp, safeParts, derInt, STOP_MS } = require('../../desktop/localsend.js');
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'weft-localsend-'));
 const API = '/api/localsend/v2';
@@ -359,6 +359,7 @@ const settled = (p, id) => until(() => { const it = item(p, id); return it && ![
         const u = new URL(req.url, 'https://x');
         ph.hits.push(u.pathname + (u.pathname.endsWith('/cancel') ? `?${u.searchParams}` : ''));
         if (u.pathname === `${API}/upload`) { ph.held.push({ res, upload: true }); req.resume(); return; } // takes the bytes, never says done
+        if (u.pathname === `${API}/cancel` && ph.trickle) { res.writeHead(200); ph.drip = setInterval(() => res.write(' '), 300); return; } // answers, never ends
         req.on('data', (c) => chunks.push(c));
         req.on('end', () => {
           if (u.pathname === `${API}/register`) { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ alias: `Mobil ${n}`, version: '2.1', deviceModel: 'x', deviceType: 'mobile', fingerprint: 'x', download: false })); }
@@ -387,7 +388,12 @@ const settled = (p, id) => until(() => { const it = item(p, id); return it && ![
     await until(() => phones.every((x) => x.held.length === 2));
     for (const [n, x] of phones.entries()) { x.held[1].res.writeHead(200, { 'Content-Type': 'application/json' }); x.held[1].res.end(JSON.stringify({ sessionId: `S${n}`, files: { [Object.keys(x.held[1].body.files)[0]]: 'tok' } })); }
     await until(() => phones.every((x) => x.held.some((h) => h.upload)) && item(w, f.id).targets.every((x) => x.status === 'sending'));
-    await w.stop();
+    // One answers /cancel a byte at a time and never ends it: quitting still ends within the time the shell waits.
+    phones[0].trickle = true;
+    const started = Date.now();
+    assert.equal(await Promise.race([w.stop().then(() => 'stopped'), new Promise((r) => setTimeout(r, STOP_MS + 2000, 'hung'))]), 'stopped');
+    assert.ok(Date.now() - started < STOP_MS, `stop() took ${Date.now() - started} ms, the shell waits ${STOP_MS}`);
+    clearInterval(phones[0].drip);
     assert.deepEqual(phones.map((x) => x.hits.filter((h) => h.includes('/cancel'))), [['/api/localsend/v2/cancel?sessionId=S0'], ['/api/localsend/v2/cancel?sessionId=S1']]);
     for (const x of phones) await new Promise((r) => { x.srv.close(r); x.srv.closeAllConnections(); });
   });
@@ -408,10 +414,19 @@ const settled = (p, id) => until(() => { const it = item(p, id); return it && ![
     await new Promise((r) => mute.listen(port, '127.0.0.1', r));
     const started = Date.now();
     const x = await m.send({ text: 'haló' });
+    await until(() => socks.length);
+    assert.equal(item(m, x.id).targets[0].status, 'connecting'); // not „posiela sa 0 %“ while nothing flows
     const out = await until(() => { const it = item(m, x.id); return it.status !== 'sending' && it; }, 9000);
     assert.equal(out.status, 'offline');
     assert.ok(Date.now() - started < 8000, `${Date.now() - started} ms`);
+    // Quitting while it is still reaching the device: after a restart item and device say „stopped“.
+    const y = await m.send({ text: 'ešte raz' });
+    await until(() => socks.length === 2);
+    assert.equal(item(m, y.id).targets[0].status, 'connecting');
     await m.stop();
+    const m2 = await peer('mute');
+    assert.deepEqual([item(m2, y.id).status, item(m2, y.id).targets[0].status], ['stopped', 'stopped']);
+    await m2.stop();
     for (const c of socks) c.destroy();
     mute.close();
   });

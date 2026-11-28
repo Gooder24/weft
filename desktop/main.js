@@ -1142,7 +1142,7 @@ ipcMain.handle('focus', (event) => {
 
 // The board („Nástenka“, localsend.js): LocalSend in the shell, so files and text go to Karchi's own devices with the
 // LocalSend app and theirs land in Downloads/Weft. The window sees the board's state and asks through 'board'.
-const { createPeer } = require('./localsend.js');
+const { createPeer, STOP_MS } = require('./localsend.js');
 const BOARD_SCAN_MS = 2 * 60_000;
 let board = null;
 let boardTimer = null;
@@ -1178,14 +1178,15 @@ function startBoard(test = {}) {
   board.start().catch((err) => console.log('board start', err.message));
   boardTimer = setInterval(() => board.scan(), BOARD_SCAN_MS);
 }
-// Quitting waits (at most 2 s) until the board has written its state and closed, then ends the app (the other
-// will-quit handlers have run by then; a second app.quit() here would be ignored).
+// Quitting waits until the board has written its state, told the devices it was sending to and closed (at most
+// STOP_MS, longer than any /cancel), then ends the app (the other will-quit handlers have run by then; a second
+// app.quit() here would be ignored).
 let boardStopping = null;
 app.on('will-quit', (e) => {
   clearInterval(boardTimer);
   if (!board || boardStopping) return;
   e.preventDefault();
-  boardStopping = Promise.race([board.stop(), new Promise((r) => setTimeout(r, 2000))]).finally(() => app.exit(0));
+  boardStopping = Promise.race([board.stop(), new Promise((r) => setTimeout(r, STOP_MS))]).finally(() => app.exit(0));
 });
 /** Files the window hands over: { path } for a picked or dropped file (preload takes the path from the File itself, so
  *  the page cannot name one), { name, bytes } for a pasted picture, kept in userData/board-out until it is deleted. */

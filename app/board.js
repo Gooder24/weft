@@ -14,14 +14,14 @@ const LINK = /^https?:\/\/\S+$/;
 export function statusText(it) {
   const pct = it.total ? Math.min(99, Math.floor((it.got / it.total) * 100)) : 0;
   const targets = it.targets || [];
-  // A device that has it asks its user (files) or shows it until closed (text); then it answers. With several devices
-  // at different steps each says its own.
+  // A device is reached first; once it has it, it asks its user (files) or shows it until closed (text), then answers.
+  // Only bytes flowing show a share. With several devices at different steps each says its own.
   if (it.status === 'sending' && targets.every((t) => t.status === 'sending')) return T`posiela sa ${pct} %`;
   if (it.status === 'receiving') return T`prijíma sa ${pct} %`;
   if (it.dir === 'in') return { partial: T('prišla len časť'), stopped: T('prerušené'), cancelled: T('zrušené odosielateľom') }[it.status] || '';
   const one = (s) => ({
     done: T('doručené'), busy: T('zariadenie práve prijíma niečo iné'), declined: T('odmietnuté'), pin: T('zariadenie chce PIN: vypni ho v LocalSende'),
-    offline: T('zariadenie nie je dostupné'), failed: T('nepodarilo sa'), stopped: T('prerušené'), sending: T('posiela sa'),
+    offline: T('zariadenie nie je dostupné'), failed: T('nepodarilo sa'), stopped: T('prerušené'), connecting: T('pripája sa'), sending: T('posiela sa'),
     waiting: it.text != null ? T('zobrazené na zariadení') : T('čaká, kým to na zariadení prijmeš'),
   }[s] || s);
   if (targets.length > 1 && new Set(targets.map((t) => t.status)).size > 1) return targets.map((t) => `${t.alias}: ${one(t.status)}`).join(' · ');
