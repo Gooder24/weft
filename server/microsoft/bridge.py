@@ -76,7 +76,8 @@ LOGIN = os.environ.get("MS_LOGIN_URL", "https://login.microsoftonline.com").rstr
 # Entra lets a desktop client use http://localhost with any port; this exact one is registered.
 REDIRECT_URI = "http://localhost"
 POLL_SECONDS = int(os.environ.get("POLL_SECONDS", "20"))
-MAIL_SECONDS = int(os.environ.get("MAIL_SECONDS", "300"))
+# New mail is asked for this often (one small request when none came), so a sign-in link or code is in Maily in time.
+MAIL_SECONDS = int(os.environ.get("MAIL_SECONDS", "30"))
 CHECK_SECONDS = int(os.environ.get("CHECK_SECONDS", 30 * 60))
 RETRY_SECONDS = int(os.environ.get("RETRY_SECONDS", 2 * 60))
 TRANSIENT_LIMIT = 3
