@@ -99,7 +99,7 @@ npm ci --prefix tests/accessibility && npm test --prefix tests/accessibility
 - `python3 .github/scripts/check-docs.py` checks the Markdown files for heading order, image alt text and link text.
 - `node tests/demo/demo.cjs` starts `tools/demo` and checks the inbox, a chat, search, Settings, Ctrl+N and Feed,
   and that no request leaves 127.0.0.1.
-- `.github/workflows/accessibility.yml` runs these on every pull request and push to `main`.
+- `.github/workflows/accessibility.yml` runs these on every pull request; a push to `main` is checked locally.
 - `python3 tests/matrix/run.py` checks the Matrix bridge against two throwaway homeservers; it needs Tuwunel, so it
   runs by hand, not in CI.
 

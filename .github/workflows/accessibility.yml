@@ -1,9 +1,9 @@
 name: accessibility
 
+# Only pull requests: Karchi's own changes go straight to main and are checked on the machine that made them
+# (the commands in README → Tests), so a push to main starts nothing here.
 on:
   pull_request:
-  push:
-    branches: [main]
 
 permissions:
   contents: read
