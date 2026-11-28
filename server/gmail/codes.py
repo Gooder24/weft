@@ -60,6 +60,12 @@ PICKUP = re.compile(
     r"|vyzdvihnúť\s+pomocou\s+mobilnej\s+aplikácie\s+alebo\s+kódu)\s*(?:je\s*)?:?\s*"
     rf"(?P<code>{_DIGIT}(?:\s+{_DIGIT}){{5}}(?!\s+{_DIGIT})|(?=[A-Z0-9]*[0-9])[A-Z0-9]{{4,8}}(?![\w-]|[./:]\w))"
 )
+# A label alone on its line with the code alone on the next one ("Login Code" / "5PJF5", Steam's five characters).
+# Under such a label a code of capitals only counts when it has no vowel (Steam's alphabet has none), so a word in
+# capitals never is one.
+LABELED = re.compile(r"(?m)^(?P<label>[^\d\n]{1,40})\n[ \t]*(?P<code>[A-Z0-9]{5,8})[ \t]*$")
+# The label has to name a code itself ("Login Code", "Přihlašovací kód"), not only talk about verifying something.
+LABEL_WORD = re.compile(r"\b(?:code|k[oó]d|pin|otp|passcode)\b", re.I)
 # A number right after these is a phone number to call, whatever the mail is about.
 PHONE = re.compile(r"\bcall\b|\bzavolaj\w*|\bvolajte\b|\bphone\b|\btelef\w*|\btel\b|\bhotline\b|\blink[au]\b|\bmobil\w*", re.I)
 NEAR = 80  # how far before a code its keyword may be (characters)
@@ -67,6 +73,7 @@ NEAR = 80  # how far before a code its keyword may be (characters)
 
 def plain(text: str) -> str:
     """Mail text without HTML, links and runs of blank space."""
+    text = text.replace("\r\n", "\n").replace("\r", "\n")  # plain parts mostly come with CRLF
     text = re.sub(r"(?is)<(script|style)\b.*?</\1>", " ", text)
     # The quoted earlier mail of a reply (Gmail's and others' HTML): it is cut off up to its end.
     while True:  # innermost first, so a nested quote goes whole and text between two quotes stays
@@ -135,6 +142,15 @@ def find_code(subject: str, text: str) -> str | None:
             )
             if best is None or score > best[0]:
                 best = (score, code)
+    for m in LABELED.finditer(body):
+        label, code = m.group("label").strip(" :\t"), m.group("code")
+        if not LABEL_WORD.search(label) or len(label.split()) > 4 or NOT_OTP.search(label):
+            continue
+        if not _plausible(code) and not re.fullmatch(r"[B-DF-HJ-NP-TV-Z]{5,8}", code):
+            continue
+        if code.isdigit() or (best is not None and best[0] >= 4):
+            continue  # digits are the candidates' own; a better one already won
+        best = (4, code)
     if best is None and (pickup := PICKUP.search(body)):
         return re.sub(r"\s", "", pickup.group("code"))
     return best[1] if best else None
