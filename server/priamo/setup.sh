@@ -51,11 +51,14 @@ else sudo systemctl start weft-priamo-firewall; fi
 
 command -v yggdrasil >/dev/null || sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q yggdrasil >/dev/null
 CONF=/etc/yggdrasil/yggdrasil.conf
-sudo test -s "$CONF" || sudo sh -c "umask 077; yggdrasil -genconf > $CONF"
+# A new key only on the first run: an empty or keyless file means the node's key is lost, which needs a person.
+sudo test -e "$CONF" || sudo sh -c "umask 077; yggdrasil -genconf > $CONF"
 peers=$(printf '%s\n' $PEERS | jq -R . | jq -sc .)
 # The file holds the node's private key, which is its address: a new file is written only when it kept the key.
-sudo grep -q PrivateKey "$CONF" || { echo "setup.sh: $CONF nemá PrivateKey, nič nemením" >&2; exit 1; }
+sudo grep -Eq '^[[:space:]]*"?PrivateKey"?[[:space:]]*:[[:space:]]*"?[0-9a-f]{64}' "$CONF" ||
+  { echo "setup.sh: $CONF nemá PrivateKey, nič nemením" >&2; exit 1; }
 trap 'rm -f "$DIR/yggdrasil.conf.old" "$DIR/yggdrasil.conf.new"' EXIT
+trap 'exit 1' INT TERM HUP
 umask 077
 sudo yggdrasil -useconffile "$CONF" -normaliseconf -json > "$DIR/yggdrasil.conf.old"
 jq --argjson peers "$peers" '.Peers = $peers | .Listen = [] | .MulticastInterfaces = [] | .IfName = "ygg0"
