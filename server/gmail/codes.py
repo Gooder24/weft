@@ -31,7 +31,7 @@ NOT_OTP = re.compile(
     r"postal|zip|psč|poštov\w*|qr|iban|swift|referral|booking|rezerv\w*|reservation|ticket|letenk\w*|vstupenk\w*|"
     r"zákazník\w*|zakaznik\w*|customer|klient\w*|client|transakc\w*|transaction|platb\w*|payment|doklad\w*|"
     r"referen\w*|variabil\w*|symbol\w*|account number|checkout|\bsave\b|ušetr\w*|nákup\w*|"
-    r"deliver\w*|courier|kuriér\w*|doruč\w*|vyzdvihn\w*|pickup",
+    r"deliver\w*|courier|kuriér\w*|doruč\w*|vyzdvihn\w*|pickup|wi-?fi|wlan",
     re.I,
 )
 # Keywords that only a one-time code wears: right before a number they win over NOT_OTP ("use verification
@@ -64,8 +64,12 @@ PICKUP = re.compile(
 # Under such a label a code of capitals only counts when it has no vowel (Steam's alphabet has none), so a word in
 # capitals never is one.
 LABELED = re.compile(r"(?m)^(?P<label>[^\d\n]{1,40})\n[ \t]*(?P<code>[A-Z0-9]{5,8})[ \t]*$")
-# The label has to name a code itself ("Login Code", "Přihlašovací kód"), not only talk about verifying something.
+# The label has to name a code itself ("Login Code", "Přihlašovací kód"), not only talk about verifying something,
+# and say it signs in or verifies: "Shipping code", "Kód predmetu" or "WiFi kód" over a word in capitals are no codes.
 LABEL_WORD = re.compile(r"\b(?:code|k[oó]d|pin|otp|passcode)\b", re.I)
+LABEL_AUTH = re.compile(
+    r"\b(?:log[ -]?in|sign[ -]?in|access|verif\w*|security|one[- ]time|2fa|otp|passcode|guard|authenticat\w*|confirm\w*"
+    r"|prihlas\w*|přihlaš\w*|overov\w*|ověřov\w*|bezpečnost\w*|potvrdzov\w*|potvrzov\w*|jednoraz\w*|jednoráz\w*)\b", re.I)
 # A number right after these is a phone number to call, whatever the mail is about.
 PHONE = re.compile(r"\bcall\b|\bzavolaj\w*|\bvolajte\b|\bphone\b|\btelef\w*|\btel\b|\bhotline\b|\blink[au]\b|\bmobil\w*", re.I)
 NEAR = 80  # how far before a code its keyword may be (characters)
@@ -144,7 +148,7 @@ def find_code(subject: str, text: str) -> str | None:
                 best = (score, code)
     for m in LABELED.finditer(body):
         label, code = m.group("label").strip(" :\t"), m.group("code")
-        if not LABEL_WORD.search(label) or len(label.split()) > 4 or NOT_OTP.search(label):
+        if not LABEL_WORD.search(label) or not LABEL_AUTH.search(label) or len(label.split()) > 4 or NOT_OTP.search(label):
             continue
         if not _plausible(code) and not re.fullmatch(r"[B-DF-HJ-NP-TV-Z]{5,8}", code):
             continue
