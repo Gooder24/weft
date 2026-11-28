@@ -1330,6 +1330,7 @@ export default {
   "Zrušené": "Cancelled",
   "Do miestnosti sa nepodarilo vstúpiť: {}": "Could not join the room: {}",
   "Nový chat na Matrixe s {}": "New Matrix chat with {}",
+  "Nový chat cez Priamo s {}": "New chat through Priamo with {}",
   "Vstúpiť do {}": "Join {}",
   "Nový chat na Matrixe": "New Matrix chat",
   "Napíš @meno:server alebo #miestnosť:server": "Type @name:server or #room:server",

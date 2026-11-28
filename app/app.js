@@ -108,7 +108,11 @@ const SEND_STATUS = 'com.beeper.message_send_status';
 // Since then every bridge says so; of Weft's own messages before it nobody knows more than that they reached Weft's server.
 const SEND_STATUS_SINCE = Date.UTC(2026, 10, 27, 5, 53);
 // Networks whose bridge says when it took a message; on the others Weft's server is as far as Weft can see.
-const STATUS_APPS = new Set(['whatsapp', 'messenger', 'instagram', 'discord', 'teams', 'matrix']);
+const STATUS_APPS = new Set(['whatsapp', 'messenger', 'instagram', 'discord', 'teams', 'matrix', 'priamo']);
+/** Weft Priamo (docs/navrhy/2026-11-priamo/): a homeserver named by its Yggdrasil address, [2xx:…] or [3xx:…] (200::/7).
+ *  The Matrix bridge's login on it is the account there; its chats are the network „Priamo“, not Matrix. */
+const PRIAMO_SERVER = /^\[[23][0-9a-f]{2}:[0-9a-f:]*\](?::\d+)?$/i;
+const isPriamo = (id) => PRIAMO_SERVER.test(String(id || '').replace(/^@?[^:]*:/, ''));
 // Marks of a message Karchi wrote in the network's own app: it came from the network, so the network has it.
 const FROM_NETWORK = ['fi.mau.double_puppet_source', 'sk.karchi.teams', 'sk.karchi.matrix.remote'];
 const TIMELINE_TYPES = ['m.room.message', 'm.sticker', 'm.reaction', 'm.room.redaction', 'm.room.create', 'm.room.member', 'm.room.name', 'm.room.avatar', 'm.bridge', ROOM_FEATURES, SEND_STATUS, ...POLL_TYPES];
@@ -1377,6 +1381,7 @@ function roomState(r, ev) {
     if (!r.app && AGENTS[ev.state_key.split(':')[0]]) r.app = AGENTS[ev.state_key.split(':')[0]];
   } else if (ev.type === 'm.bridge' && NETWORKS[ev.content?.protocol?.id]) {
     r.app = NETWORKS[ev.content.protocol.id];
+    if (r.app === 'matrix' && isPriamo(ev.content.channel?.['fi.mau.receiver'])) r.app = 'priamo';
     r.bridgeName = ev.content.channel?.displayname;
     r.bridgebot = ev.content.bridgebot || '';
     // A Discord server's channel: its server, so "#general" says whose (and a search for the server finds it).
@@ -4876,7 +4881,7 @@ function saveInboxSoon() {
 // { groups: [{ id, rooms: [room id], name?, via?: room id Karchi picked to write to, viaAt?, at, auto?: 'name'|'people' }],
 //   dismissed: ['a|b'], auto?: false (Settings → Správy: no automatic merging) }
 const MERGES = 'sk.karchi.merges';
-const MERGE_APPS = ['messenger', 'instagram', 'whatsapp', 'discord', 'teams'];
+const MERGE_APPS = ['messenger', 'instagram', 'whatsapp', 'discord', 'teams', 'matrix', 'priamo'];
 const mergeData = () => S.account[MERGES] || {};
 /** A chat that can be merged: a live one-to-one chat on a messaging network (no group, EduPage, mail or archive). */
 const canMerge = (r) => !!r && isChat(r) && !r.archiveOnly && MERGE_APPS.includes(r.app) && !!dmPartner(r);
@@ -4904,8 +4909,9 @@ const groupRooms = (g) => (g.rooms || []).map((id) => S.rooms.get(id)).filter(li
 const appOf = (id) => APPS.find((a) => a.id === id);
 const pairKey = (a, b) => [a, b].sort().join('|');
 
-/** Where a merged chat writes: a chat with an unsent draft (it stays where it was left), else the network the person
- *  last wrote from, unless Karchi picked another since. A network whose account is down comes last. */
+/** Where a merged chat writes: a chat with an unsent draft (it stays where it was left), else the network Karchi picked,
+ *  until the person writes again, else Priamo, the two homes' own servers, when the person has it, else the network the
+ *  person last wrote from. A network whose account is down comes last. */
 const downApps = () => new Set(downAccounts().map((d) => d.id));
 /** `down`: the networks whose account is down, when the caller already has them (one inbox pass asks once). */
 function viaRoom(g, rooms = groupRooms(g), down = null) {
@@ -4924,7 +4930,7 @@ function viaRoom(g, rooms = groupRooms(g), down = null) {
   }
   const picked = pool.find((r) => r.id === g.via);
   if (picked && (g.viaAt || 0) >= theirTs) return picked;
-  return theirs || any;
+  return (!down.has('priamo') && pool.find((r) => r.app === 'priamo')) || theirs || any;
 }
 
 /** The person a merged chat is with: the name Karchi gave it (a nickname), the people map's, or the fullest name among the chats. */
@@ -6148,6 +6154,7 @@ const APPS = [
   { id: 'gmail', name: 'Gmail', icon: '/gmail.ico' },
   { id: 'outlook', name: 'Outlook', icon: '/outlook.png' },
   { id: 'matrix', name: 'Matrix', icon: '/matrix.svg' },
+  { id: 'priamo', name: 'Priamo', icon: '/priamo.svg' },
   { id: 'hermes', name: 'Hermes', icon: '/hermes.svg' },
   ...CONNECTORS,
 ];
@@ -6522,15 +6529,18 @@ const eduDown = () => !!S.logins[0]?.state?.state_event && !['CONNECTED', 'CONNE
 function downAccounts() {
   const down = [];
   if (eduDown()) down.push({ id: 'edupage', name: 'EduPage', icon: '/edupage.png', out: null });
-  for (const app of LINKS) {
-    const logins = S.links[app.id];
+  // The Matrix bridge's Priamo account is the network Priamo of its own: one down leaves the other usable.
+  const nets = LINKS.flatMap((app) => (app.id !== 'matrix' ? [{ app, id: app.id, name: app.name, icon: app.icon, logins: S.links[app.id] }]
+    : [{ app, id: 'matrix', name: app.name, icon: app.icon, logins: S.links.matrix?.filter((l) => !isPriamo(l.id)) },
+      { app, id: 'priamo', name: 'Priamo', icon: '/priamo.svg', logins: S.links.matrix?.filter((l) => isPriamo(l.id)) }]));
+  for (const { app, id, name: net, icon: pic, logins } of nets) {
     const broken = logins?.some((l) => l.state?.state_event && !['CONNECTED', 'CONNECTING', 'BACKFILLING'].includes(l.state.state_event));
     // A network whose login is gone while its chats stay in the list gets no new messages: say so, as Beeper does.
-    const orphaned = logins?.length === 0 && [...S.rooms.values()].some((r) => r.app === app.id);
+    const orphaned = logins?.length === 0 && [...S.rooms.values()].some((r) => r.app === id);
     const out = orphaned ? {} : logins?.find(signedOut) || null;
     // One of several accounts (Gmail) is named: the others may work.
-    const name = app.multi && out?.name ? `${app.name} ${out.name}` : app.name;
-    if (orphaned || broken || out) down.push({ id: app.id, name, icon: app.icon, app, out });
+    const name = app.multi && out?.name ? `${net} ${out.name}` : net;
+    if (orphaned || broken || out) down.push({ id, name, icon: pic, app, out });
   }
   return down;
 }
@@ -11123,7 +11133,8 @@ function groupView(o) {
 function matrixAsk(o) {
   if (o.link || !S.links.matrix?.length || hiddenApps().has('matrix')) return null;
   const text = o.query.trim();
-  if (/^@[^:\s]+:[^\s]+$/.test(text)) return { user: text };
+  // A Priamo address only through the Priamo account, any other only through another one: neither reaches the other's.
+  if (/^@[^:\s]+:[^\s]+$/.test(text)) return S.links.matrix.some((l) => isPriamo(l.id) === isPriamo(text)) ? { user: text } : null;
   if (/^[#!][^:\s]+:[^\s]+$/.test(text)) return { room: text };
   if (/^[@#][^\s]*$/.test(text)) return {}; // an address being typed keeps the row
   const query = norm(text);
@@ -11132,7 +11143,8 @@ function matrixAsk(o) {
 
 /** Opens the Matrix DM or joins the room; with nothing typed yet it puts "@" in the field to type the address. */
 async function matrixStart(o, mx) {
-  if (mx.user) return startChat({ app: 'matrix', contact: { id: mx.user } });
+  // A contact's Priamo address goes through the Priamo account, any other through the other Matrix account.
+  if (mx.user) return startChat({ app: 'matrix', contact: { id: mx.user }, login: S.links.matrix?.find((l) => isPriamo(l.id) === isPriamo(mx.user))?.id });
   if (!mx.room) {
     if (!/^[@#]/.test(o.query.trim())) o.query = '@';
     o.index = 0;
@@ -11252,8 +11264,8 @@ function newChatView(o) {
   const waIcon = LINKS.find((a) => a.id === 'whatsapp').icon;
   const mxApp = LINKS.find((a) => a.id === 'matrix');
   const mxRow = mx ? [{ go: () => matrixStart(o, mx),
-    av: [h('div', { class: 'icon grpicon' }, icon(mx.room ? 'users' : 'plus')), h('img', { class: 'badge', src: mxApp.icon, alt: '' })],
-    title: mx.user ? T`Nový chat na Matrixe s ${mx.user}` : mx.room ? T`Vstúpiť do ${mx.room}` : T('Nový chat na Matrixe'),
+    av: [h('div', { class: 'icon grpicon' }, icon(mx.room ? 'users' : 'plus')), h('img', { class: 'badge', src: mx.user && isPriamo(mx.user) ? '/priamo.svg' : mxApp.icon, alt: '' })],
+    title: mx.user && isPriamo(mx.user) ? T`Nový chat cez Priamo s ${mx.user}` : mx.user ? T`Nový chat na Matrixe s ${mx.user}` : mx.room ? T`Vstúpiť do ${mx.room}` : T('Nový chat na Matrixe'),
     note: mx.user || mx.room ? appLabel(mxApp) : T('Napíš @meno:server alebo #miestnosť:server') }] : [];
   // Typed straight hits (a number, a mail address, @name:server) come first; then Nedávni, and under them where to
   // start on each network.
