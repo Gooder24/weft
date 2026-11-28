@@ -1456,7 +1456,7 @@ function roomEvent(r, ev, old = false) {
   if (ev.type === SEND_STATUS) return sendStatusIn(r, ev);
   if (!['m.room.message', 'm.sticker', 'm.reaction', 'm.room.redaction', ...POLL_TYPES].includes(ev.type)) return;
   const txn = ev.unsigned?.transaction_id;
-  if (txn) { r.pending.delete(txn); r.events.delete(txn); }
+  if (txn) { r.pending.delete(txn); r.events.delete(txn); retryEchoed(txn); }
   r.events.set(ev.event_id, ev);
 }
 
@@ -2732,7 +2732,7 @@ async function sendChat(r, given = null) {
           if (text) setDraft(r.id, now.trim() ? `${draft.trimEnd()}\n${now}` : draft);
           if (files.length) S.attach.set(r.id, [...files, ...(S.attach.get(r.id) || [])]);
           if (replyWas && !S.replyTo) S.replyTo = replyWas;
-          if (!now.trim()) boxRetry.set(r.id, { sig, files, txns: parts.map((p) => p.txn), at: Date.now() });
+          if (!now.trim()) keepRetry(r.id, { sig, files, txns: parts.map((p) => p.txn) });
         }
         if (!err?.held && isNetErr(err)) { goOffline(); alert(T('Teraz to nejde, skús to znova, keď bude sieť.')); }
         else if (!err?.held) alert(T`Odpoveď neodišla (${err?.data?.error || err?.message || T('server ju odmietol')}). Ostala v poli aj so súbormi.`);
@@ -2766,13 +2766,47 @@ const txnId = () => `ep${Date.now()}${Math.random().toString(36).slice(2, 8)}`;
 // A message that did not go comes back into its box (a chat's text with its files and reply, an EduPage reply or
 // message). Sent again unchanged within RETRY_MS its parts keep their transaction ids, so one the server took after
 // all, with only its answer lost, is given back by the homeserver instead of going out (and to the network) twice.
+// Kept with the drafts (localStorage `ep_retry:<user>`), so a reload before the server's copy shows keeps the ids too;
+// files cannot outlive a reload, so only a message without files is kept there. The server's copy of any of its
+// parts ends it: that message went, and the same text typed later is a new one.
 const RETRY_MS = 15 * 60e3;
-const boxRetry = new Map(); // box key -> { sig, files, txns, uploaded?, at }
+let boxRetry = null; // box key -> { sig, files, txns, uploaded?, at }
+let boxRetryUser = null;
+function retries() {
+  if (!S.userId) return new Map(); // before sign-in: nothing kept is read yet
+  if (boxRetry && boxRetryUser === S.userId) return boxRetry;
+  boxRetry = new Map();
+  boxRetryUser = S.userId;
+  try {
+    for (const [key, it] of Object.entries(JSON.parse(localStorage.getItem(`ep_retry:${S.userId}`) || '{}'))) {
+      if (Date.now() - it.at < RETRY_MS) boxRetry.set(key, { ...it, files: [] });
+    }
+  } catch {}
+  return boxRetry;
+}
+function saveRetries() {
+  const kept = Object.fromEntries([...retries()].filter(([, it]) => !it.files.length && Date.now() - it.at < RETRY_MS)
+    .map(([key, { sig, txns, at }]) => [key, { sig, txns, at }]));
+  try { localStorage.setItem(`ep_retry:${S.userId}`, JSON.stringify(kept)); } catch {}
+}
+function keepRetry(key, it) {
+  retries().set(key, { ...it, at: Date.now() });
+  saveRetries();
+}
 function retryOf(key, sig, files) {
-  const was = boxRetry.get(key);
-  boxRetry.delete(key);
-  return was && was.sig === sig && Date.now() - was.at < RETRY_MS
+  const was = retries().get(key);
+  if (!was) return null;
+  retries().delete(key);
+  saveRetries();
+  return was.sig === sig && Date.now() - was.at < RETRY_MS
     && was.files.length === files.length && was.files.every((f, i) => f === files[i]) ? was : null;
+}
+function retryEchoed(txn) {
+  const kept = retries();
+  if (!kept.size) return;
+  let gone = false;
+  for (const [key, it] of kept) if (it.txns.includes(txn)) gone = kept.delete(key);
+  if (gone) saveRetries();
 }
 
 /** Right before a message with a reply goes: throws (`held`, not a network error) and says why when the reply may
@@ -4649,7 +4683,7 @@ function addEvent(ev) {
   }
   if (ev.type !== 'm.room.message' || !ev.content?.body) return;
   const txn = ev.unsigned?.transaction_id;
-  if (txn) S.pending.delete(txn);
+  if (txn) { S.pending.delete(txn); retryEchoed(txn); }
   S.events.set(ev.event_id, ev);
 }
 
@@ -5366,7 +5400,7 @@ async function sendReply(rootId) {
       setDraft(rootId, text);
       if (files.length) S.attach.set(rootId, files);
       if (content[REPLY_TO_KEY] === 'all') S.eduTo.set(rootId, 'all');
-      boxRetry.set(rootId, { sig, files, txns: [txn], uploaded: content[EDU_FILES], at: Date.now() });
+      keepRetry(rootId, { sig, files, txns: [txn], uploaded: content[EDU_FILES] });
     }
     alert(fresh ? T('Odpoveď sa neodoslala. Skús to znova.') : T`Odpoveď sa neodoslala: ${text || files.map((f) => f.name).join(', ')}`);
     render();
@@ -10152,7 +10186,7 @@ async function sendEdu() {
     S.pending.delete(txn);
     setDraft(key, text);
     if (files.length) S.attach.set(key, files);
-    boxRetry.set(key, { sig, files, txns: [txn], uploaded: content[EDU_FILES], at: Date.now() });
+    keepRetry(key, { sig, files, txns: [txn], uploaded: content[EDU_FILES] });
     alert(T('Správa sa neodoslala. Skús to znova.'));
     render();
   }
