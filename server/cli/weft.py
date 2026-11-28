@@ -12,9 +12,13 @@
                                                             EduPage: a new message to one teacher, or an answer
     weft mail TO [TEXT] [--subject S] [--cc CC] [--from ACCOUNT] [--file PATH]... [--yes]
                                                             a new mail from Gmail or Outlook (kept in its Sent)
-    weft draft CHAT [TEXT] [--file PATH]...                 a draft (text, files) that Weft puts on top of that chat's stash
+    weft draft CHAT [TEXT] [--file PATH]...                 a draft (text, files) that Weft puts on top of that chat's stash;
+                                                            in a mail thread (archive:gmail:..., archive:outlook:...) it is
+                                                            an answer by mail, in that thread, from the account it came to
+    weft draft --mail TO [TEXT] [--subject S] [--cc CC] [--from ACCOUNT] [--file PATH]...
+                                                            a new mail's draft: Weft shows it over the inbox, Karchi sends it
     weft drafts [--clear CHAT]                              the stash (Karchi's and agents' drafts not sent yet);
-                                                            --clear takes the agents' ones in CHAT away
+                                                            --clear takes the agents' ones in CHAT away (mail:new: new mails)
     weft relay CHAT --to FRIEND [--note TEXT] [--from ID] [--days 7] [--draft] [--show-name]
                                                             when CHAT answers Karchi, a picture of the answer is sent
                                                             to FRIEND's chat (--draft: only a draft there), without
@@ -294,8 +298,28 @@ class Rooms:
     def name(self, rid):
         """A chat's title, also for one only the archive has."""
         if rid in self.data["rooms"]: return self.title(self.data["rooms"][rid])
-        if not hasattr(self, "_names"): self._names = {c["room"]: c["title"] for c in archive_chats(self.mx)}
-        return self._names.get(rid, rid)
+        return (self.old(rid) or {}).get("title", rid)
+
+    def old(self, rid):
+        """A chat only the archive has (archive_chats), or None."""
+        if not hasattr(self, "_old"): self._old = {c["room"]: c for c in archive_chats(self.mx)}
+        return self._old.get(rid)
+
+    def written(self, rid, what):
+        """Fail for a chat only the archive has, saying what to do instead (`what`: koncept, správa, odpoveď). Weft never
+        guesses who an old export's person is (three accounts may share the name), so nothing goes into one until Karchi
+        has picked the person under it in Weft; a mail thread takes only a draft (weft draft)."""
+        if not rid.startswith("archive:"): return
+        c = self.old(rid) or {}
+        net, title = c.get("network") or rid.split(":")[1], c.get("title") or rid
+        if net in MAIL_APPS:
+            raise Fail(f"„{title}“ je mailové vlákno: odpoveď do neho daj ako koncept, weft draft {rid} TEXT (Karchi ho vo Wefte upraví a odošle)")
+        same = [r for r in self.listing(merge=False) if r["room"].startswith("!") and r["network"] == net and fold(r["title"]) == fold(title)]
+        live = "".join(f"\n  {r['room']}  {r['network']:9} {r['title']}" for r in same[:5])
+        raise Fail(f"„{title}“ je starý chat z exportu ({net}): kým ho Karchi vo Wefte nespojí so živým chatom, Weft nevie, komu presne patrí, "
+                   f"tak doňho {what} nedá. " + (f"Živý chat s tým menom (over, že je to ten človek):{live}\nPotom: weft draft ROOM TEXT" if same else
+                   f"Živý chat s tým menom nie je. Karchi otvorí starý chat vo Wefte a pod ním vyberie človeka (Napísať / Otvoriť chat); "
+                   f"potom weft chats MENO ukáže živý chat a weft draft ROOM TEXT dá koncept tam."))
 
     def off(self, rid, title=None):
         """A channel of a Discord server switched off in Weft; an old one only the archive has is "Server / channel"."""
@@ -331,7 +355,7 @@ def archive_chats(mx):
         print(f"weft: archive: {e}", file=sys.stderr)
         return []
     return [{"room": c["id"], "title": oneline(c.get("title")) or "Chat", "network": c.get("network") or "archive", "ts": c["last"]["ts"],
-             "unread": False, "low": False, "archived": False, "readonly": True,
+             "unread": False, "low": False, "archived": False, "readonly": True, **({"to": c["to"]} if isinstance(c.get("to"), dict) else {}),
              "last": f"{'Ja' if c['last'].get('me') else c['last'].get('sender', '')}: {oneline(c['last'].get('body'))[:300]}"} for c in chats]
 
 
@@ -898,6 +922,32 @@ def files_arg(paths, limit=MAX_FILE):
     return out
 
 
+def mail_accounts(mx):
+    """Mail logins that can send, each with its app (gmail, outlook); Fail when there is none."""
+    accounts, down = [], []
+    for app in MAIL_APPS:  # one mail bridge down must not stop mail from the other
+        try:
+            logins = mx.bridge(app, "GET", "/whoami").get("logins") or []
+            accounts += [{**l, "app": app} for l in logins if isinstance(l, dict) and isinstance(l.get("id"), str)
+                         and l["id"] and (l.get("name") is None or isinstance(l["name"], str))
+                         and not (isinstance(l.get("state"), dict) and l["state"].get("state_event") == "BAD_CREDENTIALS")]
+        except (HttpError, OSError, ValueError, AttributeError, TypeError):  # down, or an answer that is not a bridge's
+            down.append(MAIL_APPS[app][0])
+    if not accounts:
+        raise Fail(f"{' ani '.join(down)} teraz neodpovedá" if down else "vo Wefte nie je pripojený žiadny Gmail ani Outlook")
+    return accounts
+
+
+def put_draft(mx, room, text, files, mail=None):
+    """An agent's draft in sk.karchi.drafts; Weft puts it on top of the chat's stash (room "mail:new": over the inbox
+    as a new mail). `mail`: {to, subject, from: "<app>:<login>", cc?}, what the mail form opens with."""
+    item = {"id": str(uuid.uuid4()), "room": room, "body": text, "at": int(time.time() * 1000), "by": os.environ.get("WEFT_BY") or "agent"}
+    if mail: item["mail"] = mail
+    if files: item["files"] = [{"url": mx.upload(f), "name": f["name"], "mimetype": f["mimetype"], "size": f["size"]} for f in files]
+    mx.put_account(DRAFTS, {"items": drafts_left(mx) + [item]})
+    return item
+
+
 def pick(items, text, what, label):
     """The one item whose label is `text` or contains it; otherwise the candidates."""
     want = fold(text)
@@ -946,7 +996,8 @@ def main(argv=None):
     s.add_argument("--minutes", type=int, default=30); s.add_argument("--with", dest="who", action="append", default=[], metavar="WHO")
     s.add_argument("--no-link", action="store_true"); s.add_argument("--yes", action="store_true")
     sub.add_parser("ms-consent")
-    s = sub.add_parser("draft"); s.add_argument("chat"); s.add_argument("text", nargs="*"); s.add_argument("--file", action="append", metavar="PATH")
+    s = sub.add_parser("draft"); s.add_argument("chat", nargs="?"); s.add_argument("text", nargs="*"); s.add_argument("--file", action="append", metavar="PATH")
+    s.add_argument("--mail", metavar="TO"); s.add_argument("--subject", default=""); s.add_argument("--cc", default=""); s.add_argument("--from", dest="frm", metavar="ACCOUNT")
     s = sub.add_parser("relay"); s.add_argument("chat"); s.add_argument("--to", required=True, metavar="FRIEND")
     s.add_argument("--note", default=""); s.add_argument("--from", dest="frm", metavar="ID"); s.add_argument("--days", type=float, default=7)
     s.add_argument("--draft", action="store_true"); s.add_argument("--show-name", action="store_true")
@@ -1078,20 +1129,13 @@ def main(argv=None):
         if off: lines.append("vypnuté vo Wefte (Nastavenia → Účty → Outlook/Teams): " + ", ".join(off))
         return out(reports, lines + ([f"Správca schváli všetko vybrané pre celú firmu týmto odkazom: {link}"] if link else []))
 
-    if a.cmd == "mail":
+    if a.cmd == "mail" or (a.cmd == "draft" and a.mail):
+        if a.cmd == "draft":
+            a.to, a.text, a.yes = a.mail, ([a.chat] if a.chat else []) + a.text, False
+            if not re.search(r"[^@\s<>,;]+@[^@\s<>,;]+\.[^@\s<>,;]+", a.to): raise Fail(f"„{a.to}“ nie je e-mailová adresa")
         text = text_arg(a.text) if a.text else ""
         if not text and not a.file: raise Fail("mail je prázdny")
-        accounts, down = [], []
-        for app in MAIL_APPS:  # one mail bridge down must not stop mail from the other
-            try:
-                logins = mx.bridge(app, "GET", "/whoami").get("logins") or []
-                accounts += [{**l, "app": app} for l in logins if isinstance(l, dict) and isinstance(l.get("id"), str)
-                             and l["id"] and (l.get("name") is None or isinstance(l["name"], str))
-                             and not (isinstance(l.get("state"), dict) and l["state"].get("state_event") == "BAD_CREDENTIALS")]
-            except (HttpError, OSError, ValueError, AttributeError, TypeError):  # down, or an answer that is not a bridge's
-                down.append(MAIL_APPS[app][0])
-        if not accounts:
-            raise Fail(f"{' ani '.join(down)} teraz neodpovedá" if down else "vo Wefte nie je pripojený žiadny Gmail ani Outlook")
+        accounts = mail_accounts(mx)
         label = lambda l: l.get("name") or l["id"]
         acc = pick(accounts, a.frm, "účet", label) if a.frm else accounts[0]
         app_name, limit, mb = MAIL_APPS[acc["app"]]
@@ -1100,8 +1144,13 @@ def main(argv=None):
         sender = label(acc)
         lines = [f"Z: {sender}", f"Komu: {a.to}"] + ([f"Kópia: {a.cc}"] if a.cc else []) + [f"Predmet: {a.subject}", f"Text: {text}"] + \
             [f"Príloha: {f['name']} ({size_of(f['size'])})" for f in files]
+        if a.cmd == "draft":
+            mail = {"to": a.to, "subject": a.subject, "from": f"{acc['app']}:{acc['id']}", **({"cc": a.cc} if a.cc else {})}
+            item = put_draft(mx, "mail:new", text, files, mail)
+            return out(item, ["koncept mailu je vo Wefte navrchu zoznamu (Koncept mailu); odošle ho Karchi"] + lines)
         if not a.yes:
-            return out({"from": sender, "to": a.to, "sent": False}, ["NEODOSLANÉ."] + lines + ["Pridaj --yes, ak to Karchi chce poslať."])
+            return out({"from": sender, "to": a.to, "sent": False}, ["NEODOSLANÉ."] + lines +
+                       ["Pridaj --yes, ak to Karchi chce poslať, alebo ho daj Karchimu do Weftu: weft draft --mail ADRESA TEXT --subject ..."])
         uploaded = [{"url": mx.upload(f), "name": f["name"], "mimetype": f["mimetype"]} for f in files]
         mx.bridge(acc["app"], "POST", f"/send/{q(acc['id'])}", {"to": a.to, "cc": a.cc, "subject": a.subject, "text": text, "files": uploaded})
         return out({"from": sender, "to": a.to, "sent": True}, [f"mail odišiel z {sender} na {a.to}; {app_name} ho má v Odoslanej pošte"])
@@ -1155,7 +1204,7 @@ def main(argv=None):
                           + [f"{'':>18}↳ {oneline(x)[:300]}" for card in m.get("links", []) for x in card["lines"]]] or ["(nič)"])
     if a.cmd == "send":
         rid = find_chat(rooms, mx, a.chat)
-        if rid.startswith("archive:"): raise Fail("starý chat z exportu: doňho sa písať nedá")
+        rooms.written(rid, "správu")
         text, files = text_arg(a.text) if a.text else "", files_arg(a.file)
         if not text and not files: raise Fail("prázdny text")
         net = rooms.data["rooms"].get(rid, {}).get("net") or "matrix"
@@ -1202,16 +1251,32 @@ def main(argv=None):
         if net in PHONE: note = f"; odíde z telefónu (beta), a ak neodíde, prečo uvidíš v chate: weft read {rid}"
         return out({"room": rid, "sent": True, "event_ids": ids}, [f"odoslané do {where}" + note])
     if a.cmd == "draft":
-        rid, text, files = find_chat(rooms, mx, a.chat), text_arg(a.text) if a.text else "", files_arg(a.file)
-        if rid.startswith("archive:"): raise Fail("starý chat z exportu: doňho sa písať nedá")
+        if not a.chat: raise Fail("komu: weft draft CHAT TEXT, alebo weft draft --mail ADRESA TEXT")
+        rid = find_chat(rooms, mx, a.chat)
+        net = room_net(rooms, rid)
+        mail = None
+        if rid.startswith("archive:"):
+            if net not in MAIL_APPS: rooms.written(rid, "koncept")
+            # An answer by mail, as Weft's „Odpovedať mailom“: to the newest sender, from the account it came to.
+            to = (rooms.old(rid) or {}).get("to") or {}
+            if not to.get("mail"):
+                raise Fail(f"vo vlákne „{rooms.name(rid)}“ písal len Karchi, Weft nevie, komu odpovedať: weft draft --mail ADRESA TEXT --subject 'Re: …'")
+            acc = next((l for l in mail_accounts(mx) if l["app"] == net and (l.get("name") or l["id"]).lower() == str(to.get("account") or "").lower()), None)
+            if not acc: raise Fail(f"účet {to.get('account')}, na ktorý vlákno prišlo, nie je vo Wefte pripojený; odpovedať sa dá až po jeho pripojení")
+            mail = {"to": to["mail"], "subject": to.get("subject") or "", "from": f"{net}:{acc['id']}"}
+        text = text_arg(a.text) if a.text else ""
+        files = files_arg(a.file, MAIL_APPS[net][1]) if mail else files_arg(a.file)
         if not text and not files: raise Fail("koncept je prázdny")
-        item = {"id": str(uuid.uuid4()), "room": rid, "body": text, "at": int(time.time() * 1000), "by": os.environ.get("WEFT_BY") or "agent"}
-        if files: item["files"] = [{"url": mx.upload(f), "name": f["name"], "mimetype": f["mimetype"], "size": f["size"]} for f in files]
-        mx.put_account(DRAFTS, {"items": drafts_left(mx) + [item]})
-        return out(item, [f"koncept je vo Wefte v chate {rooms.name(rid)} (navrchu v Odložených)" + (f" ({len(files)} súbor/y)" if files else "") + "; odošle ho Karchi"])
+        if mail and sum(f["size"] for f in files) > MAIL_APPS[net][1]: raise Fail(f"prílohy sú spolu väčšie ako {MAIL_APPS[net][2]} MB, {MAIL_APPS[net][0]} ich neprijme")
+        item = put_draft(mx, rid, text, files, mail)
+        where = f"v mailovom vlákne {rooms.name(rid)} (navrchu v Odložených; Vziať ho otvorí ako odpoveď: Komu {mail['to']}, {mail['subject']})" if mail \
+            else f"v chate {rooms.name(rid)} (navrchu v Odložených)"
+        return out(item, [f"koncept je vo Wefte {where}" + (f" ({len(files)} súbor/y)" if files else "") + "; odošle ho Karchi"])
     if a.cmd == "relay":
         rid, to = find_chat(rooms, mx, a.chat), find_chat(rooms, mx, a.to)
-        if rid.startswith("archive:") or to.startswith("archive:"): raise Fail("starý chat z exportu: tu sa odpoveď nedočká")
+        if rid.startswith("archive:") and room_net(rooms, rid) not in MAIL_APPS: rooms.written(rid, "sledovanie")
+        if rid.startswith("archive:"): raise Fail("mailové vlákno: na odpoveď v ňom Weft nečaká (len chaty)")
+        rooms.written(to, "obrázok")
         if rid == to: raise Fail("odpoveď a kamoš sú ten istý chat")
         now = int(time.time() * 1000)
         if a.frm: anchor = message_of(mx, rid, a.frm)
@@ -1237,7 +1302,7 @@ def main(argv=None):
     if a.cmd == "drafts":
         stash = mx.account(STASH)
         if a.clear:
-            rid = find_chat(rooms, mx, a.clear)
+            rid = a.clear if a.clear == "mail:new" else find_chat(rooms, mx, a.clear)  # mail:new: the new mails' drafts
             items = drafts_left(mx)
             mx.put_account(DRAFTS, {"items": [x for x in items if x["room"] != rid]})
             # The agents' items in the stash get a tombstone, as Weft's own removal does; Karchi's stay. Read again
@@ -1252,7 +1317,8 @@ def main(argv=None):
         items = sorted(stash.get("items") or [], key=lambda x: -(x.get("pos") or x.get("at") or 0))
         waiting = [x for x in mx.account(DRAFTS).get("items", []) if not adopted(stash, x)]
         shown = items + [{**x, "waiting": True} for x in waiting]
-        return out(shown, [f"{when(x.get('at') or 0):>16}  {rooms.name(x['room'])}: {oneline(x.get('body') or '')[:200]}" +
+        name = lambda x: f"nový mail pre {(x.get('mail') or {}).get('to', '?')}: {(x.get('mail') or {}).get('subject', '')}" if x["room"] == "mail:new" else rooms.name(x["room"])
+        return out(shown, [f"{when(x.get('at') or 0):>16}  {name(x)}: {oneline(x.get('body') or '')[:200]}" +
                            (f" [{', '.join(f['name'] for f in x['files'])}]" if x.get("files") else "") +
                            (f" (od {x['by']})" if x.get("by") else "") + (" (Weft ho ešte nevzal)" if x.get("waiting") else "")
                            for x in shown] or ["(žiadne)"])
