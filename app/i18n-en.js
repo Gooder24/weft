@@ -1122,6 +1122,7 @@ export default {
   "Discord v okne hovoru (beta)": "Discord in the call window (beta)",
   "Telefón v DM otvorí chat v okne Weftu a okno samo stlačí hovor; v skupinovom DM zazvoní celej skupine. Keď je ten chat v okne už otvorený, zavoláš v ňom sám, a klik na iný DM bežiaci hovor zloží. Discord automatizáciu účtu zakazuje: riziko je malé, nie nulové. Len na tomto zariadení.": "The phone in a DM opens the chat in a Weft window, and the window presses call by itself; in a group DM it rings the whole group. When that chat is already open in the window, you call there yourself, and a click on another DM ends a running call. Discord forbids automating accounts: the risk is small, not zero. This device only.",
   "Hovor: otvoriť WhatsApp Web (zoznam chatov)": "Call: open WhatsApp Web (chat list)",
+  "Hovor: otvoriť chat v Teams": "Call: open the chat in Teams",
   "Okno hovoru sa neotvorilo.": "The call window did not open.",
   "Prichádzajúci videohovor": "Incoming video call",
   "Prichádzajúci hovor": "Incoming call",

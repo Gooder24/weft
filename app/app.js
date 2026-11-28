@@ -1392,10 +1392,13 @@ function callTarget(r) {
     return { network, id, url: `https://discord.com/channels/@me/${id}` };
   }
   if (network === 'whatsapp') return { network, id: '', url: 'https://web.whatsapp.com/' };
+  // Graph lets no app place a call for the user: the chat opens in Teams (app or web), whose call button calls.
+  if (network === 'teams' && /^19:[^/?#\s]{1,200}$/.test(id)) return { network, id: '', url: `https://teams.microsoft.com/l/chat/${encodeURIComponent(id)}/0` };
   return null;
 }
 const CALL_WHERE = { messenger: T('Hovor: otvoriť chat v Messengeri'), instagram: T('Hovor: otvoriť chat na Instagrame'),
-  discord: T('Hovor: otvoriť chat na Discorde'), whatsapp: T('Hovor: otvoriť WhatsApp Web (zoznam chatov)') };
+  discord: T('Hovor: otvoriť chat na Discorde'), whatsapp: T('Hovor: otvoriť WhatsApp Web (zoznam chatov)'),
+  teams: T('Hovor: otvoriť chat v Teams') };
 /** The button's name: with the Discord beta on, the click calls. */
 const callWhere = (network) => (network === 'discord' && callWindow('discord') ? T('Hovor: zavolať na Discorde (beta)') : CALL_WHERE[network]);
 // Discord in the shell's call window, where the window presses the call button itself (beta, this device only).
@@ -15794,6 +15797,7 @@ function microsoftFeatures(app) {
       for (const a of LINKS.filter((x) => x.flow === 'microsoft')) {
         const seq = msAsk(a.id);
         if (all[a.id] && all[a.id] !== 'loading') all[a.id] = { ...all[a.id], ...(res?.choices ? { choices: res.choices } : {}), stale: true, failed: false };
+        else all[a.id] = 'loading'; // a row not opened yet waits for this answer instead of asking again
         prov(a, 'GET', '/consent').then((x) => { if (seq === msFeat.seq[a.id] && !Object.keys(msFeat.pending).length) all[a.id] = x; },
           () => { if (seq !== msFeat.seq[a.id]) return; if (all[a.id]?.stale) all[a.id] = { ...all[a.id], failed: true }; else if (all[a.id] === 'loading') all[a.id] = null; })
           .then(() => { if (S.panel === 'settings') render(); });
